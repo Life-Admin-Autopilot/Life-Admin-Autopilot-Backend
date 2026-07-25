@@ -16,6 +16,7 @@ namespace Life_Admin_Autopilot_Backend
             builder.Services.AddBusinessLogicLayer(builder.Configuration);
             builder.Services.AddJwtAuthentication(builder.Configuration);
             builder.Services.AddMongoDb(builder.Configuration);
+            builder.Services.AddClaudeService(builder.Configuration);
             builder.Services.AddAuthorization();
 
             builder.Services.AddControllers();
