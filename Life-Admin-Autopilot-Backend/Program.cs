@@ -1,5 +1,6 @@
 using Life_Admin_Autopilot.BLL;
 using Life_Admin_Autopilot.DAL;
+using Life_Admin_Autopilot.DAL.Extensions;
 using Life_Admin_Autopilot_Backend.Extensions;
 
 namespace Life_Admin_Autopilot_Backend
@@ -14,6 +15,7 @@ namespace Life_Admin_Autopilot_Backend
             builder.Services.AddDataAccessLayer(builder.Configuration);
             builder.Services.AddBusinessLogicLayer(builder.Configuration);
             builder.Services.AddJwtAuthentication(builder.Configuration);
+            builder.Services.AddMongoDb(builder.Configuration);
             builder.Services.AddAuthorization();
 
             builder.Services.AddControllers();
