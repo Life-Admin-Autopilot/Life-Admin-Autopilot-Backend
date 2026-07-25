@@ -23,8 +23,4 @@
     <ProjectReference Include="..\Life-Admin-Autopilot.DAL\Life-Admin-Autopilot.DAL.csproj" />
   </ItemGroup>
 
-  <ItemGroup>
-    <Folder Include="Controllers\" />
-  </ItemGroup>
-
 </Project>
