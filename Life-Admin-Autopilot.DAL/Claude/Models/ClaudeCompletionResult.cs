@@ -6,11 +6,25 @@ namespace Life_Admin_Autopilot.DAL.Claude.Models
 
         public string ModelId { get; init; } = string.Empty;
 
-        // TEMPORARY: the gateway's real success response shape has never been observed
-        // (every test call so far hit a model-approval/policy error, not a 2xx). This is
-        // included so the first successful call can be inspected end-to-end and
-        // ClaudeService's response parsing hardened into a precise DTO. Remove once the
-        // real shape is confirmed and parsing no longer needs a fallback.
+        // True if the gateway substituted a different model/region than requested.
+        // Worth checking before trusting a spike result as representative of the
+        // intended model (see the "don't generalize to Claude broadly" note in the brief).
+        public bool FallbackUsed { get; init; }
+
+        public int InputTokens { get; init; }
+
+        public int OutputTokens { get; init; }
+
+        public int TotalTokens { get; init; }
+
+        public string? StopReason { get; init; }
+
+        public decimal? EstimatedCostUsd { get; init; }
+
+        public decimal? ActualCostUsd { get; init; }
+
+        public long LatencyMs { get; init; }
+
         public string RawResponseBody { get; init; } = string.Empty;
     }
 }

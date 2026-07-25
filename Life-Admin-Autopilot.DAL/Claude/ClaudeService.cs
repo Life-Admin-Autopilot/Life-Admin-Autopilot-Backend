@@ -1,3 +1,5 @@
+using System.Diagnostics;
+using System.Globalization;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Text.Json;
@@ -43,6 +45,7 @@ namespace Life_Admin_Autopilot.DAL.Claude
             };
             httpRequest.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _options.ApiKey);
 
+            var stopwatch = Stopwatch.StartNew();
             HttpResponseMessage response;
             try
             {
@@ -54,26 +57,14 @@ namespace Life_Admin_Autopilot.DAL.Claude
             }
 
             var rawBody = await response.Content.ReadAsStringAsync(cancellationToken);
+            stopwatch.Stop();
 
             if (!response.IsSuccessStatusCode)
             {
                 return Result<ClaudeCompletionResult>.Failure(ParseErrorBody(response.StatusCode, rawBody));
             }
 
-            var completionText = TryExtractCompletionText(rawBody);
-            if (completionText is null)
-            {
-                return Result<ClaudeCompletionResult>.Failure(new Error(
-                    "CLAUDE_UNRECOGNIZED_RESPONSE_SHAPE",
-                    $"Gateway returned a successful ({(int)response.StatusCode}) response, but no known completion field was found. Raw body: {rawBody}"));
-            }
-
-            return Result<ClaudeCompletionResult>.Success(new ClaudeCompletionResult
-            {
-                CompletionText = completionText,
-                ModelId = _options.ModelId,
-                RawResponseBody = rawBody
-            });
+            return ParseSuccessBody(rawBody, stopwatch.ElapsedMilliseconds);
         }
 
         private static Error ParseErrorBody(System.Net.HttpStatusCode statusCode, string rawBody)
@@ -94,69 +85,46 @@ namespace Life_Admin_Autopilot.DAL.Claude
             return new Error("CLAUDE_GATEWAY_ERROR", $"HTTP {(int)statusCode}: {rawBody}");
         }
 
-        // The gateway's success response shape has never been observed (every real test
-        // call so far hit a model-approval/policy error, not a 2xx - see
-        // Claude_Code_Brief_Stories_1_2). This defensively probes the most common chat-API
-        // response conventions rather than assuming one. Once a real successful response
-        // is seen, replace this with a precise typed DTO matching the confirmed shape.
-        private static string? TryExtractCompletionText(string rawBody)
+        // Shape confirmed empirically against the real gateway - see
+        // ClaudeChatWireResponse for the specific test that established this.
+        private static Result<ClaudeCompletionResult> ParseSuccessBody(string rawBody, long latencyMs)
         {
-            JsonDocument document;
+            ClaudeChatWireResponse? parsed;
             try
             {
-                document = JsonDocument.Parse(rawBody);
+                parsed = JsonSerializer.Deserialize<ClaudeChatWireResponse>(rawBody);
             }
-            catch (JsonException)
+            catch (JsonException ex)
             {
-                return null;
+                return Result<ClaudeCompletionResult>.Failure(new Error(
+                    "CLAUDE_UNRECOGNIZED_RESPONSE_SHAPE",
+                    $"Gateway returned a successful response that could not be parsed ({ex.Message}). Raw body: {rawBody}"));
             }
 
-            using (document)
+            if (string.IsNullOrEmpty(parsed?.OutputText))
             {
-                var root = document.RootElement;
-
-                if (TryGetString(root, "completion", out var completion)) return completion;
-                if (TryGetString(root, "response", out var responseText)) return responseText;
-                if (TryGetString(root, "output_text", out var outputText)) return outputText;
-                if (TryGetString(root, "result", out var result)) return result;
-
-                if (root.TryGetProperty("content", out var content))
-                {
-                    if (content.ValueKind == JsonValueKind.String) return content.GetString();
-                    if (content.ValueKind == JsonValueKind.Array && content.GetArrayLength() > 0
-                        && TryGetString(content[0], "text", out var blockText)) return blockText;
-                }
-
-                if (root.TryGetProperty("message", out var message) && TryGetString(message, "content", out var messageContent))
-                    return messageContent;
-
-                if (root.TryGetProperty("choices", out var choices) && choices.ValueKind == JsonValueKind.Array
-                    && choices.GetArrayLength() > 0)
-                {
-                    var firstChoice = choices[0];
-                    if (firstChoice.TryGetProperty("message", out var choiceMessage)
-                        && TryGetString(choiceMessage, "content", out var choiceMessageContent))
-                        return choiceMessageContent;
-
-                    if (TryGetString(firstChoice, "text", out var choiceText)) return choiceText;
-                }
-
-                return null;
+                return Result<ClaudeCompletionResult>.Failure(new Error(
+                    "CLAUDE_UNRECOGNIZED_RESPONSE_SHAPE",
+                    $"Gateway returned a successful response with no output_text field. Raw body: {rawBody}"));
             }
+
+            return Result<ClaudeCompletionResult>.Success(new ClaudeCompletionResult
+            {
+                CompletionText = parsed.OutputText,
+                ModelId = parsed.ModelId ?? string.Empty,
+                FallbackUsed = parsed.Usage?.FallbackUsed ?? false,
+                InputTokens = parsed.Usage?.InputTokens ?? 0,
+                OutputTokens = parsed.Usage?.OutputTokens ?? 0,
+                TotalTokens = parsed.Usage?.TotalTokens ?? 0,
+                StopReason = parsed.Usage?.StopReason,
+                EstimatedCostUsd = ParseCost(parsed.EstimatedCostUsd),
+                ActualCostUsd = ParseCost(parsed.ActualCostUsd),
+                LatencyMs = latencyMs,
+                RawResponseBody = rawBody
+            });
         }
 
-        private static bool TryGetString(JsonElement element, string propertyName, out string? value)
-        {
-            if (element.ValueKind == JsonValueKind.Object
-                && element.TryGetProperty(propertyName, out var property)
-                && property.ValueKind == JsonValueKind.String)
-            {
-                value = property.GetString();
-                return value is not null;
-            }
-
-            value = null;
-            return false;
-        }
+        private static decimal? ParseCost(string? value) =>
+            decimal.TryParse(value, NumberStyles.Number, CultureInfo.InvariantCulture, out var parsed) ? parsed : null;
     }
 }
