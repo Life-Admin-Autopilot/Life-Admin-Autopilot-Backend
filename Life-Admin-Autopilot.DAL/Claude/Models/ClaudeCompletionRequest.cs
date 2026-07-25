@@ -17,5 +17,17 @@ namespace Life_Admin_Autopilot.DAL.Claude.Models
                 SystemPrompt = systemPrompt,
                 MaxTokens = maxTokens
             };
+
+        // For the Document Agent's file-upload flow (image/scanned-PDF field extraction).
+        // Presence of images routes this through the gateway's multimodal-chat endpoint.
+        public static ClaudeCompletionRequest ForImageExtraction(
+            string prompt,
+            IReadOnlyList<ClaudeImageAttachment> images,
+            int? maxTokens = null) =>
+            new()
+            {
+                Messages = new[] { new ClaudeMessage { Role = "user", Content = prompt, Images = images } },
+                MaxTokens = maxTokens
+            };
     }
 }

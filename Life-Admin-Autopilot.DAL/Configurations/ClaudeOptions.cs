@@ -8,6 +8,10 @@ namespace Life_Admin_Autopilot.DAL.Configurations
         // gateway's real scheme (see Claude_Code_Brief_Stories_1_2), not a typo to fix.
         public string ChatEndpointUrl { get; set; } = "http://apiaccess.iti.net.eg/api/v1/student/chat";
 
+        // Separate endpoint from ChatEndpointUrl - confirmed via the gateway docs'
+        // "Multimodal chat" example, not the same URL with a different body.
+        public string MultimodalEndpointUrl { get; set; } = "http://apiaccess.iti.net.eg/api/v1/student/multimodal-chat";
+
         // Mandated by the brief - do not default this to the gateway docs' example model.
         public string ModelId { get; set; } = "anthropic.claude-haiku-4-5-20251001-v1:0";
 

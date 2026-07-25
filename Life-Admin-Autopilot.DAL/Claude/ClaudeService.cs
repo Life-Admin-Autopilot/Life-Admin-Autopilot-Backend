@@ -27,9 +27,20 @@ namespace Life_Admin_Autopilot.DAL.Claude
             _options = options.Value;
         }
 
-        public async Task<Result<ClaudeCompletionResult>> GetCompletionAsync(
+        public Task<Result<ClaudeCompletionResult>> GetCompletionAsync(
             ClaudeCompletionRequest request,
             CancellationToken cancellationToken = default)
+        {
+            var hasImages = request.Messages.Any(m => m.Images is { Count: > 0 });
+
+            return hasImages
+                ? GetMultimodalCompletionAsync(request, cancellationToken)
+                : GetTextCompletionAsync(request, cancellationToken);
+        }
+
+        private Task<Result<ClaudeCompletionResult>> GetTextCompletionAsync(
+            ClaudeCompletionRequest request,
+            CancellationToken cancellationToken)
         {
             var wireRequest = new ClaudeChatWireRequest
             {
@@ -39,7 +50,38 @@ namespace Life_Admin_Autopilot.DAL.Claude
                 MaxTokens = request.MaxTokens ?? _options.DefaultMaxTokens
             };
 
-            using var httpRequest = new HttpRequestMessage(HttpMethod.Post, _options.ChatEndpointUrl)
+            return SendAsync(_options.ChatEndpointUrl, wireRequest, cancellationToken);
+        }
+
+        private Task<Result<ClaudeCompletionResult>> GetMultimodalCompletionAsync(
+            ClaudeCompletionRequest request,
+            CancellationToken cancellationToken)
+        {
+            var wireRequest = new ClaudeMultimodalWireRequest
+            {
+                ModelId = _options.ModelId,
+                Messages = request.Messages.Select(m => new ClaudeMultimodalWireMessage
+                {
+                    Role = m.Role,
+                    Text = m.Content,
+                    Images = m.Images?.Select(i => new ClaudeWireImage
+                    {
+                        Format = i.Format,
+                        DataBase64 = i.DataBase64
+                    }).ToList()
+                }).ToList(),
+                MaxTokens = request.MaxTokens ?? _options.DefaultMaxTokens
+            };
+
+            return SendAsync(_options.MultimodalEndpointUrl, wireRequest, cancellationToken);
+        }
+
+        private async Task<Result<ClaudeCompletionResult>> SendAsync<TWireRequest>(
+            string endpointUrl,
+            TWireRequest wireRequest,
+            CancellationToken cancellationToken)
+        {
+            using var httpRequest = new HttpRequestMessage(HttpMethod.Post, endpointUrl)
             {
                 Content = JsonContent.Create(wireRequest, options: WireSerializerOptions)
             };
@@ -85,8 +127,8 @@ namespace Life_Admin_Autopilot.DAL.Claude
             return new Error("CLAUDE_GATEWAY_ERROR", $"HTTP {(int)statusCode}: {rawBody}");
         }
 
-        // Shape confirmed empirically against the real gateway - see
-        // ClaudeChatWireResponse for the specific test that established this.
+        // Shape confirmed empirically against the real gateway for both /student/chat and
+        // /student/multimodal-chat - both return this same envelope.
         private static Result<ClaudeCompletionResult> ParseSuccessBody(string rawBody, long latencyMs)
         {
             ClaudeChatWireResponse? parsed;
