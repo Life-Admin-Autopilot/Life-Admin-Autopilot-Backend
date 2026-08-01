@@ -18,6 +18,7 @@ namespace Life_Admin_Autopilot_Backend
             builder.Services.AddMongoDb(builder.Configuration);
             builder.Services.AddClaudeService(builder.Configuration);
             builder.Services.AddPushNotifications(builder.Configuration);
+            builder.Services.AddSpeechServices(builder.Configuration);
             builder.Services.AddAuthorization();
 
             builder.Services.AddControllers();
@@ -25,6 +26,7 @@ namespace Life_Admin_Autopilot_Backend
             builder.Services.AddOpenApi(options =>
             {
                 options.AddDocumentTransformer<BearerSecuritySchemeTransformer>();
+                options.AddOperationTransformer<BearerSecurityRequirementTransformer>();
             });
             builder.Services.AddHealthChecks();
 
