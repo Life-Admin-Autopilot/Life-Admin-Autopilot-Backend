@@ -17,16 +17,16 @@ namespace Life_Admin_Autopilot.DAL.Extensions
                 .Bind(configuration.GetSection(SpeechOptions.SectionName))
                 .PostConfigure(options =>
                 {
-                    // The provider token comes from DEEPINFRA_TOKEN (an env var in real
+                    // The Hugging Face token comes from HF_TOKEN (an env var in real
                     // deployments, user-secrets locally) - never from appsettings.json.
-                    options.ApiKey = configuration["DEEPINFRA_TOKEN"] ?? string.Empty;
+                    options.ApiKey = configuration["HF_TOKEN"] ?? string.Empty;
                 });
 
             var maxRetryAttempts = configuration.GetValue($"{SpeechOptions.SectionName}:MaxRetryAttempts", 2);
-            var timeoutSeconds = configuration.GetValue($"{SpeechOptions.SectionName}:TimeoutSeconds", 15);
+            var timeoutSeconds = configuration.GetValue($"{SpeechOptions.SectionName}:TimeoutSeconds", 30);
 
             services
-                .AddHttpClient<ITranscriptionService, DeepInfraTranscriptionService>(client =>
+                .AddHttpClient<ITranscriptionService, NemotronTranscriptionService>(client =>
                 {
                     client.Timeout = TimeSpan.FromSeconds(timeoutSeconds);
                 })

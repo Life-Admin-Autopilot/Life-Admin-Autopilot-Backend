@@ -23,6 +23,10 @@ namespace Life_Admin_Autopilot.DAL.Speech.Models
 
         public const string RateLimited = "ASR_RATE_LIMITED";
 
+        // The account's included inference credits are used up. Distinct from rate
+        // limiting: waiting does not help, someone has to top the account up.
+        public const string QuotaExceeded = "ASR_QUOTA_EXCEEDED";
+
         public const string Unavailable = "ASR_UNAVAILABLE";
 
         // The provider did not answer in time. Kept separate from NetworkError because a

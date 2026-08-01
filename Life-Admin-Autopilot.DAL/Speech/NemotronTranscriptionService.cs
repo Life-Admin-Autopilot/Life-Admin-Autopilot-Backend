@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Net;
 using System.Net.Http.Headers;
+using System.Net.Http.Json;
 using System.Text.Json;
 using Life_Admin_Autopilot.DAL.Common;
 using Life_Admin_Autopilot.DAL.Configurations;
@@ -11,16 +12,20 @@ using Microsoft.Extensions.Options;
 
 namespace Life_Admin_Autopilot.DAL.Speech
 {
-    public class DeepInfraTranscriptionService : ITranscriptionService
+    // Transcribes with NVIDIA Nemotron 3.5 ASR through Hugging Face's Inference Providers
+    // router. Unlike an audio-capable LLM this is a real ASR: it transcribes what was said
+    // rather than paraphrasing it, and it keeps Egyptian dialect instead of normalising it
+    // into Modern Standard Arabic.
+    public class NemotronTranscriptionService : ITranscriptionService
     {
         private readonly HttpClient _httpClient;
         private readonly SpeechOptions _options;
-        private readonly ILogger<DeepInfraTranscriptionService> _logger;
+        private readonly ILogger<NemotronTranscriptionService> _logger;
 
-        public DeepInfraTranscriptionService(
+        public NemotronTranscriptionService(
             HttpClient httpClient,
             IOptions<SpeechOptions> options,
-            ILogger<DeepInfraTranscriptionService> logger)
+            ILogger<NemotronTranscriptionService> logger)
         {
             _httpClient = httpClient;
             _options = options.Value;
@@ -35,15 +40,32 @@ namespace Life_Admin_Autopilot.DAL.Speech
             {
                 return Fail(
                     SpeechErrorCodes.NotConfigured,
-                    "No ASR provider token is configured. Set DEEPINFRA_TOKEN.");
+                    "No transcription provider token is configured. Set HF_TOKEN.");
             }
 
-            using var content = await BuildMultipartContentAsync(request, cancellationToken);
-            using var httpRequest = new HttpRequestMessage(
-                HttpMethod.Post,
-                $"{_options.InferenceBaseUrl.TrimEnd('/')}/{_options.ModelId}")
+            string audioBase64;
+            using (var buffer = new MemoryStream())
             {
-                Content = content
+                await request.Audio.CopyToAsync(buffer, cancellationToken);
+                audioBase64 = Convert.ToBase64String(buffer.ToArray());
+            }
+
+            if (audioBase64.Length == 0)
+            {
+                return Fail(SpeechErrorCodes.NoAudio, "The uploaded audio is empty.");
+            }
+
+            // Anything outside the provider's fixed locale set is a 422, so the requested
+            // language is mapped onto it here rather than sent through as-is.
+            var language = LanguageNormalizer.Normalize(request.Language, _options.DefaultLanguage);
+
+            using var httpRequest = new HttpRequestMessage(HttpMethod.Post, _options.TranscriptionUrl)
+            {
+                Content = JsonContent.Create(new NemotronWireRequest
+                {
+                    AudioUrl = $"data:{request.ContentType};base64,{audioBase64}",
+                    Language = language
+                })
             };
             httpRequest.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _options.ApiKey);
 
@@ -63,7 +85,7 @@ namespace Life_Admin_Autopilot.DAL.Speech
             {
                 return Fail(
                     SpeechErrorCodes.Timeout,
-                    $"The ASR provider did not respond within {_options.TimeoutSeconds}s.");
+                    $"The transcription provider did not respond within {_options.TimeoutSeconds}s.");
             }
             catch (HttpRequestException ex)
             {
@@ -81,29 +103,8 @@ namespace Life_Admin_Autopilot.DAL.Speech
                     return Fail(error.Code, error.Message);
                 }
 
-                return ParseSuccessBody(rawBody, stopwatch.ElapsedMilliseconds);
+                return ParseSuccessBody(rawBody, language, stopwatch.ElapsedMilliseconds);
             }
-        }
-
-        // The audio is buffered rather than streamed straight through: a retry has to be
-        // able to re-send the same body, and a consumed upload stream cannot be replayed.
-        // Uploads are capped well below memory-pressure territory before they get here.
-        private async Task<MultipartFormDataContent> BuildMultipartContentAsync(
-            TranscriptionRequest request,
-            CancellationToken cancellationToken)
-        {
-            using var buffer = new MemoryStream();
-            await request.Audio.CopyToAsync(buffer, cancellationToken);
-
-            var audioContent = new ByteArrayContent(buffer.ToArray());
-            audioContent.Headers.ContentType = MediaTypeHeaderValue.Parse(request.ContentType);
-
-            return new MultipartFormDataContent
-            {
-                { audioContent, "audio", request.FileName },
-                { new StringContent(request.Language ?? _options.Language), "language" },
-                { new StringContent("transcribe"), "task" }
-            };
         }
 
         // Every failure is logged here, where the provider's own message is still intact.
@@ -124,34 +125,31 @@ namespace Life_Admin_Autopilot.DAL.Speech
             string? providerMessage = null;
             try
             {
-                var parsed = JsonSerializer.Deserialize<DeepInfraErrorResponse>(rawBody);
-                providerMessage = parsed?.Error?.Message ?? parsed?.Detail;
+                providerMessage = JsonSerializer.Deserialize<HuggingFaceErrorResponse>(rawBody)?.Describe();
             }
             catch (JsonException)
             {
-                // FastAPI also returns detail as an array of objects; fall back to the raw
-                // body rather than losing the reason entirely.
+                // Not JSON at all (an HTML error page from the router, say) - fall back to
+                // the raw body rather than losing the reason entirely.
             }
 
             var message = string.IsNullOrWhiteSpace(providerMessage)
-                ? $"HTTP {(int)statusCode}: {rawBody}"
-                : $"HTTP {(int)statusCode}: {providerMessage}";
+                ? $"HTTP {(int)statusCode}: {Truncate(rawBody)}"
+                : $"HTTP {(int)statusCode}: {Truncate(providerMessage)}";
 
             return new Error(MapErrorCode(statusCode), message);
         }
 
         private static string MapErrorCode(HttpStatusCode statusCode) => statusCode switch
         {
-            // The provider could not read the audio - wrong container, corrupt file, or
-            // not mono as the model card requires.
+            // "You have depleted your monthly included credits" - retrying will not help,
+            // and it is worth telling apart from a bad token when nothing transcribes.
+            HttpStatusCode.PaymentRequired => SpeechErrorCodes.QuotaExceeded,
             HttpStatusCode.BadRequest => SpeechErrorCodes.InvalidAudio,
             HttpStatusCode.UnprocessableEntity => SpeechErrorCodes.InvalidAudio,
             HttpStatusCode.RequestEntityTooLarge => SpeechErrorCodes.AudioTooLarge,
             HttpStatusCode.Unauthorized => SpeechErrorCodes.NotAuthorized,
             HttpStatusCode.Forbidden => SpeechErrorCodes.NotAuthorized,
-            // Out of credit reads as a payment problem, but it is the same operator fix as
-            // a bad token: nothing transcribes until someone tops the account up.
-            HttpStatusCode.PaymentRequired => SpeechErrorCodes.NotAuthorized,
             HttpStatusCode.TooManyRequests => SpeechErrorCodes.RateLimited,
             HttpStatusCode.RequestTimeout => SpeechErrorCodes.Timeout,
             HttpStatusCode.GatewayTimeout => SpeechErrorCodes.Timeout,
@@ -159,28 +157,32 @@ namespace Life_Admin_Autopilot.DAL.Speech
             _ => SpeechErrorCodes.GatewayError
         };
 
-        private Result<TranscriptionResult> ParseSuccessBody(string rawBody, long latencyMs)
+        // Provider bodies can be whole HTML pages; the log wants the reason, not the page.
+        private static string Truncate(string value) =>
+            value.Length <= 500 ? value : value[..500] + "...";
+
+        private Result<TranscriptionResult> ParseSuccessBody(string rawBody, string language, long latencyMs)
         {
-            DeepInfraTranscriptionWireResponse? parsed;
+            NemotronWireResponse? parsed;
             try
             {
-                parsed = JsonSerializer.Deserialize<DeepInfraTranscriptionWireResponse>(rawBody);
+                parsed = JsonSerializer.Deserialize<NemotronWireResponse>(rawBody);
             }
             catch (JsonException ex)
             {
                 return Fail(
                     SpeechErrorCodes.UnrecognizedResponseShape,
-                    $"The ASR provider returned a successful response that could not be parsed ({ex.Message}). Raw body: {rawBody}");
+                    $"The provider returned a successful response that could not be parsed ({ex.Message}). Raw body: {Truncate(rawBody)}");
             }
 
             if (parsed is null)
             {
                 return Fail(
                     SpeechErrorCodes.UnrecognizedResponseShape,
-                    $"The ASR provider returned an empty response body. Raw body: {rawBody}");
+                    $"The provider returned an empty response body. Raw body: {Truncate(rawBody)}");
             }
 
-            var text = parsed.Text?.Trim() ?? string.Empty;
+            var text = parsed.Output?.Trim() ?? string.Empty;
 
             // A successful call that heard nothing is still a dead end for the Planning
             // Agent, so it is reported as a handled failure rather than an empty task.
@@ -188,34 +190,33 @@ namespace Life_Admin_Autopilot.DAL.Speech
             {
                 return Fail(
                     SpeechErrorCodes.EmptyTranscript,
-                    "The ASR provider returned no speech for this audio.");
+                    "The provider returned no speech for this audio.");
+            }
+
+            if (parsed.Partial)
+            {
+                // Worth surfacing rather than silently returning half a command: the task
+                // built from it would be wrong in a way the user may not notice.
+                _logger.LogWarning(
+                    "The provider returned a partial transcript for a {Language} recording ({TranscriptLength} chars)",
+                    language,
+                    text.Length);
             }
 
             _logger.LogInformation(
-                "Transcribed {AudioSeconds}s of audio with {ModelId} in {LatencyMs}ms ({TranscriptLength} chars, language {Language})",
-                parsed.Duration,
+                "Transcribed {Language} audio with {ModelId} in {LatencyMs}ms ({TranscriptLength} chars)",
+                language,
                 _options.ModelId,
                 latencyMs,
-                text.Length,
-                parsed.Language ?? "unknown");
+                text.Length);
 
             return Result<TranscriptionResult>.Success(new TranscriptionResult
             {
                 Text = text,
-                DetectedLanguage = parsed.Language,
-                AudioDurationSeconds = parsed.Duration,
-                InferenceRuntimeMs = parsed.InferenceStatus?.RuntimeMs,
-                CostUsd = parsed.InferenceStatus?.Cost,
-                LatencyMs = latencyMs,
-                Segments = parsed.Segments?
-                    .Where(segment => !string.IsNullOrWhiteSpace(segment.Text))
-                    .Select(segment => new TranscriptionSegment
-                    {
-                        StartSeconds = segment.Start,
-                        EndSeconds = segment.End,
-                        Text = segment.Text!.Trim()
-                    })
-                    .ToList() ?? (IReadOnlyList<TranscriptionSegment>)Array.Empty<TranscriptionSegment>()
+                // Echoes what was asked for rather than what was detected: the provider
+                // does not report a detected language, so "auto" stays unresolved.
+                DetectedLanguage = language == LanguageNormalizer.Auto ? null : language,
+                LatencyMs = latencyMs
             });
         }
     }

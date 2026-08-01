@@ -4,32 +4,34 @@ namespace Life_Admin_Autopilot.DAL.Configurations
     {
         public const string SectionName = "Speech";
 
-        // DeepInfra's native inference API. The model id is appended to this base, so
-        // switching models is a configuration change, not a code change.
-        public string InferenceBaseUrl { get; set; } = "https://api.deepinfra.com/v1/inference";
+        // Hugging Face's Inference Providers router, on the fal-ai route. The model is not
+        // served by hf-inference, deepinfra or together through the router - fal is the
+        // only provider that answers, confirmed by probing all four.
+        public string TranscriptionUrl { get; set; } =
+            "https://router.huggingface.co/fal-ai/nvidia/nemotron-asr-multilingual/asr";
 
-        // Nemotron ASR, chosen over Azure Speech by the team. Streaming-capable and
-        // multilingual, which matters because the app supports English and Arabic.
-        public string ModelId { get; set; } = "nvidia/Nemotron-3.5-ASR-Streaming-Multilingual-0.6b";
+        // Logging and diagnostics only - the route above already pins the model.
+        public string ModelId { get; set; } = "nvidia/nemotron-3.5-asr-streaming-0.6b";
 
-        // "auto" lets the model detect the language; a two-letter ISO 639-1 code (en, ar)
-        // pins it. Auto is the default so an Arabic command is not forced into English.
-        public string Language { get; set; } = "auto";
+        // "auto" is fine for English but collapses into Latin transliteration on Arabic
+        // ("Fakarnia grad..."), so the client should always send the user's locale rather
+        // than relying on detection. See LanguageNormalizer.
+        public string DefaultLanguage { get; set; } = "auto";
 
-        // NFR-1 gives the whole voice-to-task chain 5 seconds, and transcription is only
-        // the first hop - a request still running after this is worth abandoning.
-        public int TimeoutSeconds { get; set; } = 15;
+        // A spoken command is seconds long, and the audio travels as base64 inside JSON,
+        // which inflates it by a third.
+        public long MaxAudioBytes { get; set; } = 5 * 1024 * 1024;
+
+        // NFR-1 gives the whole voice-to-task chain 5 seconds and transcription is only
+        // the first hop, but this call crosses a router to a third-party provider.
+        public int TimeoutSeconds { get; set; } = 30;
 
         // Deliberately lower than the Claude/FCM services: a user is waiting on this call,
         // so a long retry chain costs more than it recovers.
         public int MaxRetryAttempts { get; set; } = 2;
 
-        // A spoken command is seconds long. This is a sanity ceiling to reject junk
-        // uploads before they cost an inference call, not a real recording limit.
-        public long MaxAudioBytes { get; set; } = 10 * 1024 * 1024;
-
-        // The model card requires mono WAV; MP3 is accepted by the endpoint and kept here
-        // for flexibility. Anything else is rejected before it reaches the provider.
+        // Stereo 48kHz uploads transcribe identically to mono 16kHz ones, so the client is
+        // not required to convert and the backend does no audio processing.
         public List<string> AllowedContentTypes { get; set; } = new()
         {
             "audio/wav",
@@ -40,8 +42,8 @@ namespace Life_Admin_Autopilot.DAL.Configurations
             "audio/mp3"
         };
 
-        // Never set via appsettings.json - populated from the DEEPINFRA_TOKEN
-        // configuration key (env var in real deployments, user-secrets locally).
+        // Never set via appsettings.json - populated from the HF_TOKEN configuration key
+        // (env var in real deployments, user-secrets locally).
         public string ApiKey { get; set; } = string.Empty;
     }
 }

@@ -5,32 +5,19 @@ namespace Life_Admin_Autopilot.DAL.Speech.Models
         // What the user said. This is the Planning Agent's input.
         public string Text { get; set; } = string.Empty;
 
-        // Present when the model reports it - with Language set to "auto" this is how the
-        // caller learns whether the user spoke English or Arabic.
+        // Null on the Voxtral route, which does not report a detected language. Kept on
+        // the model because it is provider-dependent, not because it is always available.
         public string? DetectedLanguage { get; set; }
 
-        // Length of the audio as the provider measured it, not of our request.
+        // Length of the audio as the provider measured it, when it reports one.
         public double? AudioDurationSeconds { get; set; }
-
-        // Provider-side inference time, when reported. Useful next to LatencyMs: a big gap
-        // between them is queueing or network, not model time.
-        public long? InferenceRuntimeMs { get; set; }
-
-        public decimal? CostUsd { get; set; }
 
         public long LatencyMs { get; set; }
 
-        // Kept for the Planning Agent's benefit: per-segment text lets it split a long
-        // command without re-running inference. Empty when the provider returns none.
-        public IReadOnlyList<TranscriptionSegment> Segments { get; set; } = Array.Empty<TranscriptionSegment>();
-    }
+        // Prompt tokens scale with audio length, so this is the practical signal for how
+        // close a recording is to the model's context limit.
+        public int? PromptTokens { get; set; }
 
-    public class TranscriptionSegment
-    {
-        public double StartSeconds { get; set; }
-
-        public double EndSeconds { get; set; }
-
-        public string Text { get; set; } = string.Empty;
+        public int? CompletionTokens { get; set; }
     }
 }
