@@ -25,9 +25,12 @@ namespace Life_Admin_Autopilot_Backend.Controllers
         [Consumes("multipart/form-data")]
         [ProducesResponseType(typeof(TranscriptionResponse), StatusCodes.Status200OK)]
         [ProducesResponseType(typeof(TranscriptionResponse), StatusCodes.Status400BadRequest)]
-        public async Task<IActionResult> Transcribe(IFormFile audio, [FromForm] string? language, CancellationToken cancellationToken)
+        // Nullable on purpose: a non-nullable IFormFile makes [ApiController]'s model
+        // validation reject a missing file with its own ProblemDetails before this method
+        // runs, which would contradict the documented ASR_NO_AUDIO contract.
+        public async Task<IActionResult> Transcribe(IFormFile? audio, [FromForm] string? language, CancellationToken cancellationToken)
         {
-            if (audio is null)
+            if (audio is null || audio.Length == 0)
             {
                 return BadRequest(TranscriptionResponse.Fail(
                     SpeechErrorCodes.NoAudio,

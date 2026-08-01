@@ -26,6 +26,7 @@ namespace Life_Admin_Autopilot_Backend
             builder.Services.AddOpenApi(options =>
             {
                 options.AddDocumentTransformer<BearerSecuritySchemeTransformer>();
+                options.AddOperationTransformer<BearerSecurityRequirementTransformer>();
             });
             builder.Services.AddHealthChecks();
 
