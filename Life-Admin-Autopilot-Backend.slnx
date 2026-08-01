@@ -2,4 +2,5 @@
   <Project Path="Life-Admin-Autopilot-Backend/Life-Admin-Autopilot.PL.csproj" />
   <Project Path="Life-Admin-Autopilot.BLL/Life-Admin-Autopilot.BLL.csproj" Id="8de3872a-03f8-488e-85fd-c36e071fe39f" />
   <Project Path="Life-Admin-Autopilot.DAL/Life-Admin-Autopilot.DAL.csproj" Id="92463e9a-00ac-48de-a3cb-00fef564f271" />
+  <Project Path="Life-Admin-Autopilot.Tests/Life-Admin-Autopilot.Tests.csproj" />
 </Solution>

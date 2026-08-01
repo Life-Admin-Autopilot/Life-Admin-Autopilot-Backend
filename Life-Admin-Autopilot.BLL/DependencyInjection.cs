@@ -14,6 +14,7 @@ namespace Life_Admin_Autopilot.BLL
 
             services.AddScoped<IAuthService, AuthService>();
             services.AddScoped<IJwtTokenService, JwtTokenService>();
+            services.AddScoped<INotificationService, NotificationService>();
 
             return services;
         }
