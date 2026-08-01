@@ -137,6 +137,7 @@ namespace Life_Admin_Autopilot.BLL.Services
             SpeechErrorCodes.InvalidAudio => "That recording could not be read. Please record again in mono WAV.",
             SpeechErrorCodes.Timeout => "Transcription took too long. Please try again.",
             SpeechErrorCodes.RateLimited => "Voice input is busy right now. Please try again in a moment.",
+            SpeechErrorCodes.QuotaExceeded => "Voice input is not available right now.",
             SpeechErrorCodes.Unavailable => "Voice input is temporarily unavailable. Please try again shortly.",
             SpeechErrorCodes.NetworkError => "Voice input is temporarily unreachable. Please try again shortly.",
             SpeechErrorCodes.NotAuthorized => "Voice input is not available right now.",

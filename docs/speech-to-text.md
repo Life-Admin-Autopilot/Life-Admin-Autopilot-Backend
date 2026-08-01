@@ -1,73 +1,128 @@
 # Speech-to-text (ASR)
 
-Spoken commands are transcribed by **`nvidia/Nemotron-3.5-ASR-Streaming-Multilingual-0.6b`**,
-hosted on **DeepInfra**, called over its native inference API.
+Spoken commands are transcribed by **`nvidia/nemotron-3.5-asr-streaming-0.6b`**, reached
+through **Hugging Face's Inference Providers router** on the **fal-ai** route.
 
-> **Provider decision.** SRS §8.4 and `architecture_v3.png` still record the ASR/TTS choice
-> as *Azure Speech*. The team has since chosen Nemotron on DeepInfra instead — multilingual
-> (the app ships English and Arabic) and ~$0.0002/audio-minute. **Those two documents need
-> updating to match**, otherwise the SRS and the code disagree. TTS (FR-2.6, a Should-Have)
-> is a separate story and is not covered here.
+> **Provider decision.** SRS §8.4 and `architecture_v3.png` record this as *Azure Speech*.
+> **Both need updating.** Azure Speech was never wired up. Two alternatives were built and
+> discarded first; the reasoning is kept below because it is the justification for the
+> current choice, and because it will otherwise be re-litigated.
 
-## How it fits together
+## Why this provider
+
+| Candidate | Outcome |
+| --- | --- |
+| **Nemotron 3.5 ASR via HF/fal** | ✅ What we use. Real ASR, transcribes verbatim, keeps Egyptian dialect. |
+| Voxtral on the ITI gateway | ❌ Free and on the approved list, but it is an audio-capable **LLM**, not an ASR. It paraphrased Egyptian Arabic into MSA and, with no language hint, silently **translated it into English**. One test turned "renew the passport" into "go *fetch* the passport" — a wrong task, created silently, with nothing for FR-3.4's confidence gate to catch. |
+| `amazon.nova-2-sonic-v1:0` | ❌ Gateway refuses it: `REGION_NOT_ALLOWED`. |
+| DeepInfra (direct) | ❌ Same model, but requires a funded account. |
+
+The failure modes differ in kind, which is the point: when Nemotron is wrong it is wrong
+*phonetically* (`الإصباح` for `الأسبوع`) — visibly garbled, and the user catches it at the
+confirmation step. Voxtral was fluently, confidently wrong.
+
+## ⚠️ Current blocker: credits
+
+The Hugging Face free tier is exhausted. Calls now return:
 
 ```
-mobile app ──(multipart WAV)──► POST /api/speech/transcribe ──► ISpeechToTextService ──► DeepInfra
-                                                                        ▲
-                                    /api/planning/propose ──────────────┘
-                                    (voice input calls it in-process, no second HTTP hop)
+402 — "You have depleted your monthly included credits."
 ```
 
-`ISpeechToTextService` (BLL) is the seam the rest of the backend transcribes through. The
-Planning Agent's `propose` path should inject it directly rather than calling the HTTP
-endpoint — the endpoint exists so the client can transcribe on its own and so the flow is
-testable by hand.
+The backend handles this cleanly (`ASR_QUOTA_EXCEEDED` → HTTP 503, logged, no crash), but
+**nothing will transcribe until the account has credits** — HF PRO or pre-paid. This must be
+sorted before any demo. It is not a code problem and no code change fixes it.
 
-`ITranscriptionService` (DAL) is the provider transport and is the only thing allowed to
-call DeepInfra. Swapping providers means one new implementation of that interface; nothing
-above it changes.
+## Language handling — the part that matters for Arabic
 
-## Audio format — read this before recording on the client
+**Auto-detection is not usable for Arabic.** With `language` unset, an Egyptian Arabic
+recording came back as `Fakarnia gradسبور الإصباح جايز.` — a mix of Latin transliteration
+and broken Arabic. With `ar-AR` pinned, the same audio transcribed properly.
 
-The model card requires **mono WAV**. MP3 is accepted by the endpoint and is allowed in
-config, but AAC/M4A — **what Capacitor's voice recorder produces by default** — is not.
-The backend rejects it up front with `ASR_UNSUPPORTED_FORMAT` rather than letting the
-provider fail confusingly.
+So the client **must** send the user's locale. FR-1.3 already stores `LocalePreference` on
+the user, so the value exists — it just has to reach this endpoint.
 
-So the voice recording story must either record WAV directly or transcode before upload.
-16 kHz mono 16-bit is the sweet spot for size and accuracy:
+The provider accepts exactly 41 locale strings and rejects anything else with a `422`, so
+[`LanguageNormalizer`](../Life-Admin-Autopilot.DAL/Speech/LanguageNormalizer.cs) maps client
+locales onto that set before the call:
+
+| Client sends | Sent to provider | Why |
+| --- | --- | --- |
+| `ar-EG`, `ar`, `ar_EG` | `ar-AR` | **There is no `ar-EG`.** Egyptian users' locale must resolve to `ar-AR` or Arabic stops working entirely. |
+| `en`, `en-AU` | `en-US` | Nearest supported region for the language. |
+| `xx-XX`, empty | `auto` | Unknown locales still transcribe, just without the hint. |
+
+## Audio format
+
+WAV or MP3. **Stereo 48 kHz passes through fine** — verified against the live provider,
+producing an identical transcript to a mono 16 kHz conversion of the same recording. The
+backend therefore does **no** audio processing, and the client does not need to downmix or
+resample.
+
+AAC/M4A — Capacitor's recorder default — is **not** accepted, and is rejected up front with
+`ASR_UNSUPPORTED_FORMAT`. The recording story must record WAV, or transcode:
 
 ```bash
 ffmpeg -i recording.m4a -ar 16000 -ac 1 -c:a pcm_s16le command.wav
 ```
 
-## Configuration
+Audio travels as a base64 data URI inside JSON, which inflates it by a third. Uploads are
+capped at 5 MB — a voice command should be seconds, not minutes.
 
-`appsettings.json`:
+## How it fits together
+
+```
+mobile app ──(multipart WAV)──► POST /api/speech/transcribe ──► ISpeechToTextService ──► HF router ──► fal ──► Nemotron
+                                                                        ▲
+                                    /api/planning/propose ──────────────┘
+                                    (voice input calls it in-process, no second HTTP hop)
+```
+
+`ISpeechToTextService` (BLL) is the seam the rest of the backend transcribes through — the
+Planning Agent's `propose` path should inject it directly. `ITranscriptionService` (DAL) is
+the transport and the only thing that talks to the provider. Three providers have now been
+swapped behind that interface without anything above it changing.
+
+## The request shape
+
+Neither multipart nor a raw-bytes body works on this route — both are rejected. The audio
+must be a **data URI inside JSON**:
+
+```json
+{ "audio_url": "data:audio/wav;base64,<...>", "language": "ar-AR" }
+```
+
+The response is fal's own shape, **not** the `{"text": ...}` that Hugging Face's task
+documentation describes — the router passes the provider's body straight back:
+
+```json
+{ "output": "Renew my passport next Friday.", "partial": false }
+```
+
+A test asserts this structure so a refactor cannot quietly break it.
+
+## Configuration
 
 ```json
 "Speech": {
-  "InferenceBaseUrl": "https://api.deepinfra.com/v1/inference",
-  "ModelId": "nvidia/Nemotron-3.5-ASR-Streaming-Multilingual-0.6b",
-  "Language": "auto",
-  "TimeoutSeconds": 15,
+  "TranscriptionUrl": "https://router.huggingface.co/fal-ai/nvidia/nemotron-asr-multilingual/asr",
+  "ModelId": "nvidia/nemotron-3.5-asr-streaming-0.6b",
+  "DefaultLanguage": "auto",
+  "TimeoutSeconds": 30,
   "MaxRetryAttempts": 2,
-  "MaxAudioBytes": 10485760
+  "MaxAudioBytes": 5242880
 }
 ```
 
-`Language: "auto"` lets the model detect English vs Arabic; a request can override it with
-a `language` form field (`en`, `ar`).
-
-The token never goes in `appsettings.json` — same convention as `SBG_API_KEY` and the FCM
-key:
+The token comes from `HF_TOKEN` — never `appsettings.json`. It must be a **fine-grained**
+token with *"Make calls to Inference Providers"* permission; a plain read token will not work.
 
 ```powershell
-dotnet user-secrets set "DEEPINFRA_TOKEN" "<your DeepInfra token>" --project Life-Admin-Autopilot-Backend
+dotnet user-secrets set "HF_TOKEN" "hf_..." --project Life-Admin-Autopilot-Backend
 ```
 
-Get the token from https://deepinfra.com/dash/api_keys. With no token set the API still
-starts and transcription returns `ASR_NOT_CONFIGURED` (HTTP 503) instead of throwing.
+⚠️ User secrets only load in the **Development** environment. Deployments must supply
+`HF_TOKEN` as a real environment variable.
 
 ## API
 
@@ -75,77 +130,70 @@ starts and transcription returns `ASR_NOT_CONFIGURED` (HTTP 503) instead of thro
 
 | Field | Required | Notes |
 | --- | --- | --- |
-| `audio` | yes | The recording. Mono WAV (or MP3). |
-| `language` | no | `en`, `ar`, … Overrides `Speech:Language` for this call. |
+| `audio` | yes | WAV or MP3. Stereo and any sample rate are fine. |
+| `language` | no — **but send it** | The user's locale (`ar-EG`, `en-US`). Omitting it means auto-detect, which is unreliable for Arabic. |
 
 ```bash
 curl -X POST https://localhost:7276/api/speech/transcribe \
   -H "Authorization: Bearer $ACCESS_TOKEN" \
-  -F "audio=@command.wav;type=audio/wav"
+  -F "audio=@command.wav;type=audio/wav" -F "language=ar-EG"
 ```
-
-Success — `200`:
 
 ```json
-{
-  "succeeded": true,
-  "transcript": "Renew my passport next Friday",
-  "detectedLanguage": "en",
-  "audioDurationSeconds": 3.2,
-  "latencyMs": 412
-}
+{ "succeeded": true, "transcript": "Renew my passport next Friday.",
+  "detectedLanguage": "ar-AR", "latencyMs": 1226 }
 ```
 
-Failure — same envelope with `succeeded: false`, an `errorCode` and a message that is safe
-to show the user.
+`detectedLanguage` echoes the locale actually **used**, not one the provider detected — it
+is `null` when the call ran as `auto`.
 
 ## Error handling
 
-No ASR failure reaches the caller as an exception (NFR-8). Every failure is logged with the
-provider's own wording, and the user-facing message is a rewritten, safe one — provider
-messages can contain raw HTTP bodies. **The transcript itself is never logged**; only its
-length, timing and detected language are.
+No ASR failure reaches the caller as an exception (NFR-8). Failures are logged with the
+provider's own wording; the user-facing message is a rewritten, safe one. **The transcript
+is never logged** — only its length, timing and language.
 
 | Code | Cause | HTTP |
 | --- | --- | --- |
 | `ASR_NO_AUDIO` | Nothing uploaded | 400 |
 | `ASR_AUDIO_TOO_LARGE` | Over `MaxAudioBytes` | 400 |
 | `ASR_UNSUPPORTED_FORMAT` | Not WAV/MP3 (e.g. Capacitor's default AAC) | 400 |
-| `ASR_EMPTY_TRANSCRIPT` | Call succeeded, no speech heard (silence, dead mic) | 400 |
-| `ASR_INVALID_AUDIO` | Provider could not read the file | 400 |
+| `ASR_EMPTY_TRANSCRIPT` | Call succeeded, no speech heard | 400 |
+| `ASR_INVALID_AUDIO` | Provider rejected the request or the audio | 400 |
 | `ASR_TIMEOUT` | No response within `TimeoutSeconds` | 504 |
-| `ASR_RATE_LIMITED` | Provider throttled us | 429 |
-| `ASR_NOT_AUTHORIZED` | Bad token, or the account is out of credit | 502 |
+| `ASR_RATE_LIMITED` | Throttled | 429 |
+| `ASR_QUOTA_EXCEEDED` | **Included credits used up** — waiting does not help | 503 |
+| `ASR_NOT_AUTHORIZED` | Bad or under-permissioned token | 502 |
 | `ASR_UNAVAILABLE` | Provider 5xx | 502 |
 | `ASR_NETWORK_ERROR` | Provider unreachable | 502 |
-| `ASR_NOT_CONFIGURED` | No `DEEPINFRA_TOKEN` in this environment | 503 |
+| `ASR_NOT_CONFIGURED` | No `HF_TOKEN` in this environment | 503 |
 
-Only transient faults (5xx, timeouts, network) are retried — twice, 250 ms apart. A user is
-waiting, so recovery is deliberately quick-or-not-at-all; the audio is buffered before the
-first attempt so a retry can actually re-send it. Bad audio and auth failures are never
-retried because they cannot succeed.
+Only transient faults are retried — twice, 250 ms apart. Quota, auth and bad-audio failures
+are never retried because they cannot succeed. A caller cancelling propagates as a
+cancellation and is **not** logged as a provider timeout. A `partial: true` response is
+returned but logged as a warning: half a command would build a wrong task silently.
 
-A caller cancelling (the user backing out of the screen) propagates as a cancellation and is
-**not** logged as a provider timeout.
+## Verification status
 
-## Manual test
+Verified end-to-end through `NemotronTranscriptionService` against the live provider:
 
-**AC 1 — a clear sentence in a quiet room transcribes with no major word errors:**
+| Audio | Locale | Result |
+| --- | --- | --- |
+| English, TTS-generated | auto | ✅ `Renew my passport next Friday.` — word-perfect |
+| Egyptian Arabic, `Recording.wav` | `ar-EG`→`ar-AR` | ⚠️ `عندي امتحان ماث الأسبوع الجاي عزب أحضر له.` — dialect preserved, ~1 word wrong in 8 |
+| Egyptian Arabic, `myrecording.wav` | `ar-EG`→`ar-AR` | ❌ `فقن جديد الباسبور لإسباق جاي.` — badly garbled |
 
-1. Set `DEEPINFRA_TOKEN`, start the API, get an access token from `/api/auth/login`.
-2. Record one clear sentence in a quiet room, e.g. *"Renew my passport next Friday."*
-   Convert to mono WAV with the `ffmpeg` command above.
-3. `curl` it as shown, or use Swagger's file picker on `/api/speech/transcribe`.
-4. **Expected:** `200`, `transcript` matches what you said, `latencyMs` comfortably inside
-   NFR-1's 5-second budget for the whole voice-to-task chain.
+Latency 1.2–1.7 s, leaving ~3.3 s of NFR-1's 5-second voice-to-task budget.
 
-**AC 2 — a failed or timed-out call is handled, not a crash:**
+**Arabic quality is recording-dependent and not yet signed off.** Two samples is not enough
+to conclude, and the two disagree sharply. The likely difference is recording quality, which
+AC 1 scopes to "a quiet environment" — but that needs confirming with more samples before
+Arabic voice input can be called done. English is solid.
 
-5. Stop the network (or set `InferenceBaseUrl` to an unroutable host) and repeat.
-   **Expected:** `502` with `ASR_NETWORK_ERROR` and a warning in the log — no 500, no stack
-   trace.
-6. Set `"TimeoutSeconds": 1` and send a longer recording. **Expected:** `504` with
-   `ASR_TIMEOUT`.
-7. Upload an `.m4a` straight from a phone. **Expected:** `400` with
-   `ASR_UNSUPPORTED_FORMAT` and a message naming mono WAV.
-8. Upload a few seconds of silence. **Expected:** `400` with `ASR_EMPTY_TRANSCRIPT`.
+**Still to do:**
+
+1. Restore HF credits — nothing works without them.
+2. Record 5–10 Egyptian Arabic commands in a quiet room, close to the mic, and measure how
+   many transcribe usably.
+3. If the failure rate stays high, Azure Speech is the fallback: it has an explicit `ar-EG`
+   locale and a renewing free tier, and only the transport class would change.

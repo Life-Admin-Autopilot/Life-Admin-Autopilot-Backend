@@ -56,7 +56,10 @@ namespace Life_Admin_Autopilot_Backend.Controllers
             _ when SpeechErrorCodes.IsClientError(errorCode) => StatusCodes.Status400BadRequest,
             SpeechErrorCodes.Timeout => StatusCodes.Status504GatewayTimeout,
             SpeechErrorCodes.RateLimited => StatusCodes.Status429TooManyRequests,
+            // Both mean "correctly configured or not, this deployment cannot transcribe
+            // right now" - an operator has to act, so retrying the request is pointless.
             SpeechErrorCodes.NotConfigured => StatusCodes.Status503ServiceUnavailable,
+            SpeechErrorCodes.QuotaExceeded => StatusCodes.Status503ServiceUnavailable,
             _ => StatusCodes.Status502BadGateway
         };
     }
