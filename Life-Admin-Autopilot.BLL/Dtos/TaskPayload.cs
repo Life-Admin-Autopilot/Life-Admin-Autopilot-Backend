@@ -5,7 +5,7 @@ using System.Text;
 
 namespace Life_Admin_Autopilot.BLL.Dtos
 {
-    public class CreateUserTaskRequest
+    public class TaskPayload
     {
         public string UserId { get; set; }
         public string Title { get; set; }

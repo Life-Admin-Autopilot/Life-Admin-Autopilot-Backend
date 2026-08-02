@@ -21,7 +21,7 @@ namespace Life_Admin_Autopilot_Backend.Controllers
 
         [HttpPost]
         public async Task<IActionResult> Create(
-            CreateUserTaskRequest request)
+            TaskPayload request)
         {
             var userTask = new UserTask
             {
