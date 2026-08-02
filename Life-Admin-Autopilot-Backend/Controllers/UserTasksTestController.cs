@@ -1,4 +1,5 @@
-﻿using Life_Admin_Autopilot.DAL.Entities;
+﻿using Life_Admin_Autopilot.BLL.Dtos;
+using Life_Admin_Autopilot.DAL.Entities;
 using Life_Admin_Autopilot.DAL.Repositories;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
@@ -20,9 +21,20 @@ namespace Life_Admin_Autopilot_Backend.Controllers
 
         [HttpPost]
         public async Task<IActionResult> Create(
-            UserTask task)
+            CreateUserTaskRequest request)
         {
-            var result = await _taskRepository.CreateAsync(task);
+            var userTask = new UserTask
+            {
+                UserId = request.UserId,
+                Title = request.Title,
+                DueDate = request.DueDate,
+                Category = request.Category,
+                Priority = request.Priority,
+                SourceType = request.SourceType,
+                Status = "Pending"
+            };
+
+            var result = await _taskRepository.CreateAsync(userTask);
 
             return Ok(result);
         }

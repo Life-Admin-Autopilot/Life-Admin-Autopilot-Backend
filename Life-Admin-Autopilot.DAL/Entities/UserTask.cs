@@ -24,6 +24,13 @@ namespace Life_Admin_Autopilot.DAL.Entities
         [BsonElement("Status")]
         public string Status { get; set; }
 
+        [BsonElement("Category")]
+        public string Category { get; set; }
+
+        [BsonElement("Priority")]
+        [BsonRepresentation(BsonType.String)]
+        public UserTaskPriority Priority { get; set; }
+
         [BsonElement("SourceType")]
         public string SourceType { get; set; }
     }
