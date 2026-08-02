@@ -43,6 +43,8 @@ namespace Life_Admin_Autopilot.DAL.Extensions
 
             services.AddScoped<IDocumentRepository,DocumentRepository>();
 
+            services.AddScoped<IContentChunksRepository, ContentChunksRepository>();
+
             return services;
         }
     }

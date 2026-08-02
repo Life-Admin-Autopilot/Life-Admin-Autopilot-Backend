@@ -14,12 +14,15 @@ namespace Life_Admin_Autopilot.BLL.Services
     {
         private readonly IUserTaskRepository _taskRepository;
         private readonly IDocumentRepository _documentRepository;
+        private readonly IEmbeddingService _embeddingService;
 
         public CommitService(
-            IUserTaskRepository taskRepository, IDocumentRepository documentRepository)
+            IUserTaskRepository taskRepository, IDocumentRepository documentRepository,
+            IEmbeddingService embeddingService)
         {
             _taskRepository = taskRepository;
             _documentRepository = documentRepository;
+            _embeddingService = embeddingService;
         }
         public async Task<CommitTaskResponse> CommitTaskAndDocumentAsync(CommitTaskRequest request)
         {
@@ -61,7 +64,7 @@ namespace Life_Admin_Autopilot.BLL.Services
                 }
 
                 // Generate embeddings for task and document
-
+                await _embeddingService.EmbedAsync(userTask, document);
 
                 return new CommitTaskResponse { Task = userTask, Document = document != null ? new Document
                 {

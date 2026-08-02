@@ -17,6 +17,14 @@ namespace Life_Admin_Autopilot.BLL
             services.AddScoped<INotificationService, NotificationService>();
             services.AddScoped<ISpeechToTextService, SpeechToTextService>();
             services.AddScoped<ICommitService, CommitService>();
+            services.AddScoped<IEmbeddingService, EmbeddingService>();
+
+            services
+            .AddOptions<HuggingFaceSettings>()
+            .Bind(configuration.GetSection(HuggingFaceSettings.SectionName));
+
+            services.AddHttpClient<IEmbeddingProvider, HuggingFaceEmbeddingProvider>();
+            
 
             return services;
         }
