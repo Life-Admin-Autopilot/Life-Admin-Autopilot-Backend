@@ -18,6 +18,7 @@ namespace Life_Admin_Autopilot.BLL
             services.AddScoped<ISpeechToTextService, SpeechToTextService>();
             services.AddScoped<ICommitService, CommitService>();
             services.AddScoped<IEmbeddingService, EmbeddingService>();
+            services.AddScoped<IUserTaskService, UserTaskService>();
 
             services
             .AddOptions<HuggingFaceSettings>()

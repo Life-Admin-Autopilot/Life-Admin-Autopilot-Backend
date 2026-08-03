@@ -1,41 +1,33 @@
 ﻿using Life_Admin_Autopilot.BLL.Dtos;
+using Life_Admin_Autopilot.BLL.Interfaces;
 using Life_Admin_Autopilot.DAL.Entities;
 using Life_Admin_Autopilot.DAL.Repositories;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
+using System.Security.Claims;
 using static Microsoft.EntityFrameworkCore.DbLoggerCategory;
 
 namespace Life_Admin_Autopilot_Backend.Controllers
 {
     [Route("api/[controller]")]
     [ApiController]
-    public class UserTasksTestController : ControllerBase
+    [Authorize]
+    public class UserTasksController : ControllerBase
     {
-        private readonly IUserTaskRepository _taskRepository;
+        private readonly IUserTaskService _taskService;
 
-        public UserTasksTestController(
-            IUserTaskRepository taskRepository)
+        public UserTasksController(
+            IUserTaskService taskService)
         {
-            _taskRepository = taskRepository;
+            _taskService = taskService;
         }
 
         [HttpPost]
         public async Task<IActionResult> Create(
             TaskPayload request)
         {
-            var userTask = new UserTask
-            {
-                UserId = request.UserId,
-                Title = request.Title,
-                DueDate = request.DueDate,
-                Category = request.Category,
-                Priority = request.Priority,
-                SourceType = request.SourceType,
-                Status = "Pending"
-            };
-
-            var result = await _taskRepository.CreateAsync(userTask);
-
+            var result = await _taskService.CreateAsync(request);
             return Ok(result);
         }
 
@@ -43,7 +35,7 @@ namespace Life_Admin_Autopilot_Backend.Controllers
         public async Task<IActionResult> GetById(
             string id)
         {
-            var result = await _taskRepository.GetByIdAsync(id);
+            var result = await _taskService.GetByIdAsync(id,CurrentUserId);
 
             if (result is null)
             {
@@ -57,7 +49,7 @@ namespace Life_Admin_Autopilot_Backend.Controllers
         public async Task<IActionResult> GetAllByUserId(
             string userId)
         {
-            var result = await _taskRepository.GetAllByUserIdAsync(userId);
+            var result = await _taskService.GetAllByUserIdAsync(userId);
 
             return Ok(result);
         }
@@ -67,7 +59,7 @@ namespace Life_Admin_Autopilot_Backend.Controllers
             string id,
             UserTask task)
         {
-            var updated = await _taskRepository.UpdateAsync(id, task);
+            var updated = await _taskService.UpdateAsync(id, task,CurrentUserId);
 
             if (!updated)
             {
@@ -81,7 +73,7 @@ namespace Life_Admin_Autopilot_Backend.Controllers
         public async Task<IActionResult> Delete(
             string id)
         {
-            var deleted = await _taskRepository.DeleteAsync(id);
+            var deleted = await _taskService.DeleteAsync(id,CurrentUserId);
 
             if (!deleted)
             {
@@ -90,5 +82,9 @@ namespace Life_Admin_Autopilot_Backend.Controllers
 
             return NoContent();
         }
+        private string CurrentUserId =>
+            User.FindFirstValue(ClaimTypes.NameIdentifier)
+            ?? User.FindFirstValue("sub")
+            ?? string.Empty;
     }
 }

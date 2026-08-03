@@ -25,10 +25,10 @@ namespace Life_Admin_Autopilot.DAL.Repositories
             return task;
         }
 
-        public async Task<UserTask?> GetByIdAsync(string id)
+        public async Task<UserTask?> GetByIdAsync(string id, string userId)
         {
             return await _tasks
-                .Find(task => task.Id == id)
+                .Find(task => task.Id == id && task.UserId == userId)
                 .FirstOrDefaultAsync();
         }
 
@@ -41,21 +41,22 @@ namespace Life_Admin_Autopilot.DAL.Repositories
 
         public async Task<bool> UpdateAsync(
             string id,
-            UserTask task)
+            UserTask task,
+            string userId)
         {
             task.Id = id;
 
             var result = await _tasks.ReplaceOneAsync(
-                task => task.Id == id,
+                task => task.Id == id && task.UserId == userId,
                 task);
 
             return result.ModifiedCount > 0;
         }
 
-        public async Task<bool> DeleteAsync(string id)
+        public async Task<bool> DeleteAsync(string id, string userId)
         {
             var result = await _tasks.DeleteOneAsync(
-                task => task.Id == id);
+                task => task.Id == id && task.UserId == userId);
 
             // delete documents related to deleted task
             if(result.DeletedCount > 0)

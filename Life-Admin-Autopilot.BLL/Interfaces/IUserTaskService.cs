@@ -1,13 +1,14 @@
-﻿using Life_Admin_Autopilot.DAL.Entities;
+﻿using Life_Admin_Autopilot.BLL.Dtos;
+using Life_Admin_Autopilot.DAL.Entities;
 using System;
 using System.Collections.Generic;
 using System.Text;
 
-namespace Life_Admin_Autopilot.DAL.Repositories
+namespace Life_Admin_Autopilot.BLL.Interfaces
 {
-    public interface IUserTaskRepository
+    public interface IUserTaskService
     {
-        Task<UserTask> CreateAsync(UserTask task);
+        Task<UserTask> CreateAsync(TaskPayload request);
 
         Task<UserTask?> GetByIdAsync(string id, string userId);
 

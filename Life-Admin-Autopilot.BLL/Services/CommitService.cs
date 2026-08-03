@@ -88,7 +88,7 @@ namespace Life_Admin_Autopilot.BLL.Services
                 // roll back by deleting the orphaned task to maintain data integrity.
                 if (userTask != null && userTask.Id != null)
                 {
-                    await _taskRepository.DeleteAsync(userTask.Id);
+                    await _taskRepository.DeleteAsync(userTask.Id,userTask.UserId);
                 }
                 throw; // Re-throw exception so the controller catches it and returns 500
             }
