@@ -15,10 +15,14 @@ namespace Life_Admin_Autopilot_Backend.Controllers
     public class FilesController : ControllerBase
     {
         private readonly IFileUploadService _fileUploadService;
+        private readonly IDocumentExtractionService _documentExtractionService;
 
-        public FilesController(IFileUploadService fileUploadService)
+        public FilesController(
+            IFileUploadService fileUploadService,
+            IDocumentExtractionService documentExtractionService)
         {
             _fileUploadService = fileUploadService;
+            _documentExtractionService = documentExtractionService;
         }
 
         // Step one of the document-to-task chain: the file is stored so Claude can read it
@@ -68,6 +72,29 @@ namespace Life_Admin_Autopilot_Backend.Controllers
             return Respond(response);
         }
 
+        // The Document Agent: Claude reads the staged file and describes what it says, so
+        // the Planning Agent can draft a task from the document's own contents rather
+        // than from its filename (FR-3.2). Nothing is saved - this only reads.
+        [HttpPost("documents/extract")]
+        [ProducesResponseType(typeof(DocumentExtractionResponse), StatusCodes.Status200OK)]
+        [ProducesResponseType(typeof(DocumentExtractionResponse), StatusCodes.Status403Forbidden)]
+        public async Task<IActionResult> ExtractDocument(
+            [FromBody] ExtractDocumentRequest request,
+            CancellationToken cancellationToken)
+        {
+            var response = await _documentExtractionService.ExtractAsync(
+                CurrentUserId,
+                request.Path,
+                cancellationToken);
+
+            if (response.Succeeded)
+            {
+                return Ok(response);
+            }
+
+            return StatusCode(MapExtractionStatusCode(response.ErrorCode!), response);
+        }
+
         // Stored paths are not fetchable on their own - the client exchanges one for a
         // short-lived URL when it actually needs to display the file.
         [HttpGet("files/read-url")]
@@ -98,6 +125,15 @@ namespace Life_Admin_Autopilot_Backend.Controllers
             StorageErrorCodes.AccessDenied => StatusCodes.Status403Forbidden,
             StorageErrorCodes.NotFound => StatusCodes.Status404NotFound,
             _ when StorageErrorCodes.IsClientError(errorCode) => StatusCodes.Status400BadRequest,
+            StorageErrorCodes.NotConfigured => StatusCodes.Status503ServiceUnavailable,
+            _ => StatusCodes.Status502BadGateway
+        };
+
+        private static int MapExtractionStatusCode(string errorCode) => errorCode switch
+        {
+            "EXTRACT_ACCESS_DENIED" => StatusCodes.Status403Forbidden,
+            "EXTRACT_NO_PATH" => StatusCodes.Status400BadRequest,
+            StorageErrorCodes.NotFound => StatusCodes.Status404NotFound,
             StorageErrorCodes.NotConfigured => StatusCodes.Status503ServiceUnavailable,
             _ => StatusCodes.Status502BadGateway
         };

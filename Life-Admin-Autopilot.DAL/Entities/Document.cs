@@ -22,7 +22,11 @@ namespace Life_Admin_Autopilot.DAL.Entities
         [BsonElement("BlobUrl")]
         public string BlobUrl { get; set; }
 
+        // Without BsonIgnoreIfNull the driver writes a null BsonDocument as the marker
+        // {"_csharpnull": true}, which reads as a real value to anything querying Mongo
+        // directly. Omitting the field is what "nothing extracted yet" should look like.
         [BsonElement("ExtractedFields")]
+        [BsonIgnoreIfNull]
         public BsonDocument? ExtractedFields { get; set; }
 
         [BsonElement("Category")]

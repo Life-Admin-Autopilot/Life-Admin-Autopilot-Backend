@@ -130,18 +130,73 @@ class StageDocumentComponent(Component):
         stored_path = body.get("path")
         self.status = f"Staged {file_name} -> {stored_path}"
 
+        extracted = self._extract(token, stored_path)
+
         # A labelled block rather than raw JSON: the agent has to copy storedPath
         # verbatim into save_task, and a fenced key/value list survives paraphrasing
         # far better than a nested object.
-        return Message(
-            text=(
-                "[ATTACHED DOCUMENT]\n"
-                f"fileName: {file_name}\n"
-                f"storedPath: {stored_path}\n"
-                f"contentType: {body.get('contentType')}\n"
-                f"sizeBytes: {body.get('sizeBytes')}\n"
-                f"previewUrl: {body.get('readUrl')}\n"
-                "This file is staged, not saved. Pass storedPath unchanged as the "
-                "document_path argument when the user confirms the task."
-            )
+        lines = [
+            "[ATTACHED DOCUMENT]",
+            f"fileName: {file_name}",
+            f"storedPath: {stored_path}",
+            f"contentType: {body.get('contentType')}",
+            f"sizeBytes: {body.get('sizeBytes')}",
+            f"previewUrl: {body.get('readUrl')}",
+        ]
+        lines.extend(extracted)
+        lines.append(
+            "This file is staged, not saved. Pass storedPath unchanged as the "
+            "document_path argument when the user confirms the task."
         )
+
+        return Message(text="\n".join(lines))
+
+    def _extract(self, token, stored_path):
+        """Ask the backend what the document actually says.
+
+        Without this the agent only ever sees a filename, so it names the task from
+        whatever the user typed and invents a due date - on a bill, the real one is
+        printed inside the file.
+        """
+        try:
+            response = requests.post(
+                f"{self.base_url}/api/documents/extract",
+                json={"path": stored_path},
+                headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+                timeout=180,
+                verify=self.verify_tls,
+            )
+        except requests.RequestException as error:
+            return [f"contents: could not be read ({error})"]
+
+        # Older API builds have no extract route. Staging still worked, so the flow
+        # continues with what it has rather than failing the upload.
+        if response.status_code == 404:
+            return ["contents: not read - this backend has no /api/documents/extract yet"]
+
+        try:
+            body = response.json()
+        except ValueError:
+            return [f"contents: could not be read (HTTP {response.status_code})"]
+
+        if not body.get("succeeded"):
+            return [f"contents: could not be read ({body.get('errorCode')})"]
+
+        lines = []
+        if body.get("description"):
+            lines.append(f"contents: {body['description']}")
+        # Named separately from the description so the agent can lift it directly
+        # instead of parsing prose for a date.
+        if body.get("dueDate"):
+            lines.append(f"dueDateStatedInDocument: {body['dueDate']}")
+        if body.get("amount"):
+            lines.append(f"amount: {body['amount']}")
+        if body.get("issuer"):
+            lines.append(f"issuer: {body['issuer']}")
+        if body.get("category"):
+            lines.append(f"suggestedCategory: {body['category']}")
+
+        if not any(k in body and body[k] for k in ("dueDate",)):
+            lines.append("dueDateStatedInDocument: none - the document does not state one")
+
+        return lines or ["contents: nothing could be read from this file"]

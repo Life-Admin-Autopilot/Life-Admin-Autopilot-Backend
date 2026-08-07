@@ -148,4 +148,13 @@ class TranscribeAudioComponent(Component):
             f"{len(transcript)} chars in {body.get('latencyMs')} ms "
             f"({body.get('detectedLanguage')})"
         )
+
+        # The locale is stated rather than left for the model to infer. Asked to detect
+        # it, the model follows the language of the conversation so far instead - an
+        # Arabic command in a session that started in English came back answered in
+        # English, which is the one thing a user notices immediately.
+        language = (self.language or body.get("detectedLanguage") or "").strip()
+        if language:
+            return Message(text=f"(spoken in {language})\n{transcript}")
+
         return Message(text=transcript)
