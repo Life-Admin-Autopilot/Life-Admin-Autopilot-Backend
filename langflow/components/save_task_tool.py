@@ -17,9 +17,24 @@ import time
 from datetime import datetime, timezone
 
 import requests
+from bson import ObjectId
 from langflow.custom import Component
 from langflow.io import BoolInput, MessageTextInput, Output, SecretStrInput
 from langflow.schema import Data
+from pymongo import MongoClient
+
+# Copilot Chat searches contentChunks by meaning, so a saved task is only findable if a
+# vector was written for it. BAAI/bge-m3 is used because it is genuinely bilingual and
+# it is 1024-dimensional, which is exactly what the existing Atlas vector index expects
+# (content_chunks_vector_index, 1024 dims, cosine) - so no index has to be rebuilt.
+#
+# Measured on Egyptian task phrases against their English translations:
+#   bge-m3                  matched 0.764  unrelated 0.454  separation 0.310
+#   multilingual-e5-large   matched 0.867  unrelated 0.780  separation 0.087
+# Separation is what retrieval depends on. e5 scores everything highly and therefore
+# discriminates poorly, even with its documented query:/passage: prefixes.
+DEFAULT_EMBEDDING_MODEL = "BAAI/bge-m3"
+HF_FEATURE_EXTRACTION = "https://router.huggingface.co/hf-inference/models/{model}/pipeline/feature-extraction"
 
 _TOKEN_CACHE: dict = {}
 
@@ -122,6 +137,45 @@ class SaveTaskToolComponent(Component):
         MessageTextInput(name="email", display_name="Login Email", advanced=True),
         SecretStrInput(name="password", display_name="Login Password", advanced=True),
         BoolInput(name="verify_tls", display_name="Verify TLS", value=False, advanced=True),
+        BoolInput(
+            name="write_chunks",
+            display_name="Index For Search",
+            value=True,
+            advanced=True,
+            info=(
+                "Write a contentChunks row with an embedding so Copilot Chat can find "
+                "this task. Turn off if the backend already does it."
+            ),
+        ),
+        SecretStrInput(
+            name="mongo_uri",
+            display_name="Mongo Connection String",
+            advanced=True,
+            info="Only needed when Index For Search is on.",
+        ),
+        MessageTextInput(
+            name="mongo_database",
+            display_name="Mongo Database",
+            value="LifeAdminAutopilotDB",
+            advanced=True,
+        ),
+        SecretStrInput(
+            name="hf_token",
+            display_name="Hugging Face Token",
+            advanced=True,
+            info="Used to embed the task text.",
+        ),
+        MessageTextInput(
+            name="embedding_model",
+            display_name="Embedding Model",
+            value=DEFAULT_EMBEDDING_MODEL,
+            advanced=True,
+            info=(
+                "Must be 1024-dimensional to fit content_chunks_vector_index. Changing "
+                "it means re-embedding every existing chunk - vectors from two different "
+                "models are not comparable and searches degrade silently."
+            ),
+        ),
     ]
 
     outputs = [Output(display_name="Result", name="output", method="save_task")]
@@ -193,8 +247,85 @@ class SaveTaskToolComponent(Component):
         elif document_path:
             result["document"] = f"linked {document_path}"
 
+        # Indexing is best-effort and never allowed to turn a saved task into a
+        # reported failure - the row is already in Mongo by this point.
+        if result.get("saved") and self.write_chunks:
+            result["indexed"] = self._index_for_search(result.get("taskId"), user_id, task)
+            if result["indexed"].startswith("yes"):
+                result.pop("warning", None)
+
         self.status = result.get("message", "")
         return Data(data=result)
+
+    def _embed(self, text):
+        response = requests.post(
+            HF_FEATURE_EXTRACTION.format(model=self.embedding_model or DEFAULT_EMBEDDING_MODEL),
+            json={"inputs": [text]},
+            headers={"Authorization": f"Bearer {self.hf_token}"},
+            timeout=120,
+        )
+        response.raise_for_status()
+        vector = response.json()
+        # The endpoint nests differently depending on the model's pooling, so unwrap
+        # until a flat list of floats is left.
+        while isinstance(vector, list) and vector and isinstance(vector[0], list):
+            vector = vector[0]
+        return vector
+
+    @staticmethod
+    def _chunk_text(task):
+        """Reproduce the sentence the backend embeds, field for field.
+
+        Retrieval quality depends on query and chunk being phrased alike, so this
+        deliberately mirrors the existing rows rather than embedding the bare title:
+        "Task: Play piano. Category: Personal. Due: 2026-08-06. Priority: normal. …"
+        """
+        return (
+            f"Task: {task['title']}. Category: {task['category']}. "
+            f"Due: {task['dueDate'][:10]}. Priority: {task['priority']}. Status: Pending"
+        )
+
+    def _index_for_search(self, task_id, user_id, task):
+        """Write the contentChunks row that makes this task searchable by meaning."""
+        text = self._chunk_text(task)
+        if not task_id:
+            return "no - the task saved but returned no id to index against"
+        if not (self.mongo_uri and self.hf_token):
+            return "no - set Mongo Connection String and Hugging Face Token to enable indexing"
+
+        try:
+            vector = self._embed(text)
+        except (requests.RequestException, ValueError) as error:
+            return f"no - embedding failed: {error}"
+
+        if len(vector) != 1024:
+            # A wrong-sized vector is rejected by Atlas anyway, but saying so plainly
+            # beats an opaque write error.
+            return f"no - {self.embedding_model} returned {len(vector)} dims, the index needs 1024"
+
+        try:
+            client = MongoClient(self.mongo_uri, serverSelectionTimeoutMS=15000)
+            client[self.mongo_database]["contentChunks"].insert_one({
+                "UserId": user_id,
+                "SourceType": "task",
+                # Stored as ObjectId to match the rows the backend writes, so a join
+                # back to `tasks` works the same way for both.
+                "SourceId": ObjectId(task_id),
+                "Text": text,
+                "Embedding": vector,
+                # Not in the original schema. Recorded so a future model change can be
+                # audited and back-filled instead of silently poisoning the index.
+                "EmbeddingModel": self.embedding_model or DEFAULT_EMBEDDING_MODEL,
+            })
+        except Exception as error:  # noqa: BLE001 - pymongo raises a wide range here
+            return f"no - could not write the chunk: {error}"
+        finally:
+            try:
+                client.close()
+            except Exception:  # noqa: BLE001, S110
+                pass
+
+        return f"yes - embedded with {self.embedding_model or DEFAULT_EMBEDDING_MODEL}"
 
     def _source_type(self, document_path):
         """Decide what produced this task: pdf, photo, voice or text.
