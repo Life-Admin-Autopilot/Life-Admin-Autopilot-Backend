@@ -7,7 +7,7 @@ namespace Life_Admin_Autopilot.BLL.Dtos
 {
     public class TaskPayload
     {
-        public string UserId { get; set; }
+        //public string UserId { get; set; }
         public string Title { get; set; }
 
         public DateTime? DueDate { get; set; }
@@ -17,5 +17,6 @@ namespace Life_Admin_Autopilot.BLL.Dtos
         public UserTaskPriority Priority { get; set; }
 
         public string SourceType { get; set; }
+        public string Status { get; set; }
     }
 }

@@ -19,13 +19,20 @@ namespace Life_Admin_Autopilot.BLL
             services.AddScoped<ICommitService, CommitService>();
             services.AddScoped<IEmbeddingService, EmbeddingService>();
             services.AddScoped<IUserTaskService, UserTaskService>();
+            services.AddScoped<ILangflowClientService, LangflowClientService>();
+            services.AddScoped<IPlanningOrchestratorService, PlanningOrchestratorService>();
 
             services
             .AddOptions<HuggingFaceSettings>()
             .Bind(configuration.GetSection(HuggingFaceSettings.SectionName));
 
             services.AddHttpClient<IEmbeddingProvider, HuggingFaceEmbeddingProvider>();
-            
+
+            services
+            .AddOptions<LangflowSettings>()
+            .Bind(configuration.GetSection(LangflowSettings.SectionName));
+
+            services.AddHttpClient<ILangflowClientService, LangflowClientService>();
 
             return services;
         }

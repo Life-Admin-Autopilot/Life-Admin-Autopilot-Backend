@@ -16,5 +16,7 @@ namespace Life_Admin_Autopilot.DAL.Repositories
         Task<bool> UpdateAsync(string id, UserTask task, string userId);
 
         Task<bool> DeleteAsync(string id, string userId);
+
+        Task<List<UserTask>> GetDraftTasksByIdsAsync(IEnumerable<string> ids, string userId);
     }
 }

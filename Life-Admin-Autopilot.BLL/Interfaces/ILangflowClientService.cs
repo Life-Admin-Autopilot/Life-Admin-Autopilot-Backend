@@ -5,8 +5,8 @@ using System.Text;
 
 namespace Life_Admin_Autopilot.BLL.Interfaces
 {
-    public interface ICommitService
+    public interface ILangflowClientService
     {
-        public Task<CommitTaskResponse> CommitTaskAndDocumentAsync(CommitTaskRequest request, string userId);
+        Task<PlanningResponse> RunAsync(LangflowRequest request);
     }
 }

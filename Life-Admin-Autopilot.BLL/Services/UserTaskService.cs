@@ -15,11 +15,11 @@ namespace Life_Admin_Autopilot.BLL.Services
         {
             _taskRepository = taskRepository;
         }
-        public async Task<UserTask> CreateAsync(TaskPayload request)
+        public async Task<UserTask> CreateAsync(TaskPayload request, string userId)
         {
             var userTask = new UserTask
             {
-                UserId = request.UserId,
+                UserId = userId,
                 Title = request.Title,
                 DueDate = request.DueDate,
                 Category = request.Category,
@@ -39,13 +39,29 @@ namespace Life_Admin_Autopilot.BLL.Services
         {
             return await _taskRepository.GetAllByUserIdAsync(userId);
         }
-        public async Task<bool> UpdateAsync(string id, UserTask task, string userId)
+        public async Task<bool> UpdateAsync(string id, TaskPayload task, string userId)
         {
-            return await _taskRepository.UpdateAsync(id, task, userId);
+            var existingTask = await _taskRepository.GetByIdAsync(id,userId);
+            if (existingTask == null)
+            {
+                return false;
+            }
+
+            existingTask.Title = task.Title;
+            existingTask.DueDate = task.DueDate;
+            existingTask.Status = task.Status;
+            existingTask.Category = task.Category;
+            existingTask.Priority = task.Priority;
+            existingTask.SourceType = task.SourceType;
+            return await _taskRepository.UpdateAsync(id, existingTask, userId);
         }
         public async Task<bool> DeleteAsync(string id, string userId)
         {
             return await _taskRepository.DeleteAsync(id, userId);
+        }
+        public async Task<List<UserTask>> GetDraftTasksByIdsAsync(IEnumerable<string> ids,string userId)
+        {
+            return await _taskRepository.GetDraftTasksByIdsAsync(ids,userId);
         }
     }
 }

@@ -10,6 +10,7 @@ using static Microsoft.EntityFrameworkCore.DbLoggerCategory;
 
 namespace Life_Admin_Autopilot_Backend.Controllers
 {
+    //[AllowAnonymous]
     [Route("api/[controller]")]
     [ApiController]
     [Authorize]
@@ -27,7 +28,7 @@ namespace Life_Admin_Autopilot_Backend.Controllers
         public async Task<IActionResult> Create(
             TaskPayload request)
         {
-            var result = await _taskService.CreateAsync(request);
+            var result = await _taskService.CreateAsync(request, CurrentUserId);
             return Ok(result);
         }
 
@@ -57,8 +58,9 @@ namespace Life_Admin_Autopilot_Backend.Controllers
         [HttpPut("{id}")]
         public async Task<IActionResult> Update(
             string id,
-            UserTask task)
+            TaskPayload task)
         {
+            Console.WriteLine("it is called baby");
             var updated = await _taskService.UpdateAsync(id, task,CurrentUserId);
 
             if (!updated)

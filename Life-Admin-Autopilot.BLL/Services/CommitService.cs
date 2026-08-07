@@ -24,7 +24,7 @@ namespace Life_Admin_Autopilot.BLL.Services
             _documentRepository = documentRepository;
             _embeddingService = embeddingService;
         }
-        public async Task<CommitTaskResponse> CommitTaskAndDocumentAsync(CommitTaskRequest request)
+        public async Task<CommitTaskResponse> CommitTaskAndDocumentAsync(CommitTaskRequest request, string userId)
         {
             UserTask? userTask = null;
             Document? document = null;
@@ -32,13 +32,13 @@ namespace Life_Admin_Autopilot.BLL.Services
             {
                 userTask = new UserTask
                 {
-                    UserId = request.Task.UserId,
+                    UserId = userId,
                     Title = request.Task.Title,
                     DueDate = request.Task.DueDate,
                     Category = request.Task.Category,
                     Priority = request.Task.Priority,
                     SourceType = request.Task.SourceType,
-                    Status = "Pending"
+                    Status = request.Task.Status
                 };
                 // Commit task to database
                 await _taskRepository.CreateAsync(userTask);
@@ -51,7 +51,7 @@ namespace Life_Admin_Autopilot.BLL.Services
                     document = new Document
                     {
                         TaskId = generatedTaskId,
-                        UserId = request.Task.UserId,
+                        UserId = userId,
                         BlobUrl = request.Document.BlobUrl,
                         ExtractedFields = request.Document.ExtractedFields.HasValue
                         ? BsonDocument.Parse(request.Document.ExtractedFields.Value.GetRawText()) : null,

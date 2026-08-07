@@ -67,5 +67,27 @@ namespace Life_Admin_Autopilot.DAL.Repositories
 
             return result.DeletedCount > 0;
         }
+
+        public async Task<List<UserTask>> GetDraftTasksByIdsAsync(
+            IEnumerable<string> ids,
+            string userId)
+        {
+            var filter =
+                Builders<UserTask>.Filter.In(
+                    x => x.Id,
+                    ids);
+
+            filter &= Builders<UserTask>.Filter.Eq(
+                x => x.UserId,
+                userId);
+
+            filter &= Builders<UserTask>.Filter.Eq(
+                x => x.Status,
+                "draft");
+
+            return await _tasks
+                .Find(filter)
+                .ToListAsync();
+        }
     }
 }
