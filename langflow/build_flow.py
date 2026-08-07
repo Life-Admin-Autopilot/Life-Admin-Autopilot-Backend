@@ -36,6 +36,7 @@ PYTHON_REPL = "PythonREPLComponent-RC763"
 TRANSCRIBE = "CustomComponent-trn01"
 STAGE_DOC = "CustomComponent-doc01"
 READ_URL = "CustomComponent-url01"
+CONFLICT = "CustomComponent-cfl01"
 
 # Langflow serialises edge handles as JSON with every double quote replaced by this
 # character, then embeds the result in the edge id. It is U+0153 (oe ligature) - copying
@@ -239,11 +240,33 @@ EXTRACTION OUTPUT
       "dueDate": "YYYY-MM-DDTHH:mm:ss.sssZ, or null if none can be inferred",
       "category": "Financial | Work/University | Health | Vehicle | Home | Personal | General",
       "priority": "normal | important | urgent",
+      "status": "pending",
       "sourceType": "voice | text",
       "conflicts": []
     }
   ]
 }
+
+SPLITTING
+One message often holds several unrelated actions. "Go swimming, pay the bills and \
+text Ahmed" is three tasks, never one. Split on every distinct action, and give each \
+its own title, date, category and priority. Do not merge them just because they arrived \
+together, and do not invent extra tasks that were not asked for.
+
+PRIORITY
+Choose deliberately - do not label everything normal:
+- urgent    : a stated deadline within 48 hours, an overdue obligation, anything with a \
+penalty for lateness (fines, cut-off notices, expiring documents), or words like \
+"urgent", "ASAP", "immediately", "ضروري", "حالا", "مستعجل".
+- important : money, health, legal or study/work obligations with a real consequence - \
+bills, appointments, renewals, exams, official paperwork.
+- normal    : errands, chores, social and personal items with no penalty for slipping.
+If the user states an urgency, that always wins over your own reading.
+
+STATUS
+Every new draft has status "pending". The only permitted values are pending, in \
+progress, completed, overdue and cancelled. Never invent another one, and never set \
+"overdue" yourself - that is worked out from the due date having passed.
 
 RULES
 1. Reply in the language the user used. If they spoke or wrote Arabic, answer in Arabic \
@@ -266,15 +289,27 @@ is finished - never call save_task for it again in this conversation, even if th
 says "thanks" or repeats themselves. Re-saving creates a duplicate row.
 9. Confirm one task at a time. After a save succeeds, name the next unconfirmed task and \
 ask about that one.
-10. Format every due date as YYYY-MM-DDTHH:mm:ss.sssZ. The user's local time is Cairo \
-(UTC+2), so convert before formatting: "tomorrow at 9am" on 2026-08-05 becomes \
-2026-08-06T07:00:00.000Z. A date with no time becomes T00:00:00.000Z.
+10. Due dates are YYYY-MM-DDTHH:mm:ss.sssZ, and that Z means UTC. The user speaks in \
+Cairo time, which is UTC+2, so SUBTRACT 2 HOURS from the clock time they said before \
+writing it down. 9am becomes T07:00:00.000Z. 8pm becomes T18:00:00.000Z. Midnight-tonight \
+becomes T22:00:00.000Z on the PREVIOUS date. A day with no time at all becomes \
+T00:00:00.000Z and stays on its own date. Getting this wrong fires the reminder on the \
+wrong day, so do the subtraction every time.
 11. Resolve relative dates ("tomorrow", "next week") against Today's Date above.
-12. sourceType is "voice" when the request came from the transcript and "text" when it \
-was typed. Never send "pdf" or "photo" - when a document is attached, save_task works \
-that out from the file itself and overrides whatever you pass.
-13. Leave conflicts as an empty list. You cannot see the user's calendar, so you are not \
-in a position to claim a clash.
+12. sourceType is decided by which section the request arrived in, not by what it is \
+about: "voice" only if [VOICE TRANSCRIPT] has content, otherwise "text". A typed message \
+is always "text" even when it describes something you would normally say out loud. Never \
+send "pdf" or "photo" - when a document is attached, save_task works that out from the \
+file itself and overrides whatever you pass.
+13. Before you show a draft, call find_conflicting_tasks for EACH one, with that draft's \
+title and due date. Put what comes back in that draft's own conflicts list - conflicts \
+belong to the single task they affect, never to the batch. Then:
+- a time_clash: say what it clashes with and at what time, and ask whether to move it.
+- a possible_duplicate: say it looks already saved and ask whether to skip it.
+- checked: false means the check could not run. Say conflicts could not be checked. Never \
+report a clear calendar you did not verify.
+- if overdueCount is above zero, mention it once at the end, not per task.
+Still call the tool when a draft has no due date; it will report duplicates.
 14. save_task reports back honestly. If it returns saved: false, or says the document was \
 not attached, tell the user plainly - never claim a save succeeded when it did not.
 15. Use get_file_url when the user wants to see or open a file they uploaded earlier. \
@@ -356,6 +391,12 @@ def build(source: Path, destination: Path) -> None:
         {"x": 1147.0, "y": -560.0}, {"height": 260, "width": 320},
     ))
 
+    # --- Find Conflicting Tasks (agent tool) --------------------------------
+    nodes.append(as_node(
+        CONFLICT, as_tool(template_for("conflict_check_tool.py")),
+        {"x": 1147.0, "y": -880.0}, {"height": 300, "width": 320},
+    ))
+
     # --- Replace the Save Task tool -----------------------------------------
     # The exported version posted to /api/Planning/commit, which no controller serves.
     # Rebuilt from source rather than patched, so its template matches its code exactly.
@@ -401,6 +442,14 @@ def build(source: Path, destination: Path) -> None:
         ))
 
     edges.append(edge(
+        CONFLICT,
+        {"dataType": "FindConflictingTasks", "id": CONFLICT, "name": "component_as_tool",
+         "output_types": ["Tool"]},
+        AGENT,
+        {"fieldName": "tools", "id": AGENT, "inputTypes": ["Tool"], "type": "other"},
+    ))
+
+    edges.append(edge(
         READ_URL,
         {"dataType": "GetFileURL", "id": READ_URL, "name": "component_as_tool",
          "output_types": ["Tool"]},
@@ -427,7 +476,14 @@ def build(source: Path, destination: Path) -> None:
     scrubbed = []
     for node in nodes:
         for field_name, field in node["data"]["node"]["template"].items():
-            if isinstance(field, dict) and field.get("password") and field.get("value"):
+            if not isinstance(field, dict) or not field.get("password"):
+                continue
+            # Langflow builds SecretStrInput with load_from_db=True, which means "this
+            # value is the NAME of a global variable, go look it up". Typing an actual
+            # password into such a field makes the component send an empty string - the
+            # lookup silently misses. These fields hold literals, so turn it off.
+            field["load_from_db"] = False
+            if field.get("value"):
                 field["value"] = ""
                 scrubbed.append(f"{node['id']}.{field_name}")
 
