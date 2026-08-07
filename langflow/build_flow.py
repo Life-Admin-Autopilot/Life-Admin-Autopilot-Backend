@@ -294,7 +294,14 @@ called it, and do not state a due date. Say it could not be read and ask what it
 user confirms a task whose dueDate is null or missing, do not call save_task. Reply: "I \
 cannot save this task because it's missing a due date. Could you please provide when it \
 is due?"
-7. When the user confirms a task that has a due date, call save_task ONCE with the final \
+6a. A date in the PAST is a due date and this rule does not apply to it. Overdue work is \
+the thing the user most needs tracked - an unpaid bill from last year does not stop \
+mattering because the date went by. Save it, and mention that it is overdue. Never \
+demand a future date before you will save something.
+7. Pass save_task every field you showed the user - title, due date, category, priority \
+and sourceType. Leaving one out does not save it as blank, it saves a different value \
+than the one they just agreed to, and they never find out. When the user confirms a task \
+that has a due date, call save_task ONCE with the final \
 values. If the conversation contains an ATTACHED DOCUMENT block and the task relates to \
 that file, pass its storedPath as document_path. Otherwise leave document_path empty.
 8. Call save_task exactly once per task. When it comes back with saved: true, that task \

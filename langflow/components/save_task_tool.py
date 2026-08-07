@@ -188,6 +188,31 @@ class SaveTaskToolComponent(Component):
             return f"{raw}T00:00:00.000Z"
         return raw
 
+    @staticmethod
+    def _priority(raw, due_date):
+        """Settle the priority, deriving one when the agent did not send it.
+
+        The agent shows the user a priority and then routinely omits the argument, so a
+        draft presented as "important" was landing in Mongo as "normal" - the user is
+        told one thing and the database records another. Defaulting blindly to "normal"
+        is what made that invisible, so an absent priority is now read off the due date
+        using the same rule the agent is given: overdue, or due inside 48 hours, is
+        urgent. "important" stays a judgement only the agent can make.
+        """
+        value = (raw or "").strip().lower()
+        if value in ("normal", "important", "urgent"):
+            return value
+
+        try:
+            due = datetime.fromisoformat(due_date.replace("Z", "+00:00"))
+        except (ValueError, AttributeError):
+            return "normal"
+
+        if due.tzinfo is None:
+            due = due.replace(tzinfo=timezone.utc)
+        hours_away = (due - datetime.now(timezone.utc)).total_seconds() / 3600
+        return "urgent" if hours_away < 48 else "normal"
+
     def _identify(self):
         """Return (user_id, auth_headers). Logging in is optional."""
         override = (self.user_id or "").strip()
@@ -234,7 +259,7 @@ class SaveTaskToolComponent(Component):
             "title": title,
             "dueDate": due_date,
             "category": (self.category or "").strip() or "General",
-            "priority": (self.priority or "").strip() or "normal",
+            "priority": self._priority(self.priority, due_date),
             "sourceType": self._source_type(document_path),
         }
 
