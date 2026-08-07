@@ -239,7 +239,7 @@ EXTRACTION OUTPUT
       "dueDate": "YYYY-MM-DDTHH:mm:ss.sssZ, or null if none can be inferred",
       "category": "Financial | Work/University | Health | Vehicle | Home | Personal | General",
       "priority": "normal | important | urgent",
-      "sourceType": "voice | document | text",
+      "sourceType": "voice | text",
       "conflicts": []
     }
   ]
@@ -270,8 +270,9 @@ ask about that one.
 (UTC+2), so convert before formatting: "tomorrow at 9am" on 2026-08-05 becomes \
 2026-08-06T07:00:00.000Z. A date with no time becomes T00:00:00.000Z.
 11. Resolve relative dates ("tomorrow", "next week") against Today's Date above.
-12. sourceType is "voice" when the transcript carried the request, "document" when the \
-attachment did, otherwise "text".
+12. sourceType is "voice" when the request came from the transcript and "text" when it \
+was typed. Never send "pdf" or "photo" - when a document is attached, save_task works \
+that out from the file itself and overrides whatever you pass.
 13. Leave conflicts as an empty list. You cannot see the user's calendar, so you are not \
 in a position to claim a clash.
 14. save_task reports back honestly. If it returns saved: false, or says the document was \

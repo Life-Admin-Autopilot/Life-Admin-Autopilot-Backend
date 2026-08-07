@@ -5,21 +5,66 @@
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "variable": [
-    { "key": "baseUrl", "value": "https://localhost:7276" },
-    { "key": "langflowUrl", "value": "http://localhost:7860" },
-    { "key": "flowId", "value": "" },
-    { "key": "langflowApiKey", "value": "" },
-    { "key": "email", "value": "omar.test@example.com" },
-    { "key": "password", "value": "Passw0rd!23" },
-    { "key": "accessToken", "value": "" },
-    { "key": "refreshToken", "value": "" },
-    { "key": "userId", "value": "" },
-    { "key": "stagedPath", "value": "" },
-    { "key": "avatarPath", "value": "" },
-    { "key": "transcript", "value": "" },
-    { "key": "sessionId", "value": "postman-session-1" },
-    { "key": "audioFilePath", "value": "" },
-    { "key": "documentFilePath", "value": "" }
+    {
+      "key": "baseUrl",
+      "value": "https://localhost:7276"
+    },
+    {
+      "key": "langflowUrl",
+      "value": "http://localhost:7860"
+    },
+    {
+      "key": "flowId",
+      "value": "b8bc9727-8635-4ab3-875c-942c0fa9d4f1"
+    },
+    {
+      "key": "langflowApiKey",
+      "value": ""
+    },
+    {
+      "key": "email",
+      "value": "omar.test@example.com"
+    },
+    {
+      "key": "password",
+      "value": "Passw0rd!23"
+    },
+    {
+      "key": "accessToken",
+      "value": ""
+    },
+    {
+      "key": "refreshToken",
+      "value": ""
+    },
+    {
+      "key": "userId",
+      "value": ""
+    },
+    {
+      "key": "stagedPath",
+      "value": ""
+    },
+    {
+      "key": "avatarPath",
+      "value": ""
+    },
+    {
+      "key": "transcript",
+      "value": ""
+    },
+    {
+      "key": "sessionId",
+      "value": "postman-session-1"
+    },
+    {
+      "key": "audioFilePath",
+      "value": ""
+    },
+    {
+      "key": "documentFilePath",
+      "value": ""
+    }
   ],
   "item": [
     {
@@ -49,8 +94,23 @@
           ],
           "request": {
             "method": "POST",
-            "header": [{ "key": "Content-Type", "value": "application/json" }],
-            "url": { "raw": "{{baseUrl}}/api/auth/register", "host": ["{{baseUrl}}"], "path": ["api", "auth", "register"] },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/auth/register",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "auth",
+                "register"
+              ]
+            },
             "body": {
               "mode": "raw",
               "raw": "{\n  \"email\": \"{{email}}\",\n  \"password\": \"{{password}}\"\n}"
@@ -84,8 +144,23 @@
           ],
           "request": {
             "method": "POST",
-            "header": [{ "key": "Content-Type", "value": "application/json" }],
-            "url": { "raw": "{{baseUrl}}/api/auth/login", "host": ["{{baseUrl}}"], "path": ["api", "auth", "login"] },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/auth/login",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "auth",
+                "login"
+              ]
+            },
             "body": {
               "mode": "raw",
               "raw": "{\n  \"email\": \"{{email}}\",\n  \"password\": \"{{password}}\"\n}"
@@ -111,9 +186,27 @@
           ],
           "request": {
             "method": "POST",
-            "header": [{ "key": "Content-Type", "value": "application/json" }],
-            "url": { "raw": "{{baseUrl}}/api/auth/refresh", "host": ["{{baseUrl}}"], "path": ["api", "auth", "refresh"] },
-            "body": { "mode": "raw", "raw": "{\n  \"refreshToken\": \"{{refreshToken}}\"\n}" },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/auth/refresh",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "auth",
+                "refresh"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"refreshToken\": \"{{refreshToken}}\"\n}"
+            },
             "description": "Refresh tokens are single-use: refreshing revokes the old one."
           }
         }
@@ -147,13 +240,38 @@
           ],
           "request": {
             "method": "POST",
-            "header": [{ "key": "Authorization", "value": "Bearer {{accessToken}}" }],
-            "url": { "raw": "{{baseUrl}}/api/speech/transcribe", "host": ["{{baseUrl}}"], "path": ["api", "speech", "transcribe"] },
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/speech/transcribe",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "speech",
+                "transcribe"
+              ]
+            },
             "body": {
               "mode": "formdata",
               "formdata": [
-                { "key": "audio", "type": "file", "src": [], "description": "WAV or MP3. NOT m4a/AAC - the provider rejects it. Pick your file here." },
-                { "key": "language", "value": "ar-EG", "type": "text", "description": "Send it. Auto-detect returns Latin transliteration for Arabic. Use en-US for English." }
+                {
+                  "key": "audio",
+                  "type": "file",
+                  "src": [],
+                  "description": "WAV or MP3. NOT m4a/AAC - the provider rejects it. Pick your file here."
+                },
+                {
+                  "key": "language",
+                  "value": "ar-EG",
+                  "type": "text",
+                  "description": "Send it. Auto-detect returns Latin transliteration for Arabic. Use en-US for English."
+                }
               ]
             },
             "description": "Select a file for the `audio` field before sending - Postman cannot store a file path in a shared collection.\n\nExpected errors:\n- 400 ASR_UNSUPPORTED_FORMAT (you sent .m4a)\n- 400 ASR_EMPTY_TRANSCRIPT (silence)\n- 503 ASR_QUOTA_EXCEEDED (Hugging Face credits spent)\n- 504 ASR_TIMEOUT"
@@ -189,12 +307,32 @@
           ],
           "request": {
             "method": "POST",
-            "header": [{ "key": "Authorization", "value": "Bearer {{accessToken}}" }],
-            "url": { "raw": "{{baseUrl}}/api/documents/staging", "host": ["{{baseUrl}}"], "path": ["api", "documents", "staging"] },
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/documents/staging",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "documents",
+                "staging"
+              ]
+            },
             "body": {
               "mode": "formdata",
               "formdata": [
-                { "key": "file", "type": "file", "src": [], "description": "PDF, JPEG, PNG, WebP or GIF. Up to 20 MB." }
+                {
+                  "key": "file",
+                  "type": "file",
+                  "src": [],
+                  "description": "PDF, JPEG, PNG, WebP or GIF. Up to 20 MB."
+                }
               ]
             },
             "description": "Returns a stored PATH, not a URL. Storing a SAS URL would leave every Mongo record pointing at a dead link and would persist a live access credential."
@@ -217,12 +355,28 @@
           ],
           "request": {
             "method": "GET",
-            "header": [{ "key": "Authorization", "value": "Bearer {{accessToken}}" }],
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
             "url": {
               "raw": "{{baseUrl}}/api/files/read-url?path={{stagedPath}}",
-              "host": ["{{baseUrl}}"],
-              "path": ["api", "files", "read-url"],
-              "query": [{ "key": "path", "value": "{{stagedPath}}" }]
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "files",
+                "read-url"
+              ],
+              "query": [
+                {
+                  "key": "path",
+                  "value": "{{stagedPath}}"
+                }
+              ]
             },
             "description": "Valid for 15 minutes, read-only. Paste the returned URL into a browser to see the file."
           }
@@ -243,12 +397,28 @@
           ],
           "request": {
             "method": "GET",
-            "header": [{ "key": "Authorization", "value": "Bearer {{accessToken}}" }],
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
             "url": {
               "raw": "{{baseUrl}}/api/files/read-url?path=documents/00000000-0000-0000-0000-000000000000/secret.pdf",
-              "host": ["{{baseUrl}}"],
-              "path": ["api", "files", "read-url"],
-              "query": [{ "key": "path", "value": "documents/00000000-0000-0000-0000-000000000000/secret.pdf" }]
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "files",
+                "read-url"
+              ],
+              "query": [
+                {
+                  "key": "path",
+                  "value": "documents/00000000-0000-0000-0000-000000000000/secret.pdf"
+                }
+              ]
             }
           }
         },
@@ -268,12 +438,33 @@
           ],
           "request": {
             "method": "POST",
-            "header": [{ "key": "Authorization", "value": "Bearer {{accessToken}}" }],
-            "url": { "raw": "{{baseUrl}}/api/users/me/avatar", "host": ["{{baseUrl}}"], "path": ["api", "users", "me", "avatar"] },
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/users/me/avatar",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "users",
+                "me",
+                "avatar"
+              ]
+            },
             "body": {
               "mode": "formdata",
               "formdata": [
-                { "key": "file", "type": "file", "src": [], "description": "JPEG, PNG or WebP, up to 5 MB." }
+                {
+                  "key": "file",
+                  "type": "file",
+                  "src": [],
+                  "description": "JPEG, PNG or WebP, up to 5 MB."
+                }
               ]
             },
             "description": "Replacing an avatar deletes the previous blob."
@@ -282,11 +473,11 @@
       ]
     },
     {
-      "name": "4 - Commit the task",
-      "description": "The endpoint the Langflow agent calls when the user confirms a draft.\n\nNOTE: /api/Planning/commit is NOT in this repository - no PlanningController exists on any branch. It lives on the team's backend build (story #35) and is what writes Category, Priority and the contentChunks embeddings. If you get a 404, you are running a build that does not have it; use the fallback request below instead.",
+      "name": "4 - Save the task (backend only, no AI)",
+      "description": "This folder tests the SAVE step on its own, with no Langflow involved. Its purpose is to tell you where a failure is: if the AI flow says a save failed, run these and you learn whether the backend is broken or the agent is.\n\nIMPORTANT: /api/Planning/commit returns 404 on this repository's build - no PlanningController exists here. It is on the teammate's build that owns story #35, and it is the one that also writes the contentChunks embeddings for Copilot Chat.\n\nThe Save Task component handles this automatically: it tries the commit endpoint, and on a 404 falls back to /api/UserTasksTest. So you do not need to change anything to test locally - but a task saved via the fallback has no embedding.",
       "item": [
         {
-          "name": "Commit task + document",
+          "name": "Commit (404 here - expected)",
           "event": [
             {
               "listen": "test",
@@ -306,28 +497,58 @@
           "request": {
             "method": "POST",
             "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "Authorization", "value": "Bearer {{accessToken}}" }
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
             ],
-            "url": { "raw": "{{baseUrl}}/api/Planning/commit", "host": ["{{baseUrl}}"], "path": ["api", "Planning", "commit"] },
+            "url": {
+              "raw": "{{baseUrl}}/api/Planning/commit",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "Planning",
+                "commit"
+              ]
+            },
             "body": {
               "mode": "raw",
               "raw": "{\n  \"task\": {\n    \"userId\": \"{{userId}}\",\n    \"title\": \"Renew my passport\",\n    \"dueDate\": \"2026-08-14T00:00:00.000Z\",\n    \"category\": \"Personal\",\n    \"priority\": \"important\",\n    \"sourceType\": \"voice\"\n  },\n  \"document\": {\n    \"userId\": \"{{userId}}\",\n    \"blobUrl\": \"{{stagedPath}}\",\n    \"category\": \"Personal\",\n    \"sourceType\": \"pdf\",\n    \"uploadedAt\": \"2026-08-07T00:00:00.000Z\"\n  }\n}"
             },
-            "description": "Set \"document\": null when there is no attachment.\n\nCategory values in use: Financial, Work/University, Health, Vehicle, Home, Personal, General.\nPriority values: normal, important, urgent."
+            "description": "Expect 404 on Omar's build. That is not a bug in the collection - the route is not in this repository. Run it anyway to confirm which backend you are pointed at.\n\nsourceType is pdf/photo when a document is attached, otherwise voice/text.\nCategory: Financial, Work/University, Health, Vehicle, Home, Personal, General.\nPriority: normal, important, urgent."
           }
         },
         {
-          "name": "Fallback - save via UserTasksTest",
+          "name": "Fallback - save via UserTasksTest (works here)",
           "request": {
             "method": "POST",
-            "header": [{ "key": "Content-Type", "value": "application/json" }],
-            "url": { "raw": "{{baseUrl}}/api/usertaskstest", "host": ["{{baseUrl}}"], "path": ["api", "usertaskstest"] },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/usertaskstest",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "usertaskstest"
+              ]
+            },
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"userId\": \"{{userId}}\",\n  \"title\": \"Renew my passport\",\n  \"dueDate\": \"2026-08-14T00:00:00.000Z\",\n  \"status\": \"Pending\",\n  \"sourceType\": \"voice\"\n}"
+              "raw": "{\n  \"userId\": \"{{userId}}\",\n  \"title\": \"Renew my passport\",\n  \"dueDate\": \"2026-08-14T00:00:00.000Z\",\n  \"status\": \"Pending\",\n  \"sourceType\": \"pdf\",\n  \"category\": \"Personal\",\n  \"priority\": \"important\"\n}"
             },
-            "description": "Unauthenticated dev scaffolding. Note it drops category and priority - the C# UserTask entity has no fields for them, even though the Mongo documents do."
+            "description": "What the Save Task component falls back to. sourceType should match how the task arrived: voice / text / pdf / photo.\n\ncategory and priority are only stored on a build that declares them on the UserTask entity - restart the API after pulling, or they are silently dropped."
           }
         },
         {
@@ -349,8 +570,15 @@
             "method": "GET",
             "url": {
               "raw": "{{baseUrl}}/api/usertaskstest/user/{{userId}}",
-              "host": ["{{baseUrl}}"],
-              "path": ["api", "usertaskstest", "user", "{{userId}}"]
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "usertaskstest",
+                "user",
+                "{{userId}}"
+              ]
             },
             "description": "Reads straight from the `tasks` collection, so it is the quickest way to confirm a commit landed."
           }
@@ -378,15 +606,35 @@
           ],
           "request": {
             "method": "POST",
-            "header": [{ "key": "x-api-key", "value": "{{langflowApiKey}}" }],
+            "header": [
+              {
+                "key": "x-api-key",
+                "value": "{{langflowApiKey}}"
+              }
+            ],
             "url": {
               "raw": "{{langflowUrl}}/api/v1/files/upload/{{flowId}}",
-              "host": ["{{langflowUrl}}"],
-              "path": ["api", "v1", "files", "upload", "{{flowId}}"]
+              "host": [
+                "{{langflowUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "files",
+                "upload",
+                "{{flowId}}"
+              ]
             },
             "body": {
               "mode": "formdata",
-              "formdata": [{ "key": "file", "type": "file", "src": [], "description": "Your WAV recording." }]
+              "formdata": [
+                {
+                  "key": "file",
+                  "type": "file",
+                  "src": [],
+                  "description": "Your WAV recording."
+                }
+              ]
             }
           }
         },
@@ -407,15 +655,35 @@
           ],
           "request": {
             "method": "POST",
-            "header": [{ "key": "x-api-key", "value": "{{langflowApiKey}}" }],
+            "header": [
+              {
+                "key": "x-api-key",
+                "value": "{{langflowApiKey}}"
+              }
+            ],
             "url": {
               "raw": "{{langflowUrl}}/api/v1/files/upload/{{flowId}}",
-              "host": ["{{langflowUrl}}"],
-              "path": ["api", "v1", "files", "upload", "{{flowId}}"]
+              "host": [
+                "{{langflowUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "files",
+                "upload",
+                "{{flowId}}"
+              ]
             },
             "body": {
               "mode": "formdata",
-              "formdata": [{ "key": "file", "type": "file", "src": [], "description": "Your PDF or photo." }]
+              "formdata": [
+                {
+                  "key": "file",
+                  "type": "file",
+                  "src": [],
+                  "description": "Your PDF or photo."
+                }
+              ]
             }
           }
         },
@@ -441,14 +709,32 @@
           "request": {
             "method": "POST",
             "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "x-api-key", "value": "{{langflowApiKey}}" }
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-api-key",
+                "value": "{{langflowApiKey}}"
+              }
             ],
             "url": {
               "raw": "{{langflowUrl}}/api/v1/run/{{flowId}}?stream=false",
-              "host": ["{{langflowUrl}}"],
-              "path": ["api", "v1", "run", "{{flowId}}"],
-              "query": [{ "key": "stream", "value": "false" }]
+              "host": [
+                "{{langflowUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "run",
+                "{{flowId}}"
+              ],
+              "query": [
+                {
+                  "key": "stream",
+                  "value": "false"
+                }
+              ]
             },
             "body": {
               "mode": "raw",
@@ -462,14 +748,32 @@
           "request": {
             "method": "POST",
             "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "x-api-key", "value": "{{langflowApiKey}}" }
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-api-key",
+                "value": "{{langflowApiKey}}"
+              }
             ],
             "url": {
               "raw": "{{langflowUrl}}/api/v1/run/{{flowId}}?stream=false",
-              "host": ["{{langflowUrl}}"],
-              "path": ["api", "v1", "run", "{{flowId}}"],
-              "query": [{ "key": "stream", "value": "false" }]
+              "host": [
+                "{{langflowUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "run",
+                "{{flowId}}"
+              ],
+              "query": [
+                {
+                  "key": "stream",
+                  "value": "false"
+                }
+              ]
             },
             "body": {
               "mode": "raw",
@@ -483,14 +787,32 @@
           "request": {
             "method": "POST",
             "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "x-api-key", "value": "{{langflowApiKey}}" }
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-api-key",
+                "value": "{{langflowApiKey}}"
+              }
             ],
             "url": {
               "raw": "{{langflowUrl}}/api/v1/run/{{flowId}}?stream=false",
-              "host": ["{{langflowUrl}}"],
-              "path": ["api", "v1", "run", "{{flowId}}"],
-              "query": [{ "key": "stream", "value": "false" }]
+              "host": [
+                "{{langflowUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "run",
+                "{{flowId}}"
+              ],
+              "query": [
+                {
+                  "key": "stream",
+                  "value": "false"
+                }
+              ]
             },
             "body": {
               "mode": "raw",
@@ -504,14 +826,32 @@
           "request": {
             "method": "POST",
             "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "x-api-key", "value": "{{langflowApiKey}}" }
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-api-key",
+                "value": "{{langflowApiKey}}"
+              }
             ],
             "url": {
               "raw": "{{langflowUrl}}/api/v1/run/{{flowId}}?stream=false",
-              "host": ["{{langflowUrl}}"],
-              "path": ["api", "v1", "run", "{{flowId}}"],
-              "query": [{ "key": "stream", "value": "false" }]
+              "host": [
+                "{{langflowUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "run",
+                "{{flowId}}"
+              ],
+              "query": [
+                {
+                  "key": "stream",
+                  "value": "false"
+                }
+              ]
             },
             "body": {
               "mode": "raw",
@@ -539,14 +879,32 @@
           "request": {
             "method": "POST",
             "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "x-api-key", "value": "{{langflowApiKey}}" }
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-api-key",
+                "value": "{{langflowApiKey}}"
+              }
             ],
             "url": {
               "raw": "{{langflowUrl}}/api/v1/run/{{flowId}}?stream=false",
-              "host": ["{{langflowUrl}}"],
-              "path": ["api", "v1", "run", "{{flowId}}"],
-              "query": [{ "key": "stream", "value": "false" }]
+              "host": [
+                "{{langflowUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "run",
+                "{{flowId}}"
+              ],
+              "query": [
+                {
+                  "key": "stream",
+                  "value": "false"
+                }
+              ]
             },
             "body": {
               "mode": "raw",
@@ -574,14 +932,32 @@
           "request": {
             "method": "POST",
             "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "x-api-key", "value": "{{langflowApiKey}}" }
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-api-key",
+                "value": "{{langflowApiKey}}"
+              }
             ],
             "url": {
               "raw": "{{langflowUrl}}/api/v1/run/{{flowId}}?stream=false",
-              "host": ["{{langflowUrl}}"],
-              "path": ["api", "v1", "run", "{{flowId}}"],
-              "query": [{ "key": "stream", "value": "false" }]
+              "host": [
+                "{{langflowUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "run",
+                "{{flowId}}"
+              ],
+              "query": [
+                {
+                  "key": "stream",
+                  "value": "false"
+                }
+              ]
             },
             "body": {
               "mode": "raw",
@@ -601,10 +977,26 @@
           "request": {
             "method": "POST",
             "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "Authorization", "value": "Bearer {{accessToken}}" }
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
             ],
-            "url": { "raw": "{{baseUrl}}/api/devices/register", "host": ["{{baseUrl}}"], "path": ["api", "devices", "register"] },
+            "url": {
+              "raw": "{{baseUrl}}/api/devices/register",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "devices",
+                "register"
+              ]
+            },
             "body": {
               "mode": "raw",
               "raw": "{\n  \"token\": \"PASTE_THE_FCM_TOKEN_FROM_THE_APP\",\n  \"platform\": \"Android\",\n  \"deviceModel\": \"Pixel 8\"\n}"
@@ -616,8 +1008,22 @@
           "name": "List my devices",
           "request": {
             "method": "GET",
-            "header": [{ "key": "Authorization", "value": "Bearer {{accessToken}}" }],
-            "url": { "raw": "{{baseUrl}}/api/devices", "host": ["{{baseUrl}}"], "path": ["api", "devices"] }
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/devices",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "devices"
+              ]
+            }
           }
         },
         {
@@ -625,10 +1031,26 @@
           "request": {
             "method": "POST",
             "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "Authorization", "value": "Bearer {{accessToken}}" }
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
             ],
-            "url": { "raw": "{{baseUrl}}/api/notificationstest/send-to-me", "host": ["{{baseUrl}}"], "path": ["api", "notificationstest", "send-to-me"] },
+            "url": {
+              "raw": "{{baseUrl}}/api/notificationstest/send-to-me",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "notificationstest",
+                "send-to-me"
+              ]
+            },
             "body": {
               "mode": "raw",
               "raw": "{\n  \"title\": \"Life Admin Autopilot\",\n  \"body\": \"Your passport renewal is due Friday.\",\n  \"data\": { \"taskId\": \"{{userId}}\" }\n}"

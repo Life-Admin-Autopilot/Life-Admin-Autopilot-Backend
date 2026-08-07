@@ -1,14 +1,13 @@
 """Save Task - commits a confirmed task, and its document if one was staged.
 
-Posts to /api/Planning/commit with the nested {task, document} payload. That endpoint is
-NOT in this repository - no PlanningController exists on any branch - but it is live on
-the backend build the team runs, and it is what has been writing the `tasks` collection,
-including the Category and Priority fields the C# UserTask entity has no room for. It
-also produces the embeddings in `contentChunks` ("committed and embedded").
+Two backend builds are in play. The one that owns /api/Planning/commit (story #35) also
+writes the contentChunks embeddings; the build in this repository does not have that
+route at all and serves /api/UserTasksTest instead. So this component tries the commit
+endpoint first and falls back on a 404, which means the same flow works on either
+machine without anyone editing a field.
 
-So the endpoint stays. What changed from the original version of this component is only
-what it does around the call: it no longer swallows every failure into one generic
-string, it refuses a task with no due date, and it can attach a staged document.
+The fallback is not equivalent - it produces no embedding, so RAG will not see the task.
+That is reported in the result rather than hidden.
 """
 
 import base64
@@ -81,7 +80,17 @@ class SaveTaskToolComponent(Component):
         ),
         MessageTextInput(name="category", display_name="Category", tool_mode=True),
         MessageTextInput(name="priority", display_name="Priority", tool_mode=True),
-        MessageTextInput(name="source_type", display_name="Source Type", value="voice", tool_mode=True),
+        MessageTextInput(
+            name="source_type",
+            display_name="Source Type",
+            value="",
+            tool_mode=True,
+            info=(
+                "How the request arrived: voice or text. Leave empty and it is worked "
+                "out from the input. A document always wins: an attached .pdf makes it "
+                "pdf, any other attachment makes it photo."
+            ),
+        ),
         MessageTextInput(
             name="document_path",
             display_name="Document Path",
@@ -164,16 +173,17 @@ class SaveTaskToolComponent(Component):
         except (ValueError, requests.RequestException) as error:
             return Data(data={"saved": False, "message": f"Could not authenticate: {error}"})
 
+        document_path = (self.document_path or "").strip()
+
         task = {
             "userId": user_id,
             "title": title,
             "dueDate": due_date,
             "category": (self.category or "").strip() or "General",
             "priority": (self.priority or "").strip() or "normal",
-            "sourceType": (self.source_type or "voice").strip(),
+            "sourceType": self._source_type(document_path),
         }
 
-        document_path = (self.document_path or "").strip()
         document = self._document_payload(document_path, user_id) if document_path else None
 
         self._request_headers = headers
@@ -185,6 +195,23 @@ class SaveTaskToolComponent(Component):
 
         self.status = result.get("message", "")
         return Data(data=result)
+
+    def _source_type(self, document_path):
+        """Decide what produced this task: pdf, photo, voice or text.
+
+        Derived rather than taken on trust. The model is happy to report "voice" for a
+        typed message because the example said so, and a wrong sourceType is invisible
+        until someone filters on it months later.
+        """
+        if document_path:
+            # A file is the strongest signal and the extension is unambiguous, so it
+            # overrides whatever the model passed in.
+            return "pdf" if os.path.splitext(document_path)[1].lower() == ".pdf" else "photo"
+
+        declared = (self.source_type or "").strip().lower()
+        if declared in ("voice", "text", "pdf", "photo"):
+            return declared
+        return "text"
 
     def _document_payload(self, document_path, user_id):
         extension = os.path.splitext(document_path)[1].lower()
@@ -206,6 +233,11 @@ class SaveTaskToolComponent(Component):
         """
         response, error = self._post({"task": task, "document": document})
 
+        # This build has no PlanningController at all. Fall back rather than making the
+        # user edit a field to test on their own machine.
+        if response is not None and response.status_code == 404:
+            return self._commit_via_test_controllers(task, document)
+
         if document is not None and response is not None and response.status_code in (400, 422):
             detail = response.text[:200]
             retry, retry_error = self._post({"task": task, "document": None})
@@ -225,6 +257,72 @@ class SaveTaskToolComponent(Component):
             }, None
 
         return self._describe(response, task), None
+
+    def _commit_via_test_controllers(self, task, document):
+        """Save through the routes this repository actually serves.
+
+        Category and priority survive because the UserTask entity now declares them.
+        What does not happen is the embedding, so a task saved this way is invisible to
+        Copilot Chat until it is re-committed through the real endpoint.
+        """
+        try:
+            created = requests.post(
+                f"{self.base_url}/api/UserTasksTest",
+                json={
+                    "userId": task["userId"],
+                    "title": task["title"],
+                    "dueDate": task["dueDate"],
+                    "status": "Pending",
+                    "sourceType": task["sourceType"],
+                    "category": task["category"],
+                    "priority": task["priority"],
+                },
+                headers=self._request_headers,
+                timeout=60,
+                verify=self.verify_tls,
+            )
+            created.raise_for_status()
+            body = created.json()
+        except (requests.RequestException, ValueError) as error:
+            return {"saved": False, "message": f"Could not save the task: {error}"}, None
+
+        result = {
+            "saved": True,
+            "taskId": body.get("id"),
+            "title": task["title"],
+            "dueDate": task["dueDate"],
+            "category": task["category"],
+            "priority": task["priority"],
+            "sourceType": task["sourceType"],
+            "message": f"Saved '{task['title']}', due {task['dueDate'][:10]}.",
+            "warning": (
+                "Saved through /api/UserTasksTest because /api/Planning/commit is not on "
+                "this backend. No embedding was created, so Copilot Chat will not find "
+                "this task."
+            ),
+        }
+
+        if document is None:
+            return result, None
+        return result, self._attach_document_record(document, body.get("id"))
+
+    def _attach_document_record(self, document, task_id):
+        if not task_id:
+            return "not linked - the task saved but returned no id."
+        try:
+            response = requests.post(
+                f"{self.base_url}/api/DocumentsTest",
+                json={**document, "taskId": task_id},
+                headers=self._request_headers,
+                timeout=60,
+                verify=self.verify_tls,
+            )
+            response.raise_for_status()
+        except requests.RequestException as error:
+            # The task is already saved; losing the link is worth reporting but not
+            # worth pretending the whole save failed.
+            return f"not linked - {error}"
+        return f"linked {document['blobUrl']}"
 
     def _post(self, payload):
         try:
