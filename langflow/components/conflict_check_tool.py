@@ -179,7 +179,11 @@ class FindConflictingTasksComponent(Component):
         BoolInput(name="verify_tls", display_name="Verify TLS", value=False, advanced=True),
     ]
 
-    outputs = [Output(display_name="Result", name="output", method="find_conflicts")]
+    # The method name IS the tool name the agent sees - Langflow derives it from the
+    # method, not from the component or the output. It has to match what the system
+    # prompt tells the agent to call, or the agent silently reports "no conflicts found"
+    # for a tool it never had.
+    outputs = [Output(display_name="Result", name="output", method="find_conflicting_tasks")]
 
     def _identify(self):
         override = (self.user_id or "").strip()
@@ -190,7 +194,7 @@ class FindConflictingTasksComponent(Component):
         headers["Authorization"] = f"Bearer {token}"
         return override or token_user, headers
 
-    def find_conflicts(self) -> Data:
+    def find_conflicting_tasks(self) -> Data:
         title = (self.title or "").strip()
         if not title:
             return Data(data={"checked": False, "message": "No draft title to check."})
@@ -238,28 +242,44 @@ class FindConflictingTasksComponent(Component):
             if existing_due and existing_due < now:
                 overdue.append({"title": existing_title, "dueDate": existing_due.strftime("%Y-%m-%d")})
 
-            if not draft_due or not existing_due:
-                continue
-            if draft_due.date() != existing_due.date():
-                continue
+            same_day = (
+                draft_due is not None
+                and existing_due is not None
+                and draft_due.date() == existing_due.date()
+            )
 
-            same_day = existing_due.strftime("%Y-%m-%d")
-            if _has_time(draft_due) and _has_time(existing_due) and abs(draft_due - existing_due) <= window:
+            if (
+                same_day
+                and _has_time(draft_due)
+                and _has_time(existing_due)
+                and abs(draft_due - existing_due) <= window
+            ):
                 conflicts.append({
                     "type": "time_clash",
                     "with": existing_title,
                     "when": existing_due.strftime("%Y-%m-%d %H:%M"),
                     "detail": (
                         f"'{existing_title}' is already at {existing_due.strftime('%H:%M')} "
-                        f"on {same_day}, within {window.seconds // 60} minutes of this one."
+                        f"on {existing_due.strftime('%Y-%m-%d')}, within "
+                        f"{window.seconds // 60} minutes of this one."
                     ),
                 })
-            elif _similar(title, existing_title) >= 0.7:
+                continue
+
+            # A duplicate is a duplicate whatever date it carries. This used to be gated
+            # behind the same-day test above, so a draft with no due date was never
+            # compared with anything - even though the agent is told this tool reports
+            # duplicates in exactly that case.
+            if _similar(title, existing_title) >= 0.7:
+                when = existing_due.strftime("%Y-%m-%d") if existing_due else "no due date"
                 conflicts.append({
                     "type": "possible_duplicate",
                     "with": existing_title,
-                    "when": same_day,
-                    "detail": f"'{existing_title}' is already saved for {same_day} and looks like the same thing.",
+                    "when": when,
+                    "detail": (
+                        f"'{existing_title}' is already saved ({when}) and looks like "
+                        "the same thing."
+                    ),
                 })
 
         result = {

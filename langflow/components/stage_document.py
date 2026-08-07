@@ -151,6 +151,23 @@ class StageDocumentComponent(Component):
 
         return Message(text="\n".join(lines))
 
+    @staticmethod
+    def _unread(reason):
+        """Report an unreadable document as an instruction, not just a status line.
+
+        A bare "could not be read" gets ignored: the agent still has the user's typed
+        message, so it titles the task from that and invents the rest. A medical invoice
+        uploaded with the caption "here is my electricity bill" came back as an
+        electricity bill with no due date, while the file said 07/30/23 in bold.
+        """
+        return [
+            f"contents: NOT READ - {reason}",
+            "WARNING: nobody has read this file. You do not know what it is. Do not "
+            "describe it, name it, or take a due date, amount or category from it, and "
+            "do not fall back on how the user described it - they may be wrong. Say the "
+            "document could not be read, and ask what it is and when it is due.",
+        ]
+
     def _extract(self, token, stored_path):
         """Ask the backend what the document actually says.
 
@@ -167,20 +184,22 @@ class StageDocumentComponent(Component):
                 verify=self.verify_tls,
             )
         except requests.RequestException as error:
-            return [f"contents: could not be read ({error})"]
+            return self._unread(str(error))
 
         # Older API builds have no extract route. Staging still worked, so the flow
         # continues with what it has rather than failing the upload.
         if response.status_code == 404:
-            return ["contents: not read - this backend has no /api/documents/extract yet"]
+            return self._unread("this backend has no /api/documents/extract yet")
 
         try:
             body = response.json()
         except ValueError:
-            return [f"contents: could not be read (HTTP {response.status_code})"]
+            return self._unread(f"HTTP {response.status_code}")
 
         if not body.get("succeeded"):
-            return [f"contents: could not be read ({body.get('errorCode')})"]
+            return self._unread(
+                f"{body.get('errorCode')}: {body.get('errorMessage') or 'no detail returned'}"
+            )
 
         lines = []
         if body.get("description"):
