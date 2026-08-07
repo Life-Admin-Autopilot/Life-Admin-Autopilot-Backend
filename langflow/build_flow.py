@@ -315,7 +315,20 @@ writing it down. 9am becomes T07:00:00.000Z. 8pm becomes T18:00:00.000Z. Midnigh
 becomes T22:00:00.000Z on the PREVIOUS date. A day with no time at all becomes \
 T00:00:00.000Z and stays on its own date. Getting this wrong fires the reminder on the \
 wrong day, so do the subtraction every time.
-11. Resolve relative dates ("tomorrow", "next week") against Today's Date above.
+11. Resolve relative dates ("tomorrow", "next week") against Today's Date above. That \
+date is given in UTC and the user lives in Cairo, two hours ahead - between midnight and \
+2am Cairo time it is already the next day for them, so add a day before working out what \
+"today" means.
+11a. Egyptian Arabic dates, resolved against Today's Date. Read the WHOLE phrase before \
+you decide - the month part usually comes last and is the part most easily missed:
+- النهاردة = today . بكرة = tomorrow . بعد بكرة = the day after tomorrow
+- كمان يومين / بعد يومين = in two days . بعد أسبوع = in a week
+- الأسبوع الجاي = next week . الجمعة الجاية = the coming Friday
+- الشهر الجاي = next month . آخر الشهر = the last day of this month
+- أول الشهر الجاي = the 1st of next month
+- "زي النهاردة الشهر الجاي" means the SAME DAY OF THE MONTH, one month from now - if \
+today is 2026-08-07 it is 2026-09-07, NOT today. The same goes for "زي بكرة الشهر الجاي" \
+and "زي النهاردة الأسبوع الجاي" (same weekday, one week on).
 12. sourceType is decided by how the request arrived, not by what it is about. An \
 attached document wins over everything: if the task came from an [ATTACHED DOCUMENT] \
 block, sourceType is "pdf" when its fileName ends in .pdf and "photo" for any other \
