@@ -587,7 +587,7 @@
     },
     {
       "name": "5 - The AI flow (Langflow)",
-      "description": "Drives the Planning Agent itself.\n\nSetup:\n1. flowId - open the flow in Langflow; it is the UUID in the browser URL.\n2. langflowApiKey - Langflow Settings -> API Keys -> Add New. Since v1.5 the run endpoint requires one; a session token is not accepted.\n\nHow files work: upload first, then reference the returned file_path in `tweaks`. The tweak keys are node ids from YOUR flow - check them in the flow JSON if they differ (Langflow renames nodes on import).",
+      "description": "Drives the Planning Agent itself.\n\nIf you get 403 'No authentication credentials provided', langflowApiKey is empty or was\nedited without pressing Save.\n\nSetup:\n1. flowId - open the flow in Langflow; it is the UUID in the browser URL.\n2. langflowApiKey - Langflow Settings -> API Keys -> Add New. Since v1.5 the run endpoint requires one; a session token is not accepted.\n\nHow files work: upload first, then reference the returned file_path in `tweaks`. The tweak keys are node ids from YOUR flow - check them in the flow JSON if they differ (Langflow renames nodes on import).",
       "item": [
         {
           "name": "Upload audio to Langflow",
@@ -964,6 +964,29 @@
               "raw": "{\n  \"input_value\": \"add a task to call the bank, save it now\",\n  \"input_type\": \"chat\",\n  \"output_type\": \"chat\",\n  \"session_id\": \"no-date-session\"\n}"
             },
             "description": "A task with no due date can never produce a reminder, so both the prompt and the save_task tool refuse it. The agent should ask when it is due instead of saving."
+          }
+        }
+      ],
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// Langflow answers a blank x-api-key with 'No authentication credentials",
+              "// provided', which reads like a bug in the request rather than an unset",
+              "// variable. Fail here instead, with the actual fix in the message.",
+              "const key = pm.collectionVariables.get('langflowApiKey');",
+              "if (!key) {",
+              "    throw new Error(",
+              "        'langflowApiKey is empty. Collection -> Variables -> set langflowApiKey ' +",
+              "        '-> Save. Get one from Langflow: Settings -> API Keys -> Add New.');",
+              "}",
+              "const flow = pm.collectionVariables.get('flowId');",
+              "if (!flow) {",
+              "    throw new Error('flowId is empty. It is the UUID in the Langflow browser URL.');",
+              "}"
+            ]
           }
         }
       ]
