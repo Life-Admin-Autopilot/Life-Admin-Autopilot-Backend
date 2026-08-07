@@ -57,19 +57,31 @@ namespace Life_Admin_Autopilot.DAL.Claude
             ClaudeCompletionRequest request,
             CancellationToken cancellationToken)
         {
+            // /student/multimodal-chat has no system prompt. It accepts both "system" and
+            // "system_prompt" without complaining and then ignores them - a model told to
+            // reply with one fixed word described the image instead. So the instructions
+            // are folded into the first message, which does work: without this the
+            // "never guess a due date" rules were being dropped on every document.
+            var messages = request.Messages.Select(m => new ClaudeMultimodalWireMessage
+            {
+                Role = m.Role,
+                Text = m.Content,
+                Images = m.Images?.Select(i => new ClaudeWireImage
+                {
+                    Format = i.Format,
+                    DataBase64 = i.DataBase64
+                }).ToList()
+            }).ToList();
+
+            if (!string.IsNullOrWhiteSpace(request.SystemPrompt) && messages.Count > 0)
+            {
+                messages[0].Text = $"{request.SystemPrompt}\n\n{messages[0].Text}";
+            }
+
             var wireRequest = new ClaudeMultimodalWireRequest
             {
                 ModelId = _options.ModelId,
-                Messages = request.Messages.Select(m => new ClaudeMultimodalWireMessage
-                {
-                    Role = m.Role,
-                    Text = m.Content,
-                    Images = m.Images?.Select(i => new ClaudeWireImage
-                    {
-                        Format = i.Format,
-                        DataBase64 = i.DataBase64
-                    }).ToList()
-                }).ToList(),
+                Messages = messages,
                 MaxTokens = request.MaxTokens ?? _options.DefaultMaxTokens
             };
 
