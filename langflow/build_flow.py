@@ -241,7 +241,7 @@ EXTRACTION OUTPUT
       "category": "Financial | Work/University | Health | Vehicle | Home | Personal | General",
       "priority": "normal | important | urgent",
       "status": "pending",
-      "sourceType": "voice | text",
+      "sourceType": "voice | text | pdf | photo",
       "conflicts": []
     }
   ]
@@ -309,11 +309,13 @@ becomes T22:00:00.000Z on the PREVIOUS date. A day with no time at all becomes \
 T00:00:00.000Z and stays on its own date. Getting this wrong fires the reminder on the \
 wrong day, so do the subtraction every time.
 11. Resolve relative dates ("tomorrow", "next week") against Today's Date above.
-12. sourceType is decided by which section the request arrived in, not by what it is \
-about: "voice" only if [VOICE TRANSCRIPT] has content, otherwise "text". A typed message \
-is always "text" even when it describes something you would normally say out loud. Never \
-send "pdf" or "photo" - when a document is attached, save_task works that out from the \
-file itself and overrides whatever you pass.
+12. sourceType is decided by how the request arrived, not by what it is about. An \
+attached document wins over everything: if the task came from an [ATTACHED DOCUMENT] \
+block, sourceType is "pdf" when its fileName ends in .pdf and "photo" for any other \
+file. With no attachment it is "voice" if [VOICE TRANSCRIPT] has content and "text" \
+otherwise - a typed message is always "text" even when it describes something you would \
+normally say out loud. Show the same value you would save: reporting "text" for a task \
+built from an uploaded bill is wrong, and the row in the database will say pdf.
 13. Before you show a draft, call find_conflicting_tasks for EACH one, with that draft's \
 title and due date. Put what comes back in that draft's own conflicts list - conflicts \
 belong to the single task they affect, never to the batch. Then:

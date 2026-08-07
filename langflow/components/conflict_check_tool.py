@@ -136,6 +136,28 @@ def _has_time(moment):
     return (utc.hour, utc.minute) != (0, 0)
 
 
+def _collapse(conflicts):
+    """Fold repeats of the same clash into one entry that says how many there were."""
+    grouped = {}
+    for conflict in conflicts:
+        key = (conflict["type"], conflict["with"], conflict["when"])
+        if key in grouped:
+            grouped[key]["occurrences"] += 1
+        else:
+            grouped[key] = {**conflict, "occurrences": 1}
+
+    collapsed = []
+    for conflict in grouped.values():
+        if conflict["occurrences"] > 1:
+            conflict["detail"] = (
+                f"'{conflict['with']}' is already saved {conflict['occurrences']} times "
+                f"({conflict['when']}) and looks like the same thing."
+            )
+        collapsed.append(conflict)
+    # More than a handful is noise the agent cannot act on individually.
+    return collapsed[:5]
+
+
 class FindConflictingTasksComponent(Component):
     display_name = "Find Conflicting Tasks"
     description = (
@@ -281,6 +303,11 @@ class FindConflictingTasksComponent(Component):
                         "the same thing."
                     ),
                 })
+
+        # Eleven rows of "Renew my passport" produce eleven identical conflicts, which
+        # buries the one fact the agent needs under ten copies of itself. Collapse them
+        # and carry the count instead.
+        conflicts = _collapse(conflicts)
 
         result = {
             "checked": True,
