@@ -1,4 +1,4 @@
-﻿using Life_Admin_Autopilot.DAL.Configurations;
+using Life_Admin_Autopilot.DAL.Configurations;
 using Life_Admin_Autopilot.DAL.Repositories;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -42,6 +42,8 @@ namespace Life_Admin_Autopilot.DAL.Extensions
             services.AddScoped<IUserTaskRepository, UserTaskRepository>();
 
             services.AddScoped<IDocumentRepository,DocumentRepository>();
+
+            services.AddScoped<IContentChunkRepository, ContentChunkRepository>();
 
             return services;
         }

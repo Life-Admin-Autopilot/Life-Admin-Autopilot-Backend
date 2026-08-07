@@ -17,6 +17,7 @@ namespace Life_Admin_Autopilot.BLL
             services.AddScoped<INotificationService, NotificationService>();
             services.AddScoped<ISpeechToTextService, SpeechToTextService>();
             services.AddScoped<IFileUploadService, FileUploadService>();
+            services.AddScoped<IPlanningService, PlanningService>();
 
             return services;
         }
