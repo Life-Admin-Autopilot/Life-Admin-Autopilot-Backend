@@ -49,27 +49,33 @@ section means the user did not provide it. A recording that *was* supplied but f
 transcribe raises instead — silently returning empty there would let the agent invent a
 task out of nothing.
 
-## Three gaps you should know about
+## Where the commit endpoint lives
 
-**1. `/api/Planning/commit` does not exist.** The previous Save Task tool posted there
-and got a 404 on every save, reported as a generic "Error saving task to backend". No
-`PlanningController` is in the codebase — that is story #35. Until it lands, Save Task
-writes through `UserTasksTestController` and `DocumentsTestController`, which are the
-only endpoints that currently reach Mongo. Those are **unauthenticated dev scaffolding**
-and must not reach a deployed environment.
+`save_task` posts to **`/api/Planning/commit`** with a nested `{task, document}` payload.
+That endpoint is **not in this repository** — no `PlanningController` exists on any
+branch or in any commit. It is on the backend build the team runs (story #35), and it is
+what has been writing the `tasks` collection all along, including the `Category` and
+`Priority` fields and the `contentChunks` embeddings.
 
-**2. Category and priority are not persisted.** `UserTask` has exactly `Id`, `UserId`,
-`Title`, `DueDate`, `Status`, `SourceType`. The agent extracts a category and a priority
-and shows them to the user, but there is nowhere to store them, so ASP.NET drops both
-from the request body. Save Task says so explicitly in its result rather than letting the
-loss pass unnoticed. Category *is* stored on the document record when one is attached.
+Do not "fix" this by repointing it at `/api/usertaskstest`. That route goes through the
+C# `UserTask` entity, which declares only Id, UserId, Title, DueDate, Status, SourceType —
+so category and priority are dropped, and no embedding is produced. The endpoint is
+configurable on the component (**Commit Endpoint**) if the route ever moves.
 
-**3. Staged documents expire.** `POST /api/documents/staging` writes to
+## Two gaps that remain
+
+**1. Staged documents expire.** `POST /api/documents/staging` writes to
 `documents-staging`, which an Azure lifecycle rule clears after about a day. Promotion to
 the permanent `documents` container is `PromoteStagedDocumentAsync`, which has no HTTP
-endpoint — it belongs to `/planning/commit` (#35). So a document linked from Langflow
-today points at a blob that will be deleted. Save Task flags this in its result. Closing
-it needs either #35 or a small promote endpoint.
+endpoint of its own. If the commit endpoint does not promote the blob it is given, the
+document record will eventually point at a deleted file.
+
+**2. The `document` half of the commit payload is unverified.** The original tool always
+sent `"document": null`, so the shape the server expects for a real document is a guess
+based on the `Document` entity (`blobUrl`, `category`, `sourceType`, `uploadedAt`). If
+the server rejects it with a 400 or 422, `save_task` **retries with `document: null`** so
+the task is still saved, and reports that the document was not attached. Confirm the real
+DTO with whoever owns #35 and adjust `_document_payload` if needed.
 
 ## Rebuilding after editing in the UI
 
@@ -130,6 +136,41 @@ The generated flow was loaded into Langflow 1.10.2 and built. Every component re
 So the graph, the wiring and all four components are confirmed working. What is **not**
 verified is a real end-to-end run: that needs the Mistral key, a registered backend user,
 and the API running.
+
+## Testing it
+
+`postman/Life-Admin-Autopilot.postman_collection.json` drives the whole chain — login,
+transcribe, stage a document, commit, and the Langflow flow itself (text, voice,
+document, and both together). Import it into Postman and run the folders in order.
+
+Two things it needs that the collection cannot store for you:
+
+- **`langflowApiKey`** — Langflow **Settings → API Keys → Add New**. Since v1.5 the run
+  endpoint rejects a session token and requires an API key.
+- **`flowId`** — the UUID in the Langflow browser URL when the flow is open.
+
+Also turn **SSL certificate verification off** in Postman settings, or every call to
+`https://localhost:7276` fails on the self-signed dev certificate.
+
+The `tweaks` keys in the Langflow requests are node ids, and **Langflow renames nodes on
+import**. If a run returns `Vertex … not found`, open the flow JSON and copy the current
+ids for Transcribe Audio and Stage Document.
+
+## Agent instructions
+
+The system prompt is in `build_flow.py` (`SYSTEM_PROMPT`) so it is reviewable and
+versioned rather than living only in the Langflow database. Rules that exist for a
+specific reason:
+
+- **Reply in the user's language.** The default ASR locale is `ar-EG`; without this the
+  agent answers an Arabic speaker in English.
+- **Call `save_task` exactly once per task.** Mongo shows "Pay the electricity bill"
+  saved 5 times, twice within 9 seconds — the agent double-calling on one confirmation.
+- **Never invent a due date.** It must ask, not guess, or reminders fire on dates the
+  user never chose.
+- **Cairo is UTC+2.** "Tomorrow at 9am" is `T07:00:00.000Z`, not `T09:00:00.000Z`.
+- **Leave `conflicts` empty.** The agent cannot see the calendar, so it is in no position
+  to claim a clash.
 
 ## Security note
 

@@ -1,0 +1,642 @@
+{
+  "info": {
+    "name": "Life Admin Autopilot - full AI flow",
+    "description": "Voice and document -> transcript -> draft task -> confirmed task in Mongo.\n\nRun the folders top to bottom. Each request stores what the next one needs (token, user id, staged path, transcript), so you rarely have to paste anything by hand.\n\nBefore you start:\n1. Backend running on https://localhost:7276\n2. Postman: Settings -> General -> SSL certificate verification OFF (the localhost dev cert is self-signed)\n3. Langflow running on http://localhost:7860, with a valid Mistral key in the flow\n4. Fill the `langflowApiKey` and `flowId` collection variables (see the Langflow folder description)",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    { "key": "baseUrl", "value": "https://localhost:7276" },
+    { "key": "langflowUrl", "value": "http://localhost:7860" },
+    { "key": "flowId", "value": "" },
+    { "key": "langflowApiKey", "value": "" },
+    { "key": "email", "value": "omar.test@example.com" },
+    { "key": "password", "value": "Passw0rd!23" },
+    { "key": "accessToken", "value": "" },
+    { "key": "refreshToken", "value": "" },
+    { "key": "userId", "value": "" },
+    { "key": "stagedPath", "value": "" },
+    { "key": "avatarPath", "value": "" },
+    { "key": "transcript", "value": "" },
+    { "key": "sessionId", "value": "postman-session-1" },
+    { "key": "audioFilePath", "value": "" },
+    { "key": "documentFilePath", "value": "" }
+  ],
+  "item": [
+    {
+      "name": "1 - Auth",
+      "description": "Everything below needs the token this folder produces. Access tokens last 15 minutes; re-run Login when you start getting 401s.",
+      "item": [
+        {
+          "name": "Register (first run only)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// 400 here usually just means the account already exists - that is fine.",
+                  "if (pm.response.code === 200) {",
+                  "    const body = pm.response.json();",
+                  "    pm.collectionVariables.set('accessToken', body.accessToken);",
+                  "    pm.collectionVariables.set('refreshToken', body.refreshToken);",
+                  "    pm.test('registered and got a token', () => pm.expect(body.accessToken).to.be.a('string'));",
+                  "} else {",
+                  "    console.log('Register returned ' + pm.response.code + ' - run Login instead.');",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": { "raw": "{{baseUrl}}/api/auth/register", "host": ["{{baseUrl}}"], "path": ["api", "auth", "register"] },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{email}}\",\n  \"password\": \"{{password}}\"\n}"
+            },
+            "description": "Password must be at least 8 characters. Email must be unique."
+          }
+        },
+        {
+          "name": "Login",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('login succeeded', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.collectionVariables.set('accessToken', body.accessToken);",
+                  "pm.collectionVariables.set('refreshToken', body.refreshToken);",
+                  "",
+                  "// The user id lives in the token's `sub` claim. Everything server-side",
+                  "// derives the id from the token, so this is only for building URLs and",
+                  "// for checking Mongo rows later.",
+                  "const payload = body.accessToken.split('.')[1].replace(/-/g, '+').replace(/_/g, '/');",
+                  "const claims = JSON.parse(atob(payload + '==='.slice((payload.length + 3) % 4)));",
+                  "pm.collectionVariables.set('userId', claims.sub || claims.nameid || '');",
+                  "console.log('userId = ' + pm.collectionVariables.get('userId'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": { "raw": "{{baseUrl}}/api/auth/login", "host": ["{{baseUrl}}"], "path": ["api", "auth", "login"] },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{email}}\",\n  \"password\": \"{{password}}\"\n}"
+            }
+          }
+        },
+        {
+          "name": "Refresh token",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code === 200) {",
+                  "    const body = pm.response.json();",
+                  "    pm.collectionVariables.set('accessToken', body.accessToken);",
+                  "    pm.collectionVariables.set('refreshToken', body.refreshToken);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": { "raw": "{{baseUrl}}/api/auth/refresh", "host": ["{{baseUrl}}"], "path": ["api", "auth", "refresh"] },
+            "body": { "mode": "raw", "raw": "{\n  \"refreshToken\": \"{{refreshToken}}\"\n}" },
+            "description": "Refresh tokens are single-use: refreshing revokes the old one."
+          }
+        }
+      ]
+    },
+    {
+      "name": "2 - Voice",
+      "description": "Story #36. Upload a recording, get the words back.",
+      "item": [
+        {
+          "name": "Transcribe audio",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const body = pm.response.json();",
+                  "if (body.succeeded) {",
+                  "    pm.collectionVariables.set('transcript', body.transcript);",
+                  "    pm.test('got a transcript', () => pm.expect(body.transcript).to.not.be.empty);",
+                  "    console.log('transcript: ' + body.transcript);",
+                  "    console.log('latency: ' + body.latencyMs + ' ms');",
+                  "} else {",
+                  "    // Failures use the same shape as successes - never a bare 500.",
+                  "    console.log('ASR failed [' + body.errorCode + ']: ' + body.errorMessage);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Authorization", "value": "Bearer {{accessToken}}" }],
+            "url": { "raw": "{{baseUrl}}/api/speech/transcribe", "host": ["{{baseUrl}}"], "path": ["api", "speech", "transcribe"] },
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                { "key": "audio", "type": "file", "src": [], "description": "WAV or MP3. NOT m4a/AAC - the provider rejects it. Pick your file here." },
+                { "key": "language", "value": "ar-EG", "type": "text", "description": "Send it. Auto-detect returns Latin transliteration for Arabic. Use en-US for English." }
+              ]
+            },
+            "description": "Select a file for the `audio` field before sending - Postman cannot store a file path in a shared collection.\n\nExpected errors:\n- 400 ASR_UNSUPPORTED_FORMAT (you sent .m4a)\n- 400 ASR_EMPTY_TRANSCRIPT (silence)\n- 503 ASR_QUOTA_EXCEEDED (Hugging Face credits spent)\n- 504 ASR_TIMEOUT"
+          }
+        }
+      ]
+    },
+    {
+      "name": "3 - Document and photo",
+      "description": "Story #18. The file is stored immediately so it can be previewed during confirmation, but nothing is written to Mongo until the task is committed.",
+      "item": [
+        {
+          "name": "Stage a document",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const body = pm.response.json();",
+                  "if (body.succeeded) {",
+                  "    pm.collectionVariables.set('stagedPath', body.path);",
+                  "    pm.test('stored under the caller id', () =>",
+                  "        pm.expect(body.path).to.include(pm.collectionVariables.get('userId')));",
+                  "    console.log('stored path: ' + body.path);",
+                  "    console.log('preview url (15 min): ' + body.readUrl);",
+                  "} else {",
+                  "    console.log('upload failed [' + body.errorCode + ']: ' + body.errorMessage);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Authorization", "value": "Bearer {{accessToken}}" }],
+            "url": { "raw": "{{baseUrl}}/api/documents/staging", "host": ["{{baseUrl}}"], "path": ["api", "documents", "staging"] },
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                { "key": "file", "type": "file", "src": [], "description": "PDF, JPEG, PNG, WebP or GIF. Up to 20 MB." }
+              ]
+            },
+            "description": "Returns a stored PATH, not a URL. Storing a SAS URL would leave every Mongo record pointing at a dead link and would persist a live access credential."
+          }
+        },
+        {
+          "name": "Get a preview URL",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('got a signed url', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "if (body.succeeded) { console.log(body.readUrl); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{accessToken}}" }],
+            "url": {
+              "raw": "{{baseUrl}}/api/files/read-url?path={{stagedPath}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "files", "read-url"],
+              "query": [{ "key": "path", "value": "{{stagedPath}}" }]
+            },
+            "description": "Valid for 15 minutes, read-only. Paste the returned URL into a browser to see the file."
+          }
+        },
+        {
+          "name": "Read-url for someone else's file (should be 403)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// NFR-5: a user must only reach their own files. This is the negative test.",
+                  "pm.test('another user\\'s file is refused', () => pm.response.to.have.status(403));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{accessToken}}" }],
+            "url": {
+              "raw": "{{baseUrl}}/api/files/read-url?path=documents/00000000-0000-0000-0000-000000000000/secret.pdf",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "files", "read-url"],
+              "query": [{ "key": "path", "value": "documents/00000000-0000-0000-0000-000000000000/secret.pdf" }]
+            }
+          }
+        },
+        {
+          "name": "Upload avatar (FR-1.6)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const body = pm.response.json();",
+                  "if (body.succeeded) { pm.collectionVariables.set('avatarPath', body.path); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Authorization", "value": "Bearer {{accessToken}}" }],
+            "url": { "raw": "{{baseUrl}}/api/users/me/avatar", "host": ["{{baseUrl}}"], "path": ["api", "users", "me", "avatar"] },
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                { "key": "file", "type": "file", "src": [], "description": "JPEG, PNG or WebP, up to 5 MB." }
+              ]
+            },
+            "description": "Replacing an avatar deletes the previous blob."
+          }
+        }
+      ]
+    },
+    {
+      "name": "4 - Commit the task",
+      "description": "The endpoint the Langflow agent calls when the user confirms a draft.\n\nNOTE: /api/Planning/commit is NOT in this repository - no PlanningController exists on any branch. It lives on the team's backend build (story #35) and is what writes Category, Priority and the contentChunks embeddings. If you get a 404, you are running a build that does not have it; use the fallback request below instead.",
+      "item": [
+        {
+          "name": "Commit task + document",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code === 404) {",
+                  "    console.log('No commit endpoint on this build - use the UserTasksTest fallback below.');",
+                  "} else {",
+                  "    pm.test('committed', () => pm.response.to.have.status(200));",
+                  "    console.log(pm.response.text());",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{accessToken}}" }
+            ],
+            "url": { "raw": "{{baseUrl}}/api/Planning/commit", "host": ["{{baseUrl}}"], "path": ["api", "Planning", "commit"] },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"task\": {\n    \"userId\": \"{{userId}}\",\n    \"title\": \"Renew my passport\",\n    \"dueDate\": \"2026-08-14T00:00:00.000Z\",\n    \"category\": \"Personal\",\n    \"priority\": \"important\",\n    \"sourceType\": \"voice\"\n  },\n  \"document\": {\n    \"userId\": \"{{userId}}\",\n    \"blobUrl\": \"{{stagedPath}}\",\n    \"category\": \"Personal\",\n    \"sourceType\": \"pdf\",\n    \"uploadedAt\": \"2026-08-07T00:00:00.000Z\"\n  }\n}"
+            },
+            "description": "Set \"document\": null when there is no attachment.\n\nCategory values in use: Financial, Work/University, Health, Vehicle, Home, Personal, General.\nPriority values: normal, important, urgent."
+          }
+        },
+        {
+          "name": "Fallback - save via UserTasksTest",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": { "raw": "{{baseUrl}}/api/usertaskstest", "host": ["{{baseUrl}}"], "path": ["api", "usertaskstest"] },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"userId\": \"{{userId}}\",\n  \"title\": \"Renew my passport\",\n  \"dueDate\": \"2026-08-14T00:00:00.000Z\",\n  \"status\": \"Pending\",\n  \"sourceType\": \"voice\"\n}"
+            },
+            "description": "Unauthenticated dev scaffolding. Note it drops category and priority - the C# UserTask entity has no fields for them, even though the Mongo documents do."
+          }
+        },
+        {
+          "name": "Verify - list my tasks",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const tasks = pm.response.json();",
+                  "console.log('tasks for this user: ' + tasks.length);",
+                  "tasks.slice(-5).forEach(t => console.log('  ' + t.title + ' | ' + t.dueDate));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/api/usertaskstest/user/{{userId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "usertaskstest", "user", "{{userId}}"]
+            },
+            "description": "Reads straight from the `tasks` collection, so it is the quickest way to confirm a commit landed."
+          }
+        }
+      ]
+    },
+    {
+      "name": "5 - The AI flow (Langflow)",
+      "description": "Drives the Planning Agent itself.\n\nSetup:\n1. flowId - open the flow in Langflow; it is the UUID in the browser URL.\n2. langflowApiKey - Langflow Settings -> API Keys -> Add New. Since v1.5 the run endpoint requires one; a session token is not accepted.\n\nHow files work: upload first, then reference the returned file_path in `tweaks`. The tweak keys are node ids from YOUR flow - check them in the flow JSON if they differ (Langflow renames nodes on import).",
+      "item": [
+        {
+          "name": "Upload audio to Langflow",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const body = pm.response.json();",
+                  "pm.collectionVariables.set('audioFilePath', body.file_path);",
+                  "console.log('audio file_path = ' + body.file_path);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "x-api-key", "value": "{{langflowApiKey}}" }],
+            "url": {
+              "raw": "{{langflowUrl}}/api/v1/files/upload/{{flowId}}",
+              "host": ["{{langflowUrl}}"],
+              "path": ["api", "v1", "files", "upload", "{{flowId}}"]
+            },
+            "body": {
+              "mode": "formdata",
+              "formdata": [{ "key": "file", "type": "file", "src": [], "description": "Your WAV recording." }]
+            }
+          }
+        },
+        {
+          "name": "Upload document to Langflow",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const body = pm.response.json();",
+                  "pm.collectionVariables.set('documentFilePath', body.file_path);",
+                  "console.log('document file_path = ' + body.file_path);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "x-api-key", "value": "{{langflowApiKey}}" }],
+            "url": {
+              "raw": "{{langflowUrl}}/api/v1/files/upload/{{flowId}}",
+              "host": ["{{langflowUrl}}"],
+              "path": ["api", "v1", "files", "upload", "{{flowId}}"]
+            },
+            "body": {
+              "mode": "formdata",
+              "formdata": [{ "key": "file", "type": "file", "src": [], "description": "Your PDF or photo." }]
+            }
+          }
+        },
+        {
+          "name": "Run - typed text only",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('flow ran', () => pm.response.to.have.status(200));",
+                  "const out = pm.response.json();",
+                  "try {",
+                  "    console.log(out.outputs[0].outputs[0].results.message.text);",
+                  "} catch (e) {",
+                  "    console.log(pm.response.text().slice(0, 1500));",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "x-api-key", "value": "{{langflowApiKey}}" }
+            ],
+            "url": {
+              "raw": "{{langflowUrl}}/api/v1/run/{{flowId}}?stream=false",
+              "host": ["{{langflowUrl}}"],
+              "path": ["api", "v1", "run", "{{flowId}}"],
+              "query": [{ "key": "stream", "value": "false" }]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"input_value\": \"remind me to renew my passport next friday and pay the electricity bill on sunday\",\n  \"input_type\": \"chat\",\n  \"output_type\": \"chat\",\n  \"session_id\": \"{{sessionId}}\"\n}"
+            },
+            "description": "The agent should reply with a markdown list of drafts and ask you to confirm. It must NOT save anything yet."
+          }
+        },
+        {
+          "name": "Run - voice recording",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "x-api-key", "value": "{{langflowApiKey}}" }
+            ],
+            "url": {
+              "raw": "{{langflowUrl}}/api/v1/run/{{flowId}}?stream=false",
+              "host": ["{{langflowUrl}}"],
+              "path": ["api", "v1", "run", "{{flowId}}"],
+              "query": [{ "key": "stream", "value": "false" }]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"input_value\": \"\",\n  \"input_type\": \"chat\",\n  \"output_type\": \"chat\",\n  \"session_id\": \"{{sessionId}}\",\n  \"tweaks\": {\n    \"TranscribeAudio-9MiTJ\": {\n      \"audio_file\": \"{{audioFilePath}}\",\n      \"language\": \"ar-EG\"\n    }\n  }\n}"
+            },
+            "description": "input_value is empty on purpose: the spoken command is the input. The agent should treat the transcript as the user's words and reply in the language they spoke."
+          }
+        },
+        {
+          "name": "Run - document or photo",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "x-api-key", "value": "{{langflowApiKey}}" }
+            ],
+            "url": {
+              "raw": "{{langflowUrl}}/api/v1/run/{{flowId}}?stream=false",
+              "host": ["{{langflowUrl}}"],
+              "path": ["api", "v1", "run", "{{flowId}}"],
+              "query": [{ "key": "stream", "value": "false" }]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"input_value\": \"here is my electricity bill, add whatever I need to do\",\n  \"input_type\": \"chat\",\n  \"output_type\": \"chat\",\n  \"session_id\": \"{{sessionId}}\",\n  \"tweaks\": {\n    \"StageDocument-tOYga\": {\n      \"document_file\": \"{{documentFilePath}}\"\n    }\n  }\n}"
+            },
+            "description": "The document is uploaded to blob storage and described to the agent as an ATTACHED DOCUMENT block carrying a storedPath, which it passes to save_task on confirmation."
+          }
+        },
+        {
+          "name": "Run - voice + document together",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "x-api-key", "value": "{{langflowApiKey}}" }
+            ],
+            "url": {
+              "raw": "{{langflowUrl}}/api/v1/run/{{flowId}}?stream=false",
+              "host": ["{{langflowUrl}}"],
+              "path": ["api", "v1", "run", "{{flowId}}"],
+              "query": [{ "key": "stream", "value": "false" }]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"input_value\": \"\",\n  \"input_type\": \"chat\",\n  \"output_type\": \"chat\",\n  \"session_id\": \"{{sessionId}}\",\n  \"tweaks\": {\n    \"TranscribeAudio-9MiTJ\": {\n      \"audio_file\": \"{{audioFilePath}}\",\n      \"language\": \"ar-EG\"\n    },\n    \"StageDocument-tOYga\": {\n      \"document_file\": \"{{documentFilePath}}\"\n    }\n  }\n}"
+            }
+          }
+        },
+        {
+          "name": "Run - confirm and save",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const text = pm.response.text();",
+                  "pm.test('the agent did not fake a success', () => {",
+                  "    pm.expect(text.toLowerCase()).to.not.include('error saving task');",
+                  "});",
+                  "console.log('Now check Mongo: the tasks collection should have exactly ONE new row.');"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "x-api-key", "value": "{{langflowApiKey}}" }
+            ],
+            "url": {
+              "raw": "{{langflowUrl}}/api/v1/run/{{flowId}}?stream=false",
+              "host": ["{{langflowUrl}}"],
+              "path": ["api", "v1", "run", "{{flowId}}"],
+              "query": [{ "key": "stream", "value": "false" }]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"input_value\": \"yes, save it\",\n  \"input_type\": \"chat\",\n  \"output_type\": \"chat\",\n  \"session_id\": \"{{sessionId}}\"\n}"
+            },
+            "description": "Same session_id as the previous run - that is what gives the agent the draft it is confirming.\n\nAfter this, run '4 - Verify - list my tasks' or look in Mongo. One new row, not two: duplicate saves have been a real problem, so if you see the same title twice the prompt rule is not holding."
+          }
+        },
+        {
+          "name": "Run - no due date (should refuse)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const text = pm.response.text().toLowerCase();",
+                  "pm.test('refuses to save without a due date', () => {",
+                  "    pm.expect(text).to.include('due date');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "x-api-key", "value": "{{langflowApiKey}}" }
+            ],
+            "url": {
+              "raw": "{{langflowUrl}}/api/v1/run/{{flowId}}?stream=false",
+              "host": ["{{langflowUrl}}"],
+              "path": ["api", "v1", "run", "{{flowId}}"],
+              "query": [{ "key": "stream", "value": "false" }]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"input_value\": \"add a task to call the bank, save it now\",\n  \"input_type\": \"chat\",\n  \"output_type\": \"chat\",\n  \"session_id\": \"no-date-session\"\n}"
+            },
+            "description": "A task with no due date can never produce a reminder, so both the prompt and the save_task tool refuse it. The agent should ask when it is due instead of saving."
+          }
+        }
+      ]
+    },
+    {
+      "name": "6 - Push notifications",
+      "description": "Story #38. Register the device, then send yourself a test.",
+      "item": [
+        {
+          "name": "Register this device",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{accessToken}}" }
+            ],
+            "url": { "raw": "{{baseUrl}}/api/devices/register", "host": ["{{baseUrl}}"], "path": ["api", "devices", "register"] },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"token\": \"PASTE_THE_FCM_TOKEN_FROM_THE_APP\",\n  \"platform\": \"Android\",\n  \"deviceModel\": \"Pixel 8\"\n}"
+            },
+            "description": "Safe to call on every app start - re-registering refreshes rather than duplicating, which matters because FCM rotates tokens. Responses show a masked token on purpose."
+          }
+        },
+        {
+          "name": "List my devices",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{accessToken}}" }],
+            "url": { "raw": "{{baseUrl}}/api/devices", "host": ["{{baseUrl}}"], "path": ["api", "devices"] }
+          }
+        },
+        {
+          "name": "Send a test notification to me",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{accessToken}}" }
+            ],
+            "url": { "raw": "{{baseUrl}}/api/notificationstest/send-to-me", "host": ["{{baseUrl}}"], "path": ["api", "notificationstest", "send-to-me"] },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"title\": \"Life Admin Autopilot\",\n  \"body\": \"Your passport renewal is due Friday.\",\n  \"data\": { \"taskId\": \"{{userId}}\" }\n}"
+            },
+            "description": "404 if you have no registered devices; 502 if every send failed - so a test that reached nobody cannot be mistaken for a pass."
+          }
+        }
+      ]
+    }
+  ]
+}
