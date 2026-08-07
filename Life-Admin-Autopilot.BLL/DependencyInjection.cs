@@ -16,6 +16,7 @@ namespace Life_Admin_Autopilot.BLL
             services.AddScoped<IJwtTokenService, JwtTokenService>();
             services.AddScoped<INotificationService, NotificationService>();
             services.AddScoped<ISpeechToTextService, SpeechToTextService>();
+            services.AddScoped<IFileUploadService, FileUploadService>();
 
             return services;
         }

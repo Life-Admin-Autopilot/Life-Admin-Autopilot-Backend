@@ -89,6 +89,33 @@ Common ones: `400 ASR_UNSUPPORTED_FORMAT` (sent an .m4a), `400 ASR_EMPTY_TRANSCR
 
 ---
 
+## Files — `/api/documents`, `/api/users/me/avatar`, `/api/files`
+
+Stores documents and profile pictures in Azure Blob Storage. Full detail in
+[file-storage.md](file-storage.md).
+
+| Endpoint | Auth | What it does |
+| --- | --- | --- |
+| `POST /api/documents/staging` | Yes | Upload a document (multipart, field `file`). Held pending confirmation — nothing is written to the database yet. |
+| `POST /api/users/me/avatar` | Yes | Upload a profile picture; saves it to your profile and deletes the old one. |
+| `GET /api/files/read-url?path=...` | Yes | Exchange a stored file path for a short-lived (15 min) URL you can actually fetch. |
+
+Uploads return the stored **path** plus a ready-to-use `readUrl`:
+
+```json
+{ "succeeded": true, "path": "documents-staging/6a1f.../3fa85f64.pdf",
+  "readUrl": "https://...blob.core.windows.net/...?sig=...",
+  "contentType": "application/pdf", "sizeBytes": 184320 }
+```
+
+Why paths and not URLs: a SAS URL expires, so storing one would leave every record pointing
+at a dead link *and* put a live credential in the database. Ask for a fresh URL when you
+need one. Requesting a URL for a file you don't own returns **403**.
+
+Documents accept PDF/JPEG/PNG/WebP/GIF up to 20 MB; avatars JPEG/PNG/WebP up to 5 MB.
+
+---
+
 ## Devices — `/api/devices`
 
 Registers which phones belong to a user, so reminders know where to go.
@@ -164,8 +191,8 @@ in by the caller. To be replaced by the proper Task CRUD API (story #31).
 | `PUT /{id}` | Replaces a document. |
 | `DELETE /{id}` | Deletes a document. |
 
-Note `blobUrl` is just a string the caller supplies — **there is no file upload yet**.
-Azure Blob Storage (story #18) is not built, so nothing actually stores a file.
+Note `blobUrl` here is just a string the caller supplies. Real uploads go through
+`POST /api/documents/staging` — see the Files section above.
 
 ---
 
@@ -200,7 +227,6 @@ Planned in SRS §7.1 but absent from the codebase today:
 | `POST /api/planning/commit` | Saves a confirmed proposal: task + document + reminder together | #35 |
 | `GET/POST/PATCH/DELETE /api/tasks` | Real task CRUD, scoped to the caller | #31 |
 | `GET /api/users/me`, `PATCH /api/users/me` | Profile and preferences (locale, theme) | — |
-| `POST /api/users/me/avatar` | Profile picture upload | #18 |
 | `GET/PATCH /api/reminders` | Reminder listing and rescheduling | #55 |
 | `GET /api/briefing/today` | The daily briefing | #49 |
 | Copilot Chat endpoint | RAG question-answering over tasks and documents | #83 |

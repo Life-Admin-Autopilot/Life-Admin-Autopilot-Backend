@@ -19,6 +19,7 @@ namespace Life_Admin_Autopilot_Backend
             builder.Services.AddClaudeService(builder.Configuration);
             builder.Services.AddPushNotifications(builder.Configuration);
             builder.Services.AddSpeechServices(builder.Configuration);
+            builder.Services.AddFileStorage(builder.Configuration);
             builder.Services.AddAuthorization();
 
             builder.Services.AddControllers();
