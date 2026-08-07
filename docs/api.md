@@ -232,5 +232,14 @@ Planned in SRS §7.1 but absent from the codebase today:
 | Copilot Chat endpoint | RAG question-answering over tasks and documents | #83 |
 
 **The most consequential gap:** `/api/planning/propose` doesn't exist, so `/api/speech/transcribe`
-currently has no consumer. Transcription works, but nothing yet turns a transcript into a
-task. Voice → task is not demonstrable end-to-end until #30 lands.
+currently has no consumer *inside the backend*. Transcription works, but nothing in this
+codebase yet turns a transcript into a task.
+
+---
+
+## Consumed from Langflow
+
+Until #30 and #35 land, the Planning Agent lives in Langflow and calls these endpoints
+over HTTP. The flow, its custom components and its setup steps are in
+[langflow/README.md](../langflow/README.md) — including the three gaps that make the
+voice → document → task chain incomplete today.

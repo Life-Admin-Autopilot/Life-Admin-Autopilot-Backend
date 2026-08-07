@@ -21,3 +21,6 @@ Thumbs.db
 ## Firebase service account keys - these are private keys, never commit one
 *firebase-adminsdk*.json
 *service-account*.json
+# Python bytecode from the Langflow component build script
+__pycache__/
+*.pyc
