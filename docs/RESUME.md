@@ -86,7 +86,18 @@ Check `git -C <worktree> log --oneline` and `git status` in each before assuming
 
 So the rule is: **405 → 404 for every method except OPTIONS**; OPTIONS is already handled by the CORS short-circuit. Note `OPTIONS` returns 204, not the 200 `MimicExpressAutoOptions` produces — that 200 path applies only to non-allowlisted origins, where CORS does not short-circuit.
 
-**Also decided:** emit Express's real HTML 404 body, gated on `GetEndpoint() is null`. Arbitrated in favour of fixing the server rather than masking the harness row — a permanently-red row trains people to ignore red rows.
+**Also decided:** emit Express's real HTML 404 body. Arbitrated in favour of fixing the server rather than masking the harness row — a permanently-red row trains people to ignore red rows.
+
+### The two fixes DO NOT COMPOSE as first specified — read this before implementing
+
+Caught in review by the slice-A author. The HTML-404 fix was specified as gated on `GetEndpoint() is null`. **That is false on a method mismatch** — routing did match an endpoint, it just rejected the method. So applying the 405→404 rewrite first yields a 404 with an *empty* body, and the harness row stays red on content-type and body. The fix would look done and not be.
+
+Correct rule: gate the HTML body on **"final status is 404 and nothing has been written"**, not on `GetEndpoint() is null`. Ordering matters — the body writer must run *after* the status rewrite.
+
+Two more requirements from the same review:
+
+- **HEAD augmentation.** Express lists `HEAD` alongside `GET` in `Allow`; ASP.NET emits only `GET`. Already handled inside `MimicExpressAutoOptions`; preserve it when extracting that logic into its own middleware.
+- **Reflected XSS.** The Express 404 body interpolates the request path (`Cannot PUT /health`). Writing the raw path into an HTML response is an injection vector. **HTML-escape it**, and add a test with a path like `/<script>alert(1)</script>` asserting the tags come back escaped. Node's `finalhandler` escapes; a naive port will not.
 
 ## Other open items
 
