@@ -54,7 +54,7 @@ The auth limiter is 20/15min and the strict one 5/hour, **keyed on raw socket IP
 
 ### Current measured state
 
-`dotnet build` clean, **`dotnet test` 288 passing**.
+`dotnet build` clean, **`dotnet test` 309 passing** (288 + 21 on `slice/kernel-hardening`).
 
 Full harness run, integration branch vs the live Node reference:
 
@@ -79,13 +79,30 @@ node tools/parity/run.mjs --reference http://localhost:4200 --candidate http://l
 
 Bind `[::]` and dial `localhost` on both sides — `127.0.0.1` is IPv4-only and breaks any row echoing `req.ip`.
 
-### Three kernel defects found by slice B, all independently reproduced, all still open
+### Three kernel defects found by slice B — ALL FIXED on `slice/kernel-hardening`
 
-1. **Bodies are parsed regardless of Content-Type** (#21). `express.json()` parses only `application/json`; the kernel parses anything. `POST /auth/signup` with a valid JSON payload: `text/plain`, no content-type, `application/vnd.api+json` and form-encoded all give node=400 / dotnet=201. Affects every slice with a body, and it is a security regression — `text/plain` is a CORS *simple* request, so the content-type gate is what stops cross-origin state-changing calls without a preflight.
-2. **No security headers at all** (#22). Node sends CSP, HSTS, `nosniff` and `X-Frame-Options` on both success and error paths; the candidate sends none on either, and leaks `Server: Kestrel`. Fix `KernelErrorMiddleware`'s `Response.Clear()` at the same time — it wipes headers set before a throw, including the 429's `Retry-After`.
-3. **`KERNEL.md` §12.1 prescribes an IPv4-only bind** (#23), which fails `sessions[].ip` parity.
+None of these failed a harness row; all three took hand-rolled differentials to find,
+and each now has one in `Life-Admin-Autopilot.Tests/Kernel/KernelHardeningTests.cs`.
 
-None of these fails a harness row today; all three took hand-rolled differentials to find.
+1. **Bodies were parsed regardless of Content-Type** (#21). **Fixed** — `KernelBody.ReadAsync`
+   now gates on `IsJsonContentType` *before* reading the stream, matching body-parser's
+   default `application/json` matcher: parameters and casing still parse
+   (`application/json; charset=utf-8`, `APPLICATION/JSON`), everything else — absent,
+   `text/plain`, form-encoded, and the `+json` suffix types — leaves the body `{}` so the
+   route's own validators produce Node's exact `Required` errors. Gating before the read
+   matters: the same malformed or 300kb body is a 500 as `application/json` and a 400 as
+   `text/plain`. Also a security fix (`text/plain` is a CORS simple request). See KERNEL.md §2.6.
+2. **No security headers** (#22). **Fixed** — new `HelmetHeadersMiddleware` emits all
+   **twelve** helmet 8.1.0 defaults (not the four one grep showed) on every response, and
+   `KestrelServerOptions.AddServerHeader = false` drops `Server: Kestrel`.
+   `KernelErrorMiddleware.WriteAsync` no longer calls `Response.Clear()`, so the 429's
+   `Retry-After` / `RateLimit-*` family and the CORS pair survive the error path.
+   See KERNEL.md §2.7. **Verified live**: header sets are identical to the reference on
+   200 (`:4200`), 400 and 429 (`:4100`), including the 429 body.
+3. **`KERNEL.md` §12.1 prescribed an IPv4-only bind** (#23). **Fixed** — §12.1 and
+   `tools/parity/README.md` now prescribe `ASPNETCORE_URLS='http://[::]:<port>'` and
+   dialling `localhost` on both sides. Measured: with `[::]`, an IPv4 peer is recorded as
+   `::ffff:127.0.0.1` and a `localhost` peer as `::1` — matching Node exactly on both.
 
 ## Interrupted mid-work — WIP is committed, NOT verified
 

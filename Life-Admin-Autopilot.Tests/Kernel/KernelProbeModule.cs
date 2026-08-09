@@ -4,6 +4,7 @@ using Life_Admin_Autopilot.DAL.Kernel.Mongo;
 using Life_Admin_Autopilot_Backend.Kernel.Auth;
 using Life_Admin_Autopilot_Backend.Kernel.Binding;
 using Life_Admin_Autopilot_Backend.Kernel.Modules;
+using Life_Admin_Autopilot_Backend.Kernel.RateLimiting;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
@@ -33,6 +34,14 @@ public sealed class KernelProbeModule : IEndpointModule
         public string? Title { get; set; }
     }
 
+    /// <summary>Mirrors <c>SignupSchema</c> in <c>server/src/routes/auth.password.ts</c>.</summary>
+    public sealed class CredentialsBody
+    {
+        public string? Email { get; set; }
+
+        public string? Password { get; set; }
+    }
+
     public void MapEndpoints(IEndpointRouteBuilder endpoints)
     {
         var group = endpoints.MapGroup("/__kernel-probe");
@@ -54,6 +63,41 @@ public sealed class KernelProbeModule : IEndpointModule
 
             return Results.Ok(new { title = body.Title });
         });
+
+        // Stands in for POST /auth/signup, which slice b-auth owns. Same shape as
+        // Node's SignupSchema: read the body leniently, then `.parse()` it, so a body
+        // the binder left empty surfaces as Node's exact
+        // `validation_error` / `Required` envelope rather than a bespoke error.
+        // This is the route the content-type differential drives.
+        group.MapPost("/credentials", async (HttpContext ctx) =>
+        {
+            var body = await KernelBody.ReadAsync<CredentialsBody>(
+                ctx,
+                KernelBodyOptions.Lenient("Invalid credentials payload."));
+
+            var issues = new List<ValidationIssue>();
+            if (string.IsNullOrEmpty(body.Email))
+            {
+                issues.Add(ValidationIssue.At("email", ZodMessages.Required));
+            }
+
+            if (string.IsNullOrEmpty(body.Password))
+            {
+                issues.Add(ValidationIssue.At("password", ZodMessages.Required));
+            }
+
+            if (issues.Count > 0)
+            {
+                throw new ValidationException(issues);
+            }
+
+            return Results.Created("/__kernel-probe/credentials", new { email = body.Email });
+        });
+
+        // The 429 differential. Uses the real shared authLimiter instance, so the
+        // headers under test are the ones a production auth route would emit.
+        group.MapGet("/auth-limited", () => Results.Ok(new { ok = true }))
+            .RateLimited(KernelRateLimiters.Auth);
 
         group.MapGet("/query", (HttpContext ctx) =>
         {

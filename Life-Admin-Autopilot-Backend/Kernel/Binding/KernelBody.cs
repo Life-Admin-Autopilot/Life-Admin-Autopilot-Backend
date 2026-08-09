@@ -28,8 +28,13 @@ public readonly record struct KernelBodyOptions(bool Strict, string Code, string
 /// <summary>
 /// Reads and deserializes a JSON request body the way express does.
 ///
-/// <para><b>Three behaviours that are not ASP.NET defaults.</b></para>
+/// <para><b>Four behaviours that are not ASP.NET defaults.</b></para>
 /// <list type="bullet">
+///   <item>
+///     <b>Only <c>application/json</c> is parsed at all</b> — see
+///     <see cref="IsJsonContentType"/>. Every other content type leaves the body
+///     as <c>{}</c>.
+///   </item>
 ///   <item>
 ///     A body over <see cref="KernelJson.MaxJsonBodyBytes"/> (256kb) is a
 ///     <b>500 <c>internal_error</c></b>, not 413.
@@ -44,6 +49,53 @@ public readonly record struct KernelBodyOptions(bool Strict, string Code, string
 /// </summary>
 public static class KernelBody
 {
+    /// <summary>The one media type <c>express.json()</c> is configured to parse.</summary>
+    private const string JsonMediaType = "application/json";
+
+    /// <summary>
+    /// Would <c>express.json()</c> parse this request? <c>app.ts</c> calls
+    /// <c>express.json({ limit: '256kb' })</c> with no <c>type</c> option, so
+    /// body-parser uses its default matcher — <c>type-is</c> against the single
+    /// pattern <c>application/json</c>.
+    ///
+    /// <para><b>What that matcher accepts</b>, all verified live against the Node
+    /// reference on <c>POST /auth/signup</c> with an otherwise valid payload:</para>
+    ///
+    /// <list type="bullet">
+    ///   <item><c>application/json</c> → parsed (201).</item>
+    ///   <item>
+    ///     <c>application/json; charset=utf-8</c> → parsed. Parameters are part of the
+    ///     header, not of the media type, so they never affect the match. Getting this
+    ///     wrong would break every ordinary browser and <c>fetch()</c> client.
+    ///   </item>
+    ///   <item><c>APPLICATION/JSON</c> → parsed. Media types are case-insensitive.</item>
+    ///   <item>
+    ///     <b>Everything else</b> → NOT parsed (400 from the route's own validators):
+    ///     an absent header, <c>text/plain</c>, <c>application/x-www-form-urlencoded</c>,
+    ///     an unparseable value — and, importantly, the <c>+json</c> structured-suffix
+    ///     types <c>application/vnd.api+json</c> and <c>application/json-patch+json</c>.
+    ///     The literal pattern <c>application/json</c> does not cover the suffix form;
+    ///     only an <c>application/*+json</c> pattern would, and body-parser's default
+    ///     is not that.
+    ///   </item>
+    /// </list>
+    ///
+    /// <para><b>This is a security control, not only parity.</b> <c>text/plain</c> is a
+    /// CORS <i>simple</i> request: a cross-origin page can send one with no preflight.
+    /// The content-type gate is what stops such a request from carrying a JSON body
+    /// into a state-changing endpoint.</para>
+    /// </summary>
+    public static bool IsJsonContentType(HttpRequest request)
+    {
+        var header = request.Headers.ContentType.ToString();
+
+        // Absent, empty, or (when a client sent the header twice) comma-joined into
+        // something unparseable. type-is answers false for all three.
+        return !string.IsNullOrEmpty(header)
+            && Microsoft.Net.Http.Headers.MediaTypeHeaderValue.TryParse(header, out var parsed)
+            && parsed.MediaType.Equals(JsonMediaType, StringComparison.OrdinalIgnoreCase);
+    }
+
     /// <summary>
     /// Raw bytes with the express ceiling applied. Over the limit throws
     /// <see cref="BodyReadException"/> — and the ceiling is checked while reading,
@@ -93,6 +145,18 @@ public static class KernelBody
         CancellationToken cancellationToken = default)
         where T : new()
     {
+        // The content-type gate comes FIRST, before the body is touched at all.
+        // body-parser skips a non-JSON request entirely: it never reads the stream,
+        // so neither the 256kb ceiling nor a JSON syntax error can fire. Verified
+        // live — the same malformed or 300kb body is a 500 as `application/json`
+        // and a plain 400 from the route's validators as `text/plain`. Reading
+        // first and gating afterwards would reproduce the status only by accident
+        // and get those two cases wrong.
+        if (!IsJsonContentType(context.Request))
+        {
+            return new T();
+        }
+
         var bytes = await ReadBytesAsync(context.Request, KernelJson.MaxJsonBodyBytes, cancellationToken)
             .ConfigureAwait(false);
 
