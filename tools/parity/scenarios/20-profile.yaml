@@ -1,0 +1,140 @@
+name: profile
+description: >-
+  PATCH /me merge semantics, the read-only account endpoints, the two
+  "surprising 500" body-parser paths, and account deletion. Deletion is last
+  because it makes every later call 404.
+tags: [auth, core]
+user: fresh
+
+steps:
+  - name: patch-nested-key-merge
+    op: authUpdateMe
+    method: PATCH
+    path: /me
+    body: { notifications: { push: false } }
+    expect: { status: 200 }
+    # THE regression this scenario exists for: `notifications` is merged
+    # key-by-key with dot-notation $set, so emailDigest and marketing must
+    # survive untouched. A port that replaces the sub-document wholesale
+    # produces a structurally different `notifications` object and fails here.
+
+  - name: patch-scalar-fields
+    op: authUpdateMe
+    method: PATCH
+    path: /me
+    body:
+      displayName: 'Parity Tester'
+      timezone: 'Africa/Cairo'
+      locale: 'en-GB'
+      theme: 'dark'
+      textSize: 'lg'
+      hasOnboarded: true
+      preferredDomains: ['home', 'finance']
+    expect: { status: 200 }
+
+  - name: patch-second-nested-key-still-merges
+    op: authUpdateMe
+    method: PATCH
+    path: /me
+    body: { privacy: { analytics: false } }
+    expect: { status: 200 }
+
+  - name: patch-empty-body-is-a-touch
+    op: authUpdateMe
+    method: PATCH
+    path: /me
+    body: {}
+    expect: { status: 200 }
+
+  - name: patch-unknown-keys-are-stripped-not-rejected
+    op: authUpdateMe
+    method: PATCH
+    path: /me
+    body: { email: 'attacker@example.com', subscription: { tier: 'pro' }, hasPassword: false }
+    expect: { status: 200 }
+
+  - name: patch-invalid-timezone
+    op: authUpdateMe
+    method: PATCH
+    path: /me
+    body: { timezone: 'Not/AZone' }
+    expect: { status: 400 }
+
+  - name: malformed-json-is-500-not-400
+    op: authUpdateMe
+    method: PATCH
+    path: /me
+    rawText: '{"displayName":'
+    contentType: application/json
+    expect: { status: 500 }
+    # body-parser's SyntaxError is not special-cased by the error handler, so
+    # it falls through to the generic 500 branch. The port must reproduce the
+    # 500, not "fix" it to a 400.
+
+  - name: oversized-json-body-is-500-not-413
+    op: authUpdateMe
+    method: PATCH
+    path: /me
+    jsonPadding: { field: displayName, bytes: 307200 }
+    expect: { status: 500 }
+    # express.json({ limit: '256kb' }) — PayloadTooLargeError takes the same
+    # fall-through as the SyntaxError above.
+
+  - name: export
+    op: authExportMe
+    method: GET
+    path: /me/export
+    expect: { status: 200 }
+
+  - name: subscription
+    op: authGetSubscription
+    method: GET
+    path: /me/subscription
+    expect: { status: 200 }
+
+  - name: invoices
+    op: authGetInvoices
+    method: GET
+    path: /me/billing/invoices
+    expect: { status: 200 }
+
+  - name: integrations
+    op: authGetIntegrations
+    method: GET
+    path: /me/integrations
+    expect: { status: 200 }
+
+  - name: cancel-pending-email-change-when-none-pending
+    op: authChangeEmailCancel
+    method: DELETE
+    path: /auth/change-email
+    expect: { status: 204 }
+
+  - name: delete-me-without-password
+    op: authDeleteMe
+    method: DELETE
+    path: /me
+    body: {}
+    expect: { status: 400 }
+
+  - name: delete-me-wrong-password
+    op: authDeleteMe
+    method: DELETE
+    path: /me
+    body: { password: 'DefinitelyNotThePassword1!' }
+    expect: { status: 401 }
+
+  - name: delete-me
+    op: authDeleteMe
+    method: DELETE
+    path: /me
+    body: { password: '{{password}}' }
+    expect: { status: 204 }
+
+  - name: me-after-delete
+    op: authMe
+    method: GET
+    path: /auth/me
+    expect: { status: 404 }
+    # The access token is still cryptographically valid; the account behind it
+    # is gone, which is a different branch from an invalid token.

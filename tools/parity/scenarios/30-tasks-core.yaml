@@ -1,0 +1,302 @@
+name: tasks-core
+description: >-
+  Task CRUD, subtasks, the list query surface (filters, sort, cursor,
+  invalid_query), counts, tags, and the soft-delete / trash / undo / restore
+  loop.
+tags: [tasks, core]
+user: fresh
+
+steps:
+  - name: create-minimal
+    op: taskCreate
+    method: POST
+    path: /me/tasks
+    body: { title: 'Renew passport', domain: 'home' }
+    expect: { status: 201 }
+    capture: { taskA: $.task.id }
+
+  - name: create-rich
+    op: taskCreate
+    method: POST
+    path: /me/tasks
+    body:
+      title: '  Book dentist  '
+      domain: health
+      priority: urgent
+      tags: ['Health Admin', 'health admin', '', 'dentist']
+      dueAt: '2026-12-01T09:00:00.000Z'
+      notes: 'Ask about the crown.'
+      estimate: { minMinutes: 12, maxMinutes: 50 }
+    expect: { status: 201 }
+    capture: { taskB: $.task.id }
+    # Exercises three silent normalisations at once: title trim, tag
+    # lowercase/de-duplication, and estimate snapping onto the bucket ladder.
+    # `dueAt` is a scenario literal, so it is NOT masked — the port has to
+    # round-trip the exact instant, not merely "some timestamp".
+
+  - name: create-empty-title
+    op: taskCreate
+    method: POST
+    path: /me/tasks
+    body: { title: '   ', domain: 'home' }
+    expect: { status: 400 }
+
+  - name: create-unknown-key-is-rejected
+    op: taskCreate
+    method: POST
+    path: /me/tasks
+    body: { title: 'Nope', domain: 'home', colour: 'red' }
+    expect: { status: 400 }
+
+  - name: create-bad-domain
+    op: taskCreate
+    method: POST
+    path: /me/tasks
+    body: { title: 'Nope', domain: 'spaceship' }
+    expect: { status: 400 }
+
+  - name: get
+    op: taskGet
+    method: GET
+    path: /me/tasks/{{taskA}}
+    expect: { status: 200 }
+
+  - name: get-unknown
+    op: taskGet
+    method: GET
+    path: /me/tasks/6a78c437aa461ae1dc64ffff
+    expect: { status: 404 }
+
+  - name: get-malformed-id
+    op: taskGet
+    method: GET
+    path: /me/tasks/not-an-object-id
+    expect: { status: 404 }
+
+  - name: patch-sets-notes-and-due
+    op: taskUpdate
+    method: PATCH
+    path: /me/tasks/{{taskA}}
+    body: { notes: 'Passport office opens at 8.', dueAt: '2026-11-03T08:00:00.000Z' }
+    expect: { status: 200 }
+
+  - name: patch-null-clears-notes-omitted-leaves-due
+    op: taskUpdate
+    method: PATCH
+    path: /me/tasks/{{taskA}}
+    body: { notes: null }
+    expect: { status: 200 }
+    # `notes` must disappear from the document entirely ($unset, not null) and
+    # `dueAt` must still be there. Omitted-vs-null is the single most common
+    # port bug, because most serialisers cannot tell them apart.
+
+  - name: patch-later-due-increments-reschedule-count
+    op: taskUpdate
+    method: PATCH
+    path: /me/tasks/{{taskA}}
+    body: { dueAt: '2026-11-10T08:00:00.000Z' }
+    expect: { status: 200 }
+
+  - name: patch-null-clears-due
+    op: taskUpdate
+    method: PATCH
+    path: /me/tasks/{{taskA}}
+    body: { dueAt: null }
+    expect: { status: 200 }
+
+  - name: patch-empty-object
+    op: taskUpdate
+    method: PATCH
+    path: /me/tasks/{{taskA}}
+    body: {}
+    expect: { status: 200 }
+
+  - name: patch-unknown-key
+    op: taskUpdate
+    method: PATCH
+    path: /me/tasks/{{taskA}}
+    body: { nope: 1 }
+    expect: { status: 400 }
+
+  - name: subtask-add
+    op: taskSubtaskAdd
+    method: POST
+    path: /me/tasks/{{taskA}}/subtasks
+    body: { text: 'Find the old passport' }
+    expect: { status: 201 }
+    capture: { subId: '$.task.subtasks[0].id' }
+
+  - name: subtask-add-second
+    op: taskSubtaskAdd
+    method: POST
+    path: /me/tasks/{{taskA}}/subtasks
+    body: { text: 'Book photo booth' }
+    expect: { status: 201 }
+
+  - name: subtask-toggle-done
+    op: taskSubtaskUpdate
+    method: PATCH
+    path: /me/tasks/{{taskA}}/subtasks/{{subId}}
+    body: { done: true }
+    expect: { status: 200 }
+
+  - name: subtask-update-empty-body
+    op: taskSubtaskUpdate
+    method: PATCH
+    path: /me/tasks/{{taskA}}/subtasks/{{subId}}
+    body: {}
+    expect: { status: 400 }
+
+  - name: subtask-update-unknown
+    op: taskSubtaskUpdate
+    method: PATCH
+    path: /me/tasks/{{taskA}}/subtasks/6a78c437aa461ae1dc64ffff
+    body: { done: true }
+    expect: { status: 404 }
+
+  - name: subtask-delete
+    op: taskSubtaskDelete
+    method: DELETE
+    path: /me/tasks/{{taskA}}/subtasks/{{subId}}
+    expect: { status: 200 }
+
+  - name: subtask-delete-unknown
+    op: taskSubtaskDelete
+    method: DELETE
+    path: /me/tasks/{{taskA}}/subtasks/6a78c437aa461ae1dc64ffff
+    expect: { status: 404 }
+
+  - name: list-default
+    op: taskList
+    method: GET
+    path: /me/tasks
+    expect: { status: 200 }
+
+  - name: list-filtered-and-sorted
+    op: taskList
+    method: GET
+    path: /me/tasks
+    query: { status: 'open', domain: 'home,health', sort: 'title-asc', limit: 1 }
+    expect: { status: 200 }
+    capture: { cursor: $.nextCursor }
+
+  - name: list-second-page
+    op: taskList
+    method: GET
+    path: /me/tasks
+    query: { status: 'open', domain: 'home,health', sort: 'title-asc', limit: 1, cursor: '{{cursor}}' }
+    expect: { status: 200 }
+    # The cursor is base64url of a decimal offset, so it is deterministic and
+    # deliberately NOT masked: a port that invents an opaque cursor of its own
+    # shape breaks pagination for existing clients and must fail here.
+
+  - name: list-untagged-and-undated
+    op: taskList
+    method: GET
+    path: /me/tasks
+    query: { undated: 'true', untagged: 'true' }
+    expect: { status: 200 }
+
+  - name: list-unknown-query-param
+    op: taskList
+    method: GET
+    path: /me/tasks
+    query: { bogus: '1' }
+    expect: { status: 400 }
+
+  - name: list-bad-enum-member
+    op: taskList
+    method: GET
+    path: /me/tasks
+    query: { status: 'open,exploded' }
+    expect: { status: 400 }
+
+  - name: list-bad-datetime
+    op: taskList
+    method: GET
+    path: /me/tasks
+    query: { dueBefore: '2026-09-01' }
+    expect: { status: 400 }
+
+  - name: counts
+    op: taskCounts
+    method: GET
+    path: /me/tasks/counts
+    query: { tz: 'Africa/Cairo' }
+    expect: { status: 200 }
+
+  - name: counts-unknown-query-param
+    op: taskCounts
+    method: GET
+    path: /me/tasks/counts
+    query: { tz: 'UTC', bogus: '1' }
+    expect: { status: 400 }
+
+  - name: tags
+    op: taskTags
+    method: GET
+    path: /me/tasks/tags
+    expect: { status: 200 }
+
+  - name: soft-delete
+    op: taskSoftDelete
+    method: DELETE
+    path: /me/tasks/{{taskA}}
+    expect: { status: 200 }
+    capture: { undoToken: $.undoToken }
+
+  - name: trash-list
+    op: taskTrashList
+    method: GET
+    path: /me/tasks/trash
+    expect: { status: 200 }
+
+  - name: undo-soft-delete
+    op: taskUndo
+    method: POST
+    path: /me/tasks/undo/{{undoToken}}
+    expect: { status: 200 }
+
+  - name: undo-unknown-but-well-formed-token
+    op: taskUndo
+    method: POST
+    path: /me/tasks/undo/6a78c437aa461ae1dc64ffff
+    expect: { status: 404 }
+
+  - name: undo-malformed-token
+    op: taskUndo
+    method: POST
+    path: /me/tasks/undo/not-an-object-id
+    expect: { status: 404 }
+    # Same code, DIFFERENT message from the step above — the contract pins both
+    # strings, and the differ compares error.message literally.
+
+  - name: soft-delete-for-restore
+    op: taskSoftDelete
+    method: DELETE
+    path: /me/tasks/{{taskB}}
+    expect: { status: 200 }
+
+  - name: restore
+    op: taskRestore
+    method: POST
+    path: /me/tasks/{{taskB}}/restore
+    expect: { status: 200 }
+
+  - name: soft-delete-for-purge
+    op: taskSoftDelete
+    method: DELETE
+    path: /me/tasks/{{taskB}}
+    expect: { status: 200 }
+
+  - name: trash-purge
+    op: taskTrashPurge
+    method: DELETE
+    path: /me/tasks/trash
+    expect: { status: 200 }
+
+  - name: trash-list-after-purge
+    op: taskTrashList
+    method: GET
+    path: /me/tasks/trash
+    expect: { status: 200 }

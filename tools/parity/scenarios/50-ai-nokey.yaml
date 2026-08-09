@@ -1,0 +1,176 @@
+name: ai-nokey
+description: >-
+  Every AI-backed endpoint in its NO-KEY state. The parity reference runs with
+  GEMINI_API_KEY empty, so these routes are deterministic: they either
+  short-circuit to 503 ai_not_configured (with per-route message text that the
+  differ compares literally) or return an empty-but-well-formed envelope.
+tags: [ai, core]
+user: fresh
+
+steps:
+  - name: seed-task
+    op: taskCreate
+    method: POST
+    path: /me/tasks
+    body: { title: 'Renew passport', domain: 'home' }
+    expect: { status: 201 }
+    capture: { taskId: $.task.id }
+
+  - name: search-by-description
+    op: taskSearch
+    method: POST
+    path: /me/tasks/search
+    body: { query: 'passport' }
+    expect: { status: 503 }
+
+  - name: search-empty-query
+    op: taskSearch
+    method: POST
+    path: /me/tasks/search
+    body: { query: '   ' }
+    expect: { status: 400 }
+
+  - name: summarize
+    op: taskSummarize
+    method: POST
+    path: /me/tasks/summarize
+    body: { from: '2026-08-01T00:00:00.000Z', to: '2026-08-31T00:00:00.000Z' }
+    expect: { status: 503 }
+
+  - name: summarize-to-before-from
+    op: taskSummarize
+    method: POST
+    path: /me/tasks/summarize
+    body: { from: '2026-08-31T00:00:00.000Z', to: '2026-08-01T00:00:00.000Z' }
+    expect: { status: 503 }
+    # Middleware ORDER, pinned deliberately: the ai_not_configured guard runs
+    # BEFORE body validation on this route, so an invalid range still reports
+    # 503 rather than 400. A port that validates first would return 400 here
+    # and break the client's error handling.
+
+  - name: estimate-backlog
+    op: taskEstimateBacklog
+    method: POST
+    path: /me/tasks/estimate-backlog
+    body: {}
+    expect: { status: 503 }
+
+  - name: translate-quota
+    op: taskTranslateQuota
+    method: GET
+    path: /me/tasks/translate/quota
+    query: { locale: 'ar' }
+    expect: { status: 200 }
+    # `quota.resetAt` is a month boundary. The TS mask keeps that property
+    # visible as <TS@midnightUTC>, so a port that returns a non-midnight
+    # reset instant still fails.
+
+  - name: translate-bad-locale
+    op: taskTranslate
+    method: POST
+    path: /me/tasks/translate
+    body: { locale: 'fr' }
+    expect: { status: 400 }
+
+  - name: translate
+    op: taskTranslate
+    method: POST
+    path: /me/tasks/translate
+    body: { locale: 'ar', ids: ['{{taskId}}'] }
+
+  - name: categorize-no-target
+    op: taskCategorizePropose
+    method: POST
+    path: /me/tasks/categorize
+    body: {}
+    expect: { status: 400 }
+
+  - name: categorize-with-ids
+    op: taskCategorizePropose
+    method: POST
+    path: /me/tasks/categorize
+    body: { ids: ['{{taskId}}'] }
+
+  - name: categorize-pending
+    op: taskCategorizePending
+    method: GET
+    path: /me/tasks/categorize/pending
+    expect: { status: 200 }
+
+  - name: categorize-apply-unknown
+    op: taskCategorizeApply
+    method: POST
+    path: /me/tasks/categorize/6a78c437aa461ae1dc64ffff/apply
+    body: { taskIds: [] }
+    expect: { status: 404 }
+
+  - name: categorize-discard-unknown
+    op: taskCategorizeDiscard
+    method: POST
+    path: /me/tasks/categorize/6a78c437aa461ae1dc64ffff/discard
+    expect: { status: 404 }
+
+  - name: ai-quota
+    op: aiGetQuota
+    method: GET
+    path: /ai/quota
+    expect: { status: 200 }
+
+  - name: ai-conversation
+    op: aiGetConversation
+    method: GET
+    path: /ai/conversation
+    expect: { status: 200 }
+
+  - name: ai-conversation-reset
+    op: aiResetConversation
+    method: POST
+    path: /ai/conversation/reset
+    expect: { status: 200 }
+
+  - name: ai-ask
+    op: aiAsk
+    method: POST
+    path: /ai/ask
+    body: { question: 'What is due this week?' }
+    expect: { status: 503 }
+    # With a key this is a text/event-stream. Without one it short-circuits to
+    # the JSON envelope before streaming starts, which is why it is testable
+    # offline at all.
+
+  - name: ai-ask-empty-question
+    op: aiAsk
+    method: POST
+    path: /ai/ask
+    body: { question: '   ' }
+    expect: { status: 400 }
+
+  - name: ai-confirm-unknown-call
+    op: aiConfirmTool
+    method: POST
+    path: /ai/tools/confirm/6a78c437aa461ae1dc64ffff
+    body: { action: 'decline' }
+    expect: { status: 404 }
+
+  - name: ai-confirm-bad-action
+    op: aiConfirmTool
+    method: POST
+    path: /ai/tools/confirm/6a78c437aa461ae1dc64ffff
+    body: { action: 'nope' }
+    expect: { status: 400 }
+
+  - name: transcribe
+    op: aiTranscribeVoice
+    method: POST
+    path: /ai/voice/transcribe
+    rawFixture: audio.min
+    contentType: audio/m4a
+    expect: { status: 503 }
+
+  - name: transcribe-empty-body
+    op: aiTranscribeVoice
+    method: POST
+    path: /ai/voice/transcribe
+    rawFixture: empty
+    contentType: audio/m4a
+    expect: { status: 503 }

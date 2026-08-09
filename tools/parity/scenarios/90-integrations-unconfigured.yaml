@@ -1,0 +1,111 @@
+name: integrations-unconfigured
+description: >-
+  ICS and Google in the states the parity server can actually reach offline:
+  no Google client credentials, and no outbound network for calendar fetches.
+  Every branch here is deterministic and needs no internet.
+tags: [integrations, core]
+user: fresh
+
+steps:
+  - name: ics-subscribe-before-timezone
+    op: icsSubscribeFeed
+    method: POST
+    path: /me/ics-feeds
+    body: { url: 'https://calendars.example.com/term-dates.ics', label: 'Term dates', domain: 'family' }
+    expect: { status: 400 }
+    # timezone_required — imported events carry no zone of their own, so the
+    # account must have one first. Ordering matters: this must run before the
+    # PATCH below.
+
+  - name: set-timezone
+    op: authUpdateMe
+    method: PATCH
+    path: /me
+    body: { timezone: 'Africa/Cairo' }
+    expect: { status: 200 }
+
+  - name: ics-subscribe-unsafe-url
+    op: icsSubscribeFeed
+    method: POST
+    path: /me/ics-feeds
+    body: { url: 'http://127.0.0.1:9/private.ics', label: 'Loopback', domain: 'family' }
+    expect: { status: 400 }
+    # SSRF guard. Chosen over a real remote URL on purpose: the harness must
+    # not depend on the internet. See README for the coverage caveat this
+    # creates (the 201 subscribe branch is never exercised offline).
+
+  - name: ics-subscribe-bad-scheme
+    op: icsSubscribeFeed
+    method: POST
+    path: /me/ics-feeds
+    body: { url: 'ftp://calendars.example.com/term-dates.ics', label: 'Bad scheme', domain: 'family' }
+    expect: { status: 400 }
+
+  - name: ics-list
+    op: icsListFeeds
+    method: GET
+    path: /me/ics-feeds
+    expect: { status: 200 }
+
+  - name: ics-sync-unknown
+    op: icsSyncFeed
+    method: POST
+    path: /me/ics-feeds/6a78c437aa461ae1dc64ffff/sync
+    expect: { status: 404 }
+
+  - name: ics-delete-unknown
+    op: icsDeleteFeed
+    method: DELETE
+    path: /me/ics-feeds/6a78c437aa461ae1dc64ffff
+    expect: { status: 404 }
+
+  - name: google-authorize
+    op: googBeginAuthorize
+    method: POST
+    path: /integrations/google/authorize
+    body: { web: true }
+    expect: { status: 400 }
+
+  - name: google-authorize-no-body
+    op: googBeginAuthorize
+    method: POST
+    path: /integrations/google/authorize
+    expect: { status: 400 }
+
+  - name: google-get
+    op: googGetIntegration
+    method: GET
+    path: /integrations/google
+    expect: { status: 200 }
+
+  - name: google-disconnect-when-not-connected
+    op: googDisconnect
+    method: DELETE
+    path: /integrations/google
+    expect: { status: 404 }
+
+  - name: google-sync-when-not-connected
+    op: googSyncNow
+    method: POST
+    path: /integrations/google/sync
+    expect: { status: 404 }
+
+  - name: google-callback-user-cancelled
+    op: googOauthCallback
+    method: GET
+    path: /integrations/google/callback
+    query: { error: 'access_denied', state: 'irrelevant' }
+    auth: false
+    compareHeaders: [location]
+    expect: { status: 302 }
+    # 302 to a kitto:// deep link. The harness never follows redirects — an
+    # auto-following client blows up on the non-HTTP scheme instead of letting
+    # us compare the Location header, which is the actual contract here.
+
+  - name: google-callback-missing-state
+    op: googOauthCallback
+    method: GET
+    path: /integrations/google/callback
+    auth: false
+    compareHeaders: [location]
+    expect: { status: 302 }
