@@ -52,12 +52,18 @@ The auth limiter is 20/15min and the strict one 5/hour, **keyed on raw socket IP
 - **Parity harness** (`c69d54d`) — 87/87 operations covered, self-test green, plus a negative control that plants five defects and confirms all five are caught.
 - **Slice A** (`30085fe` on `slice/a-account`) — health, subscription, invoices, integrations. 176 tests, all four rows PASS.
 
-## In flight when work stopped
+## Interrupted mid-work — WIP is committed, NOT verified
 
-- **slice-b-auth** — worktree `backend-slices/b-auth`, port 5120, db `kitto_parity_dotnet_b`. Unblocked; building behind `IAuthCredentialStore`.
-- **slice-c-tasks** — worktree `backend-slices/c-tasks`, port 5130, db `kitto_parity_dotnet_c`.
+A session limit terminated both remaining slice agents mid-task. Their work was uncommitted on disk; I committed it to their own branches so it could not be lost. **Neither was built, tested, or parity-checked. Treat both as untrusted drafts — amend or reset freely.**
 
-Check `git -C <worktree> log --oneline` and `git status` in each before assuming anything was lost.
+| Branch | WIP commit | Port | Mongo db | State when it stopped |
+|---|---|---|---|---|
+| `slice/b-auth` | `7ec4fef` | 5120 | `kitto_parity_dotnet_b` | Features under all four projects. Was mid-investigation of two `pendingEmail` parity failures — checking whether the field was genuinely absent or just ordered differently. Start there. |
+| `slice/c-tasks` | `fe6c1af` | 5130 | `kitto_parity_dotnet_c` | Features scaffolded across PL/BLL/DAL. Had not yet started its candidate server. |
+
+**Rebase both onto `feat/node-parity` before continuing.** They forked at `c69d54d`, *before* the Identity provider seam landed as `56e6e1f`, and `b-auth` carries its own copy of those same kernel files — expect overlap there, not genuine divergence.
+
+Slice A is unaffected and complete: `slice/a-account` @ `30085fe`.
 
 ## Next actions, in order
 
@@ -86,7 +92,17 @@ Check `git -C <worktree> log --oneline` and `git status` in each before assuming
 
 So the rule is: **405 → 404 for every method except OPTIONS**; OPTIONS is already handled by the CORS short-circuit. Note `OPTIONS` returns 204, not the 200 `MimicExpressAutoOptions` produces — that 200 path applies only to non-allowlisted origins, where CORS does not short-circuit.
 
-**Also decided:** emit Express's real HTML 404 body. Arbitrated in favour of fixing the server rather than masking the harness row — a permanently-red row trains people to ignore red rows.
+### ARBITRATION (final): implement Fix A only. Do NOT reproduce the HTML body.
+
+This reverses an earlier ruling — the earlier one is wrong, ignore it if you find it quoted elsewhere.
+
+- **Fix A — rewrite 405 → 404.** IMPLEMENT. This is the only difference a client can observe: no client parses a 404 body, and the frontend branches on status.
+- **Fix B — reproduce Express's HTML 404 body/content-type.** DO NOT IMPLEMENT. It buys a cosmetic green harness row in exchange for a reflected-XSS surface (the body embeds the attacker-controlled request path, served same-origin by an API that also serves authenticated JSON).
+- **Instead:** mask the body and content-type assertions on the two `framework/*` 404 rows in the harness corpus, with an inline comment citing `KERNEL.md` §2.2.1. A declared, reviewed exception answers "a standing red row trains people to ignore red rows" without buying the risk. The harness owner makes that edit — it is their file.
+
+The earlier ruling assumed the trade was cosmetic-vs-correct. It is cosmetic-vs-XSS. If Fix B is ever revisited it is non-mergeable without: HTML-escaping, an XSS test using `/<script>alert(1)</script>`, Express's CSP header, and a byte-exact capture of the real body — which nobody has yet managed to take.
+
+**Implementation note for Fix A, from the third round of review.** Two guards were proposed and both are wrong: `GetEndpoint() is null` never fires on a method mismatch, and "any 404 with nothing written" is too broad — a slice returning a bare `Results.NotFound()` would get its JSON envelope replaced. Do **both** translations inside **one** middleware using a local flag that records that *this* middleware performed the 405→404 rewrite, and act only on that. Precision here matters more than either standalone guard.
 
 ### The two fixes DO NOT COMPOSE as first specified — read this before implementing
 
