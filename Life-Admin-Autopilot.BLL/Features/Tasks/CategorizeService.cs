@@ -49,7 +49,13 @@ public sealed class ApplyProposalResultDto
     [JsonPropertyName("applied")]
     public int Applied { get; init; }
 
+    /// <summary>
+    /// Explicit <c>null</c> when the accepted set was empty — the proposal is
+    /// discarded and there is nothing to undo. See <c>TaskResponses.cs</c> for why
+    /// the opt-back-in is needed at all.
+    /// </summary>
     [JsonPropertyName("undoToken")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.Never)]
     public string? UndoToken { get; init; }
 }
 

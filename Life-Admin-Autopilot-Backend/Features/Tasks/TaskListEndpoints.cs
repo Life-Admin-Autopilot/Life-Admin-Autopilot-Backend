@@ -80,11 +80,11 @@ internal static class TaskListEndpoints
             // rows they get — only the words change.
             var locale = await locales.ReadAsync(user.Id, ct).ConfigureAwait(false);
 
-            return Results.Ok(new
+            return Results.Ok(new TaskListResponse
             {
-                tasks = MatterLocale.PresentMany(page.Tasks, locale),
-                total = page.Total,
-                nextCursor = page.NextCursor,
+                Tasks = MatterLocale.PresentMany(page.Tasks, locale),
+                Total = page.Total,
+                NextCursor = page.NextCursor,
             });
         }).RequireAuthorization();
 

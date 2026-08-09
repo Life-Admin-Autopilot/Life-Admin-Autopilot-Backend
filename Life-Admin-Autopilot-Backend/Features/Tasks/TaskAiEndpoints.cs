@@ -187,7 +187,7 @@ internal static class TaskAiEndpoints
 
             // Explicit null, not an omitted key — the client branches on it.
             var proposal = await categorize.GetPendingAsync(user.Id, ct).ConfigureAwait(false);
-            return Results.Json(new { proposal });
+            return Results.Ok(new CategorizePendingResponse { Proposal = proposal });
         }).RequireAuthorization();
 
         endpoints.MapPost("/me/tasks/categorize/{id}/apply", async (

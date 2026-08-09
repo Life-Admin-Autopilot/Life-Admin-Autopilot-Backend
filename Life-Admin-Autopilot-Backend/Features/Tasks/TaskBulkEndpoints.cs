@@ -1,4 +1,5 @@
 using System.Text.Json;
+using Life_Admin_Autopilot.BLL.Features.Tasks;
 using Life_Admin_Autopilot.BLL.Kernel.Mappers;
 using Life_Admin_Autopilot.BLL.Kernel.Tasks;
 using Life_Admin_Autopilot.DAL.Kernel.Documents;
@@ -61,18 +62,13 @@ internal static class TaskBulkEndpoints
 
             var warnings = BulkService.SummarizeWarnings(tasks);
 
-            return Results.Ok(new
+            return Results.Ok(new BulkPreviewResponse
             {
-                count = tasks.Count,
-                warnings = new
-                {
-                    fromDocuments = warnings.FromDocuments,
-                    remindersFired = warnings.RemindersFired,
-                    truncated = warnings.Truncated,
-                },
+                Count = tasks.Count,
+                Warnings = ToDto(warnings),
 
                 // Enough to scroll through and sanity-check what is about to change.
-                sample = tasks.Take(50).Select(t => t.ToDto()).ToList(),
+                Sample = tasks.Take(50).Select(t => t.ToDto()).ToList(),
             });
         }).RequireAuthorization();
 
@@ -88,19 +84,14 @@ internal static class TaskBulkEndpoints
                 .ApplyAsync(user.Id, parsed.Target, parsed.Action!, parsed.Label, cancellationToken: ct)
                 .ConfigureAwait(false);
 
-            return Results.Ok(new
+            return Results.Ok(new BulkApplyResponse
             {
-                affected = result.Affected,
+                Affected = result.Affected,
 
                 // Null rather than absent when nothing changed: a no-op op is never
                 // journaled, so there is nothing to undo.
-                undoToken = result.UndoToken,
-                warnings = new
-                {
-                    fromDocuments = result.Warnings.FromDocuments,
-                    remindersFired = result.Warnings.RemindersFired,
-                    truncated = result.Warnings.Truncated,
-                },
+                UndoToken = result.UndoToken,
+                Warnings = ToDto(result.Warnings),
             });
         }).RequireAuthorization();
 
@@ -122,6 +113,13 @@ internal static class TaskBulkEndpoints
     }
 
     private readonly record struct ParsedBulkBody(BulkTarget Target, BulkActionInput? Action, string? Label);
+
+    private static BulkWarningsDto ToDto(BulkWarnings warnings) => new()
+    {
+        FromDocuments = warnings.FromDocuments,
+        RemindersFired = warnings.RemindersFired,
+        Truncated = warnings.Truncated,
+    };
 
     /// <summary>
     /// <c>z.intersection(BulkTargetSchema, BulkActionSchema)</c>: BOTH halves are

@@ -168,7 +168,7 @@ internal static class TaskCrudEndpoints
                 throw TaskEndpoints.TaskNotFound();
             }
 
-            return Results.Ok(new { undoToken = result.UndoToken });
+            return Results.Ok(new TaskDeleteResponse { UndoToken = result.UndoToken });
         }).RequireAuthorization();
     }
 }
