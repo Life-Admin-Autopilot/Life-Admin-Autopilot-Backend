@@ -49,6 +49,13 @@ public class KernelWebApplicationFactory : WebApplicationFactory<Program>
 
     private readonly Dictionary<string, string?> _overrides = new();
 
+    /// <summary>
+    /// A private SQLite file per factory, so no two test classes share Identity rows
+    /// and a failed run cannot poison the next. Deleted on dispose.
+    /// </summary>
+    private readonly string _sqlitePath =
+        Path.Combine(Path.GetTempPath(), $"kitto-tests-{Guid.NewGuid():N}.db");
+
     /// <summary>Add or replace a configuration value before the host is created.</summary>
     public KernelWebApplicationFactory With(string key, string? value)
     {
@@ -69,6 +76,12 @@ public class KernelWebApplicationFactory : WebApplicationFactory<Program>
             {
                 ["MongoDbSettings:ConnectionString"] = ParityMongoUri,
                 ["MongoDbSettings:DatabaseName"] = ParityDatabase,
+
+                // Identity on SQLite. The shipped default is LocalDB, which is
+                // Windows-only — without this, the first test that touches Identity
+                // fails on macOS and Linux. Production keeps SqlServer.
+                ["Database:Provider"] = "Sqlite",
+                ["ConnectionStrings:SqliteConnection"] = $"Data Source={_sqlitePath}",
                 ["Kernel:Cors:Origins"] = $"{AllowedOrigin},capacitor://localhost,http://localhost",
                 ["Kernel:Jwt:AccessSecret"] = TestJwtSecret,
                 ["Kernel:RateLimit:Enabled"] = "false",
@@ -91,4 +104,26 @@ public class KernelWebApplicationFactory : WebApplicationFactory<Program>
     /// </summary>
     public HttpClient CreateApiClient() =>
         CreateClient(new WebApplicationFactoryClientOptions { AllowAutoRedirect = false });
+
+    protected override void Dispose(bool disposing)
+    {
+        base.Dispose(disposing);
+
+        if (!disposing)
+        {
+            return;
+        }
+
+        try
+        {
+            if (File.Exists(_sqlitePath))
+            {
+                File.Delete(_sqlitePath);
+            }
+        }
+        catch (IOException)
+        {
+            // A leftover temp file is harmless; failing a suite over it is not.
+        }
+    }
 }

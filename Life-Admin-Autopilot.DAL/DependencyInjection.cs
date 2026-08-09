@@ -1,5 +1,6 @@
 using Life_Admin_Autopilot.DAL.Data;
 using Life_Admin_Autopilot.DAL.Entities;
+using Life_Admin_Autopilot.DAL.Kernel.Data;
 using Life_Admin_Autopilot.DAL.Repositories;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
@@ -12,8 +13,15 @@ namespace Life_Admin_Autopilot.DAL
     {
         public static IServiceCollection AddDataAccessLayer(this IServiceCollection services, IConfiguration configuration)
         {
+            // Engine chosen by `Database:Provider` (SqlServer | Sqlite), defaulting to
+            // SqlServer so nothing changes unless configured. See DatabaseProvider —
+            // in particular the note that SQL Server owns the canonical migrations and
+            // SQLite must never generate one.
             services.AddDbContext<ApplicationDbContext>(options =>
-                options.UseSqlServer(configuration.GetConnectionString("DefaultConnection")));
+                DatabaseProvider.ApplyTo(options, configuration));
+
+            // No-op unless the provider is SQLite.
+            services.AddHostedService<SqliteSchemaInitializer>();
 
             services.AddIdentityCore<ApplicationUser>(options =>
                 {

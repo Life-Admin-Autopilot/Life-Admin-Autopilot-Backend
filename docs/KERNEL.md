@@ -4,6 +4,46 @@
 slices are being built on it in parallel, so anything you change here breaks
 somebody else. If you believe the kernel is wrong, say so — do not patch around it.
 
+## Where you are
+
+**The .NET backend is its own repository**, separate from the Node app:
+
+| | Path | Branch |
+| --- | --- | --- |
+| **.NET backend — you work here** | `/Users/mina/Documents/Mina/Life-Admin-Autopilot-Backend` | `feat/node-parity` (local only, not pushed) |
+| Node source of truth — read-only reference | `/Users/mina/Documents/Mina/Steward/server/src` | — |
+
+`Steward` is a *different repo*. `feat/node-parity`, `docs/KERNEL.md`, `docs/contract/`
+and every `.csproj` exist only in the backend repo — looking for them under
+`Steward` (or a worktree of it) finds nothing, which is not a sign the kernel is
+missing.
+
+### The two reference servers — both are Node
+
+**`:4100` and `:4200` are BOTH Node**, same source tree, different `NODE_ENV`. No
+.NET server runs by default; start yours on a free port (5100+).
+
+| | Mode | Use it for |
+| --- | --- | --- |
+| **`:4200`** | `NODE_ENV=test`, db `kitto_parity_testmode` | **Canonical for iteration.** Response shapes, status codes, error envelopes. |
+| **`:4100`** | `NODE_ENV=development`, db `kitto_parity_node` | Anything test mode switches OFF — see below. |
+
+`NODE_ENV=test` changes exactly three things (verified by grepping `NODE_ENV` across
+`server/src`), and **never a response shape**:
+
+1. **Rate limiters are skipped** (`middleware/rateLimit.ts` `skipInTest`). Confirmed
+   live: `:4100` returns `RateLimit-Policy/Limit/Remaining/Reset`, `:4200` returns
+   none. **Verify every 429 body, `Retry-After` and `RateLimit-*` header against
+   `:4100`.**
+2. **All five background workers return immediately** — voice-note transcription,
+   reminders, document scan, ICS feed, Google sync. **The voice, document and
+   integrations slices must use `:4100`** for anything that depends on a worker
+   side-effect; on `:4200` the job simply never runs.
+3. One boot log line is suppressed. Irrelevant.
+
+Parity Mongo is `mongodb://127.0.0.1:27018`; .NET uses db `kitto_parity_dotnet`.
+Never touch the Atlas cluster in `server/.env`.
+
 The target is **byte-level response compatibility with the Node server running
 without `GEMINI_API_KEY`**: same status codes, same JSON field names and nesting,
 same literal error messages. Every rule below exists because the obvious .NET
@@ -447,6 +487,55 @@ Non-account erasers that throw are logged and the cascade continues.
 
 **Nobody edits `Program.cs`.** Three mechanisms:
 
+### 9.0 Where slice code goes — no new projects
+
+**You do not add a `.csproj`.** There are exactly four projects and the solution is
+frozen at four. All of them are SDK-style with **default globbing** (no explicit
+`<Compile>` items), so a new `.cs` file is picked up with zero project-file edits —
+which is also why no two slices ever conflict in a `.csproj`.
+
+Put your files in an existing project, under `Features/<Slice>/`:
+
+| What | Project directory | Namespace root | Your namespace |
+| --- | --- | --- | --- |
+| endpoints / modules / controllers | `Life-Admin-Autopilot-Backend/Features/<Slice>/` | `Life_Admin_Autopilot_Backend` | `Life_Admin_Autopilot_Backend.Features.<Slice>` |
+| services, DTOs, mappers | `Life-Admin-Autopilot.BLL/Features/<Slice>/` | `Life_Admin_Autopilot.BLL` | `Life_Admin_Autopilot.BLL.Features.<Slice>` |
+| Mongo documents, repositories | `Life-Admin-Autopilot.DAL/Features/<Slice>/` | `Life_Admin_Autopilot.DAL` | `Life_Admin_Autopilot.DAL.Features.<Slice>` |
+| tests | `Life-Admin-Autopilot.Tests/Features/<Slice>/` | `Life_Admin_Autopilot.Tests` | `Life_Admin_Autopilot.Tests.Features.<Slice>` |
+
+Note the PL root namespace uses **underscores throughout**
+(`Life_Admin_Autopilot_Backend`), while BLL/DAL/Tests use a **dot before the layer**
+(`Life_Admin_Autopilot.BLL`). That is pre-existing; match it exactly.
+
+A slice needs a PL file (its module) at minimum. Add BLL/DAL files only when the
+slice actually has service or persistence logic.
+
+### 9.1 `AddXxxFeature()` — the exact signature
+
+It is an extension on **`IServiceCollection`**, never on `IHostApplicationBuilder`
+or `WebApplication`. It runs at `builder.Services` time, before the container is
+built, so there is no `WebApplication` in scope. Copy this shape verbatim:
+
+```csharp
+namespace Life_Admin_Autopilot_Backend.Features.Account;
+
+public static class AccountFeature
+{
+    public static IServiceCollection AddAccountFeature(
+        this IServiceCollection services,
+        IConfiguration configuration)
+    {
+        services.AddScoped<IAccountService, AccountService>();
+        services.AddUserDataEraser<AccountEraser>();
+        return services;
+    }
+}
+```
+
+Always take `IConfiguration` even if you do not read it yet, and always return
+`IServiceCollection` — `IEndpointModule.AddServices` hands you both and the uniform
+signature is what lets the scanner stay dumb.
+
 ### `IEndpointModule` (assembly-scanned)
 
 ```csharp
@@ -600,6 +689,47 @@ machine without it.
 | `Kernel:Mongo:EnsureIndexes` | — | `true` | |
 | `Kernel:UseHttpsRedirection` | — | `false` | a 307 to https breaks every parity check |
 | `MongoDbSettings:ConnectionString` / `DatabaseName` | — | — | pre-existing |
+| `Database:Provider` | — | `SqlServer` | `SqlServer` \| `Sqlite` — see §13.1 |
+| `Database:EnsureCreated` | — | `true` on SQLite, **never** on SQL Server | |
+| `ConnectionStrings:SqliteConnection` | — | `Data Source=life-admin-autopilot.db` | |
+
+### 13.1 The Identity SQL provider seam
+
+Credentials live in ASP.NET Identity on SQL; the profile lives in Mongo. That
+decision is about **where data lives**, not which engine backs Identity — so the
+engine is a config value, `Database:Provider`, handled in `AddDataAccessLayer` via
+`DAL/Kernel/Data/DatabaseProvider.cs`.
+
+**Default is `SqlServer`; nothing changes unless configured.** Production keeps SQL
+Server. `Sqlite` exists because the shipped default connection string is
+`Server=(localdb)\mssqllocaldb;…` and LocalDB is Windows-only — on macOS/Linux the
+first endpoint that touches Identity fails outright. `KernelWebApplicationFactory`
+sets `Sqlite` with a private temp file per factory, so slice tests get a working
+credential store for free.
+
+**Migrations are provider-specific. SQL Server is the canonical target.**
+
+- `20260724022126_InitialIdentity` was generated for SQL Server and production must
+  keep applying it.
+- **Never run `dotnet ef migrations add` while `Database:Provider=Sqlite`.** A
+  SQLite-shaped migration overwriting the canonical set breaks the production
+  deploy. If you must regenerate, set the provider back to `SqlServer` first.
+- SQLite never participates in migration history at all — it gets its schema from
+  `EnsureCreated()` in `SqliteSchemaInitializer`, which is hard-gated to SQLite and
+  cannot run against SQL Server (EnsureCreated would bypass migrations and leave a
+  database they can never touch).
+
+**Known gap, not yet fixed:** `Program.cs` never calls `Migrate()`. A fresh SQL
+Server deploy therefore starts against an empty database and the checked-in
+migration is never applied. Whoever owns deployment needs to add a migration step
+or an explicit startup `Migrate()` for the SqlServer path.
+
+**Parity trap for the auth slice:** Identity's DEFAULT `IdentityOptions.Password`
+requires an uppercase letter, a digit and a non-alphanumeric character. Node's
+signup schema is only `z.string().min(8).max(128)`, so a Node-valid password like
+`password123` is REJECTED by Identity out of the box. Relax
+`IdentityOptions.Password` in the auth slice to match Node, or signup diverges on
+every simple password.
 
 ---
 
