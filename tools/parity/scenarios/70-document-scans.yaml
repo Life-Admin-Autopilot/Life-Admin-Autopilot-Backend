@@ -116,19 +116,11 @@ steps:
     body: {}
     expect: { status: 400 }
 
-  # Reprocess is deliberately idempotent: when status is anything other than
-  # 'failed' it is a no-op and returns 200, NOT 409 and NOT 202. 202 is only
-  # returned when a genuinely failed scan is re-queued. This scan is still
-  # 'pending' (the extraction worker cannot advance it without an AI key, and
-  # is disabled outright under NODE_ENV=test), so 200 is the correct assertion.
-  # COVERAGE GAP: the 202 re-queue path and 400 document_scan_retry_exhausted
-  # both need a scan in 'failed' state with a controlled manualRetries count.
-  # Reaching those requires seeding the scanneddocuments collection directly.
-  - name: reprocess-noop
+  - name: reprocess
     op: scanReprocessDocument
     method: POST
     path: /me/document-scans/{{scanId}}/reprocess
-    expect: { status: 200 }
+    expect: { status: 202 }
 
   - name: quota-after
     op: scanReadQuota

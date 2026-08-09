@@ -68,7 +68,9 @@ export function compareScenario(scenario, referenceRun, candidateRun) {
       continue;
     }
 
-    const comparison = diffObservations(reference.observation, candidate.observation);
+    const comparison = diffObservations(reference.observation, candidate.observation, {
+      statusOnly: definition.statusOnly === true,
+    });
     entry.diffs = comparison.diffs;
     entry.diffsTruncated = comparison.truncated;
     entry.notes.push(...comparison.notes);
