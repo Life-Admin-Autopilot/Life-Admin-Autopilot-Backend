@@ -1,0 +1,6650 @@
+{
+  "schemaVersion": 1,
+  "generatedAt": "2026-08-09T20:25:34.080Z",
+  "runId": "m9594rg81",
+  "mode": "reference-vs-candidate",
+  "referenceBaseUrl": "http://localhost:4200",
+  "candidateBaseUrl": "http://localhost:5120",
+  "contractDir": "/Users/mina/Documents/Mina/Life-Admin-Autopilot-Backend/docs/contract",
+  "contractPathCount": 75,
+  "masks": [
+    "ID",
+    "TS",
+    "TOKEN",
+    "NUM",
+    "EMAIL"
+  ],
+  "scenariosRun": [
+    {
+      "name": "auth-sweep",
+      "file": "(generated)",
+      "tags": [
+        "auth",
+        "cheap",
+        "generated"
+      ]
+    },
+    {
+      "name": "auth-lifecycle",
+      "file": "10-auth-lifecycle.yaml",
+      "tags": [
+        "auth",
+        "core"
+      ]
+    },
+    {
+      "name": "profile",
+      "file": "20-profile.yaml",
+      "tags": [
+        "auth",
+        "core"
+      ]
+    }
+  ],
+  "scenariosSkipped": [
+    {
+      "name": "framework",
+      "file": "00-framework.yaml",
+      "reason": "does not match --only auth-lifecycle, profile, auth-sweep"
+    },
+    {
+      "name": "tasks-core",
+      "file": "30-tasks-core.yaml",
+      "reason": "does not match --only auth-lifecycle, profile, auth-sweep"
+    },
+    {
+      "name": "tasks-bulk",
+      "file": "40-tasks-bulk.yaml",
+      "reason": "does not match --only auth-lifecycle, profile, auth-sweep"
+    },
+    {
+      "name": "ai-nokey",
+      "file": "50-ai-nokey.yaml",
+      "reason": "does not match --only auth-lifecycle, profile, auth-sweep"
+    },
+    {
+      "name": "clarifications-digest",
+      "file": "60-clarifications-digest.yaml",
+      "reason": "does not match --only auth-lifecycle, profile, auth-sweep"
+    },
+    {
+      "name": "document-scans",
+      "file": "70-document-scans.yaml",
+      "reason": "does not match --only auth-lifecycle, profile, auth-sweep"
+    },
+    {
+      "name": "voice-notes",
+      "file": "80-voice-notes.yaml",
+      "reason": "does not match --only auth-lifecycle, profile, auth-sweep"
+    },
+    {
+      "name": "integrations-unconfigured",
+      "file": "90-integrations-unconfigured.yaml",
+      "reason": "does not match --only auth-lifecycle, profile, auth-sweep"
+    },
+    {
+      "name": "auth-strict-ratelimit",
+      "file": "95-auth-strict-ratelimit.yaml",
+      "reason": "does not match --only auth-lifecycle, profile, auth-sweep"
+    }
+  ],
+  "loadWarnings": [],
+  "summary": {
+    "ERROR": 0,
+    "FAIL": 67,
+    "RATE-LIMITED": 0,
+    "UNREACHABLE": 0,
+    "PASS": 15,
+    "SKIPPED": 5,
+    "NOT-COVERED": 0,
+    "total": 87
+  },
+  "operations": [
+    {
+      "operationId": "authHealth",
+      "domain": "auth",
+      "method": "GET",
+      "pathTemplate": "/health",
+      "declaredCodes": [
+        "200",
+        "503"
+      ],
+      "observedCodes": [],
+      "state": "SKIPPED",
+      "steps": [],
+      "notes": [
+        "covered only by scenario(s) not run: framework"
+      ],
+      "uncoveredCodes": [
+        "200",
+        "503"
+      ]
+    },
+    {
+      "operationId": "authSignup",
+      "domain": "auth",
+      "method": "POST",
+      "pathTemplate": "/auth/signup",
+      "declaredCodes": [
+        "201",
+        "400",
+        "409",
+        "429",
+        "500"
+      ],
+      "observedCodes": [
+        "201",
+        "400",
+        "409"
+      ],
+      "state": "PASS",
+      "steps": [
+        {
+          "scenario": "auth-lifecycle",
+          "name": "signup",
+          "state": "PASS"
+        },
+        {
+          "scenario": "auth-lifecycle",
+          "name": "signup-duplicate-email",
+          "state": "PASS"
+        },
+        {
+          "scenario": "auth-lifecycle",
+          "name": "signup-validation-error",
+          "state": "PASS"
+        }
+      ],
+      "notes": [],
+      "uncoveredCodes": [
+        "429",
+        "500"
+      ]
+    },
+    {
+      "operationId": "authSignin",
+      "domain": "auth",
+      "method": "POST",
+      "pathTemplate": "/auth/signin",
+      "declaredCodes": [
+        "200",
+        "400",
+        "401",
+        "429",
+        "500"
+      ],
+      "observedCodes": [
+        "200"
+      ],
+      "state": "PASS",
+      "steps": [
+        {
+          "scenario": "auth-lifecycle",
+          "name": "signin-second-session",
+          "state": "PASS"
+        }
+      ],
+      "notes": [],
+      "uncoveredCodes": [
+        "400",
+        "401",
+        "429",
+        "500"
+      ]
+    },
+    {
+      "operationId": "authForgotPassword",
+      "domain": "auth",
+      "method": "POST",
+      "pathTemplate": "/auth/forgot-password",
+      "declaredCodes": [
+        "204",
+        "400",
+        "429",
+        "500"
+      ],
+      "observedCodes": [],
+      "state": "SKIPPED",
+      "steps": [],
+      "notes": [
+        "covered only by scenario(s) not run: auth-strict-ratelimit"
+      ],
+      "uncoveredCodes": [
+        "204",
+        "400",
+        "429",
+        "500"
+      ]
+    },
+    {
+      "operationId": "authResetPassword",
+      "domain": "auth",
+      "method": "POST",
+      "pathTemplate": "/auth/reset-password",
+      "declaredCodes": [
+        "204",
+        "400",
+        "429",
+        "500"
+      ],
+      "observedCodes": [],
+      "state": "SKIPPED",
+      "steps": [],
+      "notes": [
+        "covered only by scenario(s) not run: auth-strict-ratelimit"
+      ],
+      "uncoveredCodes": [
+        "204",
+        "400",
+        "429",
+        "500"
+      ]
+    },
+    {
+      "operationId": "authChangePassword",
+      "domain": "auth",
+      "method": "POST",
+      "pathTemplate": "/auth/change-password",
+      "declaredCodes": [
+        "204",
+        "400",
+        "401",
+        "429",
+        "500"
+      ],
+      "observedCodes": [
+        "401"
+      ],
+      "state": "PASS",
+      "steps": [
+        {
+          "scenario": "auth-sweep",
+          "name": "unauthenticated-authChangePassword",
+          "state": "PASS"
+        }
+      ],
+      "notes": [
+        "deeper coverage not run this invocation: auth-strict-ratelimit"
+      ],
+      "uncoveredCodes": [
+        "204",
+        "400",
+        "429",
+        "500"
+      ]
+    },
+    {
+      "operationId": "authRefresh",
+      "domain": "auth",
+      "method": "POST",
+      "pathTemplate": "/auth/refresh",
+      "declaredCodes": [
+        "200",
+        "400",
+        "401",
+        "429",
+        "500"
+      ],
+      "observedCodes": [
+        "200",
+        "401"
+      ],
+      "state": "PASS",
+      "steps": [
+        {
+          "scenario": "auth-lifecycle",
+          "name": "refresh-rotates",
+          "state": "PASS"
+        },
+        {
+          "scenario": "auth-lifecycle",
+          "name": "refresh-with-rotated-out-token",
+          "state": "PASS"
+        }
+      ],
+      "notes": [],
+      "uncoveredCodes": [
+        "400",
+        "429",
+        "500"
+      ]
+    },
+    {
+      "operationId": "authSignout",
+      "domain": "auth",
+      "method": "POST",
+      "pathTemplate": "/auth/signout",
+      "declaredCodes": [
+        "204",
+        "401",
+        "500"
+      ],
+      "observedCodes": [
+        "204",
+        "401"
+      ],
+      "state": "PASS",
+      "steps": [
+        {
+          "scenario": "auth-sweep",
+          "name": "unauthenticated-authSignout",
+          "state": "PASS"
+        },
+        {
+          "scenario": "auth-lifecycle",
+          "name": "signout",
+          "state": "PASS"
+        }
+      ],
+      "notes": [],
+      "uncoveredCodes": [
+        "500"
+      ]
+    },
+    {
+      "operationId": "authMe",
+      "domain": "auth",
+      "method": "GET",
+      "pathTemplate": "/auth/me",
+      "declaredCodes": [
+        "200",
+        "401",
+        "404",
+        "500"
+      ],
+      "observedCodes": [
+        "200",
+        "401",
+        "404"
+      ],
+      "state": "FAIL",
+      "steps": [
+        {
+          "scenario": "auth-sweep",
+          "name": "unauthenticated-authMe",
+          "state": "PASS"
+        },
+        {
+          "scenario": "auth-lifecycle",
+          "name": "me",
+          "state": "PASS"
+        },
+        {
+          "scenario": "profile",
+          "name": "me-after-delete",
+          "state": "FAIL"
+        }
+      ],
+      "notes": [
+        "deeper coverage not run this invocation: framework"
+      ],
+      "uncoveredCodes": [
+        "500"
+      ]
+    },
+    {
+      "operationId": "authSessionsList",
+      "domain": "auth",
+      "method": "POST",
+      "pathTemplate": "/auth/sessions/list",
+      "declaredCodes": [
+        "200",
+        "400",
+        "401",
+        "500"
+      ],
+      "observedCodes": [
+        "200",
+        "401"
+      ],
+      "state": "PASS",
+      "steps": [
+        {
+          "scenario": "auth-sweep",
+          "name": "unauthenticated-authSessionsList",
+          "state": "PASS"
+        },
+        {
+          "scenario": "auth-lifecycle",
+          "name": "sessions-list-one",
+          "state": "PASS"
+        },
+        {
+          "scenario": "auth-lifecycle",
+          "name": "sessions-list-two",
+          "state": "PASS"
+        },
+        {
+          "scenario": "auth-lifecycle",
+          "name": "sessions-list-after-revoke-others",
+          "state": "PASS"
+        }
+      ],
+      "notes": [],
+      "uncoveredCodes": [
+        "400",
+        "500"
+      ]
+    },
+    {
+      "operationId": "authSessionRevoke",
+      "domain": "auth",
+      "method": "DELETE",
+      "pathTemplate": "/auth/sessions/{id}",
+      "declaredCodes": [
+        "204",
+        "401",
+        "404",
+        "500"
+      ],
+      "observedCodes": [
+        "204",
+        "401",
+        "404"
+      ],
+      "state": "PASS",
+      "steps": [
+        {
+          "scenario": "auth-sweep",
+          "name": "unauthenticated-authSessionRevoke",
+          "state": "PASS"
+        },
+        {
+          "scenario": "auth-lifecycle",
+          "name": "revoke-current-session",
+          "state": "PASS"
+        },
+        {
+          "scenario": "auth-lifecycle",
+          "name": "revoke-unknown-session",
+          "state": "PASS"
+        }
+      ],
+      "notes": [],
+      "uncoveredCodes": [
+        "500"
+      ]
+    },
+    {
+      "operationId": "authSessionsRevokeOthers",
+      "domain": "auth",
+      "method": "POST",
+      "pathTemplate": "/auth/sessions/revoke-others",
+      "declaredCodes": [
+        "204",
+        "400",
+        "401",
+        "500"
+      ],
+      "observedCodes": [
+        "204",
+        "401"
+      ],
+      "state": "PASS",
+      "steps": [
+        {
+          "scenario": "auth-sweep",
+          "name": "unauthenticated-authSessionsRevokeOthers",
+          "state": "PASS"
+        },
+        {
+          "scenario": "auth-lifecycle",
+          "name": "revoke-others",
+          "state": "PASS"
+        }
+      ],
+      "notes": [],
+      "uncoveredCodes": [
+        "400",
+        "500"
+      ]
+    },
+    {
+      "operationId": "authVerifyEmailToken",
+      "domain": "auth",
+      "method": "POST",
+      "pathTemplate": "/auth/verify-email",
+      "declaredCodes": [
+        "200",
+        "400",
+        "429",
+        "500"
+      ],
+      "observedCodes": [
+        "400"
+      ],
+      "state": "PASS",
+      "steps": [
+        {
+          "scenario": "auth-lifecycle",
+          "name": "verify-email-invalid-token",
+          "state": "PASS"
+        }
+      ],
+      "notes": [],
+      "uncoveredCodes": [
+        "200",
+        "429",
+        "500"
+      ]
+    },
+    {
+      "operationId": "authVerifyEmailSendCode",
+      "domain": "auth",
+      "method": "POST",
+      "pathTemplate": "/auth/verify-email/send-code",
+      "declaredCodes": [
+        "204",
+        "400",
+        "401",
+        "404",
+        "429",
+        "500"
+      ],
+      "observedCodes": [
+        "401"
+      ],
+      "state": "PASS",
+      "steps": [
+        {
+          "scenario": "auth-sweep",
+          "name": "unauthenticated-authVerifyEmailSendCode",
+          "state": "PASS"
+        }
+      ],
+      "notes": [
+        "deeper coverage not run this invocation: auth-strict-ratelimit"
+      ],
+      "uncoveredCodes": [
+        "204",
+        "400",
+        "404",
+        "429",
+        "500"
+      ]
+    },
+    {
+      "operationId": "authVerifyEmailConfirmCode",
+      "domain": "auth",
+      "method": "POST",
+      "pathTemplate": "/auth/verify-email/confirm-code",
+      "declaredCodes": [
+        "200",
+        "400",
+        "401",
+        "404",
+        "429",
+        "500"
+      ],
+      "observedCodes": [
+        "401"
+      ],
+      "state": "PASS",
+      "steps": [
+        {
+          "scenario": "auth-sweep",
+          "name": "unauthenticated-authVerifyEmailConfirmCode",
+          "state": "PASS"
+        }
+      ],
+      "notes": [
+        "deeper coverage not run this invocation: auth-strict-ratelimit"
+      ],
+      "uncoveredCodes": [
+        "200",
+        "400",
+        "404",
+        "429",
+        "500"
+      ]
+    },
+    {
+      "operationId": "authChangeEmailRequest",
+      "domain": "auth",
+      "method": "POST",
+      "pathTemplate": "/auth/change-email",
+      "declaredCodes": [
+        "200",
+        "400",
+        "401",
+        "404",
+        "409",
+        "429",
+        "500"
+      ],
+      "observedCodes": [
+        "401"
+      ],
+      "state": "PASS",
+      "steps": [
+        {
+          "scenario": "auth-sweep",
+          "name": "unauthenticated-authChangeEmailRequest",
+          "state": "PASS"
+        }
+      ],
+      "notes": [
+        "deeper coverage not run this invocation: auth-strict-ratelimit"
+      ],
+      "uncoveredCodes": [
+        "200",
+        "400",
+        "404",
+        "409",
+        "429",
+        "500"
+      ]
+    },
+    {
+      "operationId": "authChangeEmailCancel",
+      "domain": "auth",
+      "method": "DELETE",
+      "pathTemplate": "/auth/change-email",
+      "declaredCodes": [
+        "204",
+        "401",
+        "404",
+        "500"
+      ],
+      "observedCodes": [
+        "204",
+        "401"
+      ],
+      "state": "PASS",
+      "steps": [
+        {
+          "scenario": "auth-sweep",
+          "name": "unauthenticated-authChangeEmailCancel",
+          "state": "PASS"
+        },
+        {
+          "scenario": "profile",
+          "name": "cancel-pending-email-change-when-none-pending",
+          "state": "PASS"
+        }
+      ],
+      "notes": [],
+      "uncoveredCodes": [
+        "404",
+        "500"
+      ]
+    },
+    {
+      "operationId": "authChangeEmailConfirm",
+      "domain": "auth",
+      "method": "POST",
+      "pathTemplate": "/auth/change-email/confirm",
+      "declaredCodes": [
+        "200",
+        "400",
+        "401",
+        "404",
+        "409",
+        "429",
+        "500"
+      ],
+      "observedCodes": [
+        "401"
+      ],
+      "state": "PASS",
+      "steps": [
+        {
+          "scenario": "auth-sweep",
+          "name": "unauthenticated-authChangeEmailConfirm",
+          "state": "PASS"
+        }
+      ],
+      "notes": [
+        "deeper coverage not run this invocation: auth-strict-ratelimit"
+      ],
+      "uncoveredCodes": [
+        "200",
+        "400",
+        "404",
+        "409",
+        "429",
+        "500"
+      ]
+    },
+    {
+      "operationId": "authMagicLinkRequest",
+      "domain": "auth",
+      "method": "POST",
+      "pathTemplate": "/auth/magic-link",
+      "declaredCodes": [
+        "204",
+        "400",
+        "429",
+        "500"
+      ],
+      "observedCodes": [],
+      "state": "SKIPPED",
+      "steps": [],
+      "notes": [
+        "covered only by scenario(s) not run: auth-strict-ratelimit"
+      ],
+      "uncoveredCodes": [
+        "204",
+        "400",
+        "429",
+        "500"
+      ]
+    },
+    {
+      "operationId": "authMagicConsume",
+      "domain": "auth",
+      "method": "POST",
+      "pathTemplate": "/auth/magic-consume",
+      "declaredCodes": [
+        "200",
+        "400",
+        "404",
+        "429",
+        "500"
+      ],
+      "observedCodes": [
+        "400"
+      ],
+      "state": "PASS",
+      "steps": [
+        {
+          "scenario": "auth-lifecycle",
+          "name": "magic-consume-invalid-token",
+          "state": "PASS"
+        }
+      ],
+      "notes": [],
+      "uncoveredCodes": [
+        "200",
+        "404",
+        "429",
+        "500"
+      ]
+    },
+    {
+      "operationId": "authUpdateMe",
+      "domain": "auth",
+      "method": "PATCH",
+      "pathTemplate": "/me",
+      "declaredCodes": [
+        "200",
+        "400",
+        "401",
+        "404",
+        "500"
+      ],
+      "observedCodes": [
+        "200",
+        "400",
+        "401",
+        "500"
+      ],
+      "state": "FAIL",
+      "steps": [
+        {
+          "scenario": "auth-sweep",
+          "name": "unauthenticated-authUpdateMe",
+          "state": "FAIL"
+        },
+        {
+          "scenario": "profile",
+          "name": "patch-nested-key-merge",
+          "state": "FAIL"
+        },
+        {
+          "scenario": "profile",
+          "name": "patch-scalar-fields",
+          "state": "FAIL"
+        },
+        {
+          "scenario": "profile",
+          "name": "patch-second-nested-key-still-merges",
+          "state": "FAIL"
+        },
+        {
+          "scenario": "profile",
+          "name": "patch-empty-body-is-a-touch",
+          "state": "FAIL"
+        },
+        {
+          "scenario": "profile",
+          "name": "patch-unknown-keys-are-stripped-not-rejected",
+          "state": "FAIL"
+        },
+        {
+          "scenario": "profile",
+          "name": "patch-invalid-timezone",
+          "state": "FAIL"
+        },
+        {
+          "scenario": "profile",
+          "name": "malformed-json-is-500-not-400",
+          "state": "FAIL"
+        },
+        {
+          "scenario": "profile",
+          "name": "oversized-json-body-is-500-not-413",
+          "state": "FAIL"
+        }
+      ],
+      "notes": [
+        "deeper coverage not run this invocation: document-scans, integrations-unconfigured"
+      ],
+      "uncoveredCodes": [
+        "404"
+      ]
+    },
+    {
+      "operationId": "authDeleteMe",
+      "domain": "auth",
+      "method": "DELETE",
+      "pathTemplate": "/me",
+      "declaredCodes": [
+        "204",
+        "400",
+        "401",
+        "404",
+        "500"
+      ],
+      "observedCodes": [
+        "204",
+        "400",
+        "401"
+      ],
+      "state": "FAIL",
+      "steps": [
+        {
+          "scenario": "auth-sweep",
+          "name": "unauthenticated-authDeleteMe",
+          "state": "FAIL"
+        },
+        {
+          "scenario": "profile",
+          "name": "delete-me-without-password",
+          "state": "FAIL"
+        },
+        {
+          "scenario": "profile",
+          "name": "delete-me-wrong-password",
+          "state": "FAIL"
+        },
+        {
+          "scenario": "profile",
+          "name": "delete-me",
+          "state": "FAIL"
+        }
+      ],
+      "notes": [],
+      "uncoveredCodes": [
+        "404",
+        "500"
+      ]
+    },
+    {
+      "operationId": "authExportMe",
+      "domain": "auth",
+      "method": "GET",
+      "pathTemplate": "/me/export",
+      "declaredCodes": [
+        "200",
+        "401",
+        "404",
+        "500"
+      ],
+      "observedCodes": [
+        "200",
+        "401"
+      ],
+      "state": "FAIL",
+      "steps": [
+        {
+          "scenario": "auth-sweep",
+          "name": "unauthenticated-authExportMe",
+          "state": "FAIL"
+        },
+        {
+          "scenario": "profile",
+          "name": "export",
+          "state": "FAIL"
+        }
+      ],
+      "notes": [],
+      "uncoveredCodes": [
+        "404",
+        "500"
+      ]
+    },
+    {
+      "operationId": "authGetSubscription",
+      "domain": "auth",
+      "method": "GET",
+      "pathTemplate": "/me/subscription",
+      "declaredCodes": [
+        "200",
+        "401",
+        "404",
+        "500"
+      ],
+      "observedCodes": [
+        "200",
+        "401"
+      ],
+      "state": "FAIL",
+      "steps": [
+        {
+          "scenario": "auth-sweep",
+          "name": "unauthenticated-authGetSubscription",
+          "state": "FAIL"
+        },
+        {
+          "scenario": "profile",
+          "name": "subscription",
+          "state": "FAIL"
+        }
+      ],
+      "notes": [],
+      "uncoveredCodes": [
+        "404",
+        "500"
+      ]
+    },
+    {
+      "operationId": "authGetInvoices",
+      "domain": "auth",
+      "method": "GET",
+      "pathTemplate": "/me/billing/invoices",
+      "declaredCodes": [
+        "200",
+        "401",
+        "500"
+      ],
+      "observedCodes": [
+        "200",
+        "401"
+      ],
+      "state": "FAIL",
+      "steps": [
+        {
+          "scenario": "auth-sweep",
+          "name": "unauthenticated-authGetInvoices",
+          "state": "FAIL"
+        },
+        {
+          "scenario": "profile",
+          "name": "invoices",
+          "state": "FAIL"
+        }
+      ],
+      "notes": [],
+      "uncoveredCodes": [
+        "500"
+      ]
+    },
+    {
+      "operationId": "authGetIntegrations",
+      "domain": "auth",
+      "method": "GET",
+      "pathTemplate": "/me/integrations",
+      "declaredCodes": [
+        "200",
+        "401",
+        "500"
+      ],
+      "observedCodes": [
+        "200",
+        "401"
+      ],
+      "state": "FAIL",
+      "steps": [
+        {
+          "scenario": "auth-sweep",
+          "name": "unauthenticated-authGetIntegrations",
+          "state": "FAIL"
+        },
+        {
+          "scenario": "profile",
+          "name": "integrations",
+          "state": "FAIL"
+        }
+      ],
+      "notes": [],
+      "uncoveredCodes": [
+        "500"
+      ]
+    },
+    {
+      "operationId": "taskList",
+      "domain": "tasks",
+      "method": "GET",
+      "pathTemplate": "/me/tasks",
+      "declaredCodes": [
+        "200",
+        "400",
+        "401",
+        "500"
+      ],
+      "observedCodes": [
+        "401"
+      ],
+      "state": "FAIL",
+      "steps": [
+        {
+          "scenario": "auth-sweep",
+          "name": "unauthenticated-taskList",
+          "state": "FAIL"
+        }
+      ],
+      "notes": [
+        "deeper coverage not run this invocation: framework, tasks-core, tasks-bulk"
+      ],
+      "uncoveredCodes": [
+        "200",
+        "400",
+        "500"
+      ]
+    },
+    {
+      "operationId": "taskCreate",
+      "domain": "tasks",
+      "method": "POST",
+      "pathTemplate": "/me/tasks",
+      "declaredCodes": [
+        "201",
+        "400",
+        "401",
+        "500"
+      ],
+      "observedCodes": [
+        "401"
+      ],
+      "state": "FAIL",
+      "steps": [
+        {
+          "scenario": "auth-sweep",
+          "name": "unauthenticated-taskCreate",
+          "state": "FAIL"
+        }
+      ],
+      "notes": [
+        "deeper coverage not run this invocation: tasks-core, tasks-bulk, ai-nokey, clarifications-digest"
+      ],
+      "uncoveredCodes": [
+        "201",
+        "400",
+        "500"
+      ]
+    },
+    {
+      "operationId": "taskCounts",
+      "domain": "tasks",
+      "method": "GET",
+      "pathTemplate": "/me/tasks/counts",
+      "declaredCodes": [
+        "200",
+        "400",
+        "401",
+        "500"
+      ],
+      "observedCodes": [
+        "401"
+      ],
+      "state": "FAIL",
+      "steps": [
+        {
+          "scenario": "auth-sweep",
+          "name": "unauthenticated-taskCounts",
+          "state": "FAIL"
+        }
+      ],
+      "notes": [
+        "deeper coverage not run this invocation: tasks-core"
+      ],
+      "uncoveredCodes": [
+        "200",
+        "400",
+        "500"
+      ]
+    },
+    {
+      "operationId": "taskTags",
+      "domain": "tasks",
+      "method": "GET",
+      "pathTemplate": "/me/tasks/tags",
+      "declaredCodes": [
+        "200",
+        "401",
+        "500"
+      ],
+      "observedCodes": [
+        "401"
+      ],
+      "state": "FAIL",
+      "steps": [
+        {
+          "scenario": "auth-sweep",
+          "name": "unauthenticated-taskTags",
+          "state": "FAIL"
+        }
+      ],
+      "notes": [
+        "deeper coverage not run this invocation: tasks-core"
+      ],
+      "uncoveredCodes": [
+        "200",
+        "500"
+      ]
+    },
+    {
+      "operationId": "taskSearch",
+      "domain": "tasks",
+      "method": "POST",
+      "pathTemplate": "/me/tasks/search",
+      "declaredCodes": [
+        "200",
+        "400",
+        "401",
+        "402",
+        "429",
+        "500",
+        "503"
+      ],
+      "observedCodes": [
+        "401"
+      ],
+      "state": "FAIL",
+      "steps": [
+        {
+          "scenario": "auth-sweep",
+          "name": "unauthenticated-taskSearch",
+          "state": "FAIL"
+        }
+      ],
+      "notes": [
+        "deeper coverage not run this invocation: ai-nokey"
+      ],
+      "uncoveredCodes": [
+        "200",
+        "400",
+        "402",
+        "429",
+        "500",
+        "503"
+      ]
+    },
+    {
+      "operationId": "taskSummarize",
+      "domain": "tasks",
+      "method": "POST",
+      "pathTemplate": "/me/tasks/summarize",
+      "declaredCodes": [
+        "200",
+        "400",
+        "401",
+        "402",
+        "429",
+        "500",
+        "503"
+      ],
+      "observedCodes": [
+        "401"
+      ],
+      "state": "FAIL",
+      "steps": [
+        {
+          "scenario": "auth-sweep",
+          "name": "unauthenticated-taskSummarize",
+          "state": "FAIL"
+        }
+      ],
+      "notes": [
+        "deeper coverage not run this invocation: ai-nokey"
+      ],
+      "uncoveredCodes": [
+        "200",
+        "400",
+        "402",
+        "429",
+        "500",
+        "503"
+      ]
+    },
+    {
+      "operationId": "taskEstimateBacklog",
+      "domain": "tasks",
+      "method": "POST",
+      "pathTemplate": "/me/tasks/estimate-backlog",
+      "declaredCodes": [
+        "200",
+        "400",
+        "401",
+        "402",
+        "429",
+        "500",
+        "503"
+      ],
+      "observedCodes": [
+        "401"
+      ],
+      "state": "FAIL",
+      "steps": [
+        {
+          "scenario": "auth-sweep",
+          "name": "unauthenticated-taskEstimateBacklog",
+          "state": "FAIL"
+        }
+      ],
+      "notes": [
+        "deeper coverage not run this invocation: ai-nokey"
+      ],
+      "uncoveredCodes": [
+        "200",
+        "400",
+        "402",
+        "429",
+        "500",
+        "503"
+      ]
+    },
+    {
+      "operationId": "taskBulkPreview",
+      "domain": "tasks",
+      "method": "POST",
+      "pathTemplate": "/me/tasks/bulk/preview",
+      "declaredCodes": [
+        "200",
+        "400",
+        "401",
+        "500"
+      ],
+      "observedCodes": [
+        "401"
+      ],
+      "state": "FAIL",
+      "steps": [
+        {
+          "scenario": "auth-sweep",
+          "name": "unauthenticated-taskBulkPreview",
+          "state": "FAIL"
+        }
+      ],
+      "notes": [
+        "deeper coverage not run this invocation: tasks-bulk"
+      ],
+      "uncoveredCodes": [
+        "200",
+        "400",
+        "500"
+      ]
+    },
+    {
+      "operationId": "taskBulkApply",
+      "domain": "tasks",
+      "method": "POST",
+      "pathTemplate": "/me/tasks/bulk",
+      "declaredCodes": [
+        "200",
+        "400",
+        "401",
+        "500"
+      ],
+      "observedCodes": [
+        "401"
+      ],
+      "state": "FAIL",
+      "steps": [
+        {
+          "scenario": "auth-sweep",
+          "name": "unauthenticated-taskBulkApply",
+          "state": "FAIL"
+        }
+      ],
+      "notes": [
+        "deeper coverage not run this invocation: tasks-bulk"
+      ],
+      "uncoveredCodes": [
+        "200",
+        "400",
+        "500"
+      ]
+    },
+    {
+      "operationId": "taskUndo",
+      "domain": "tasks",
+      "method": "POST",
+      "pathTemplate": "/me/tasks/undo/{token}",
+      "declaredCodes": [
+        "200",
+        "401",
+        "404",
+        "500"
+      ],
+      "observedCodes": [
+        "401"
+      ],
+      "state": "FAIL",
+      "steps": [
+        {
+          "scenario": "auth-sweep",
+          "name": "unauthenticated-taskUndo",
+          "state": "FAIL"
+        }
+      ],
+      "notes": [
+        "deeper coverage not run this invocation: tasks-core, tasks-bulk"
+      ],
+      "uncoveredCodes": [
+        "200",
+        "404",
+        "500"
+      ]
+    },
+    {
+      "operationId": "taskCategorizePropose",
+      "domain": "tasks",
+      "method": "POST",
+      "pathTemplate": "/me/tasks/categorize",
+      "declaredCodes": [
+        "200",
+        "400",
+        "401",
+        "402",
+        "409",
+        "429",
+        "500",
+        "503"
+      ],
+      "observedCodes": [
+        "401"
+      ],
+      "state": "FAIL",
+      "steps": [
+        {
+          "scenario": "auth-sweep",
+          "name": "unauthenticated-taskCategorizePropose",
+          "state": "FAIL"
+        }
+      ],
+      "notes": [
+        "deeper coverage not run this invocation: ai-nokey"
+      ],
+      "uncoveredCodes": [
+        "200",
+        "400",
+        "402",
+        "409",
+        "429",
+        "500",
+        "503"
+      ]
+    },
+    {
+      "operationId": "taskCategorizePending",
+      "domain": "tasks",
+      "method": "GET",
+      "pathTemplate": "/me/tasks/categorize/pending",
+      "declaredCodes": [
+        "200",
+        "401",
+        "500"
+      ],
+      "observedCodes": [
+        "401"
+      ],
+      "state": "FAIL",
+      "steps": [
+        {
+          "scenario": "auth-sweep",
+          "name": "unauthenticated-taskCategorizePending",
+          "state": "FAIL"
+        }
+      ],
+      "notes": [
+        "deeper coverage not run this invocation: ai-nokey"
+      ],
+      "uncoveredCodes": [
+        "200",
+        "500"
+      ]
+    },
+    {
+      "operationId": "taskCategorizeApply",
+      "domain": "tasks",
+      "method": "POST",
+      "pathTemplate": "/me/tasks/categorize/{id}/apply",
+      "declaredCodes": [
+        "200",
+        "400",
+        "401",
+        "404",
+        "500"
+      ],
+      "observedCodes": [
+        "401"
+      ],
+      "state": "FAIL",
+      "steps": [
+        {
+          "scenario": "auth-sweep",
+          "name": "unauthenticated-taskCategorizeApply",
+          "state": "FAIL"
+        }
+      ],
+      "notes": [
+        "deeper coverage not run this invocation: ai-nokey"
+      ],
+      "uncoveredCodes": [
+        "200",
+        "400",
+        "404",
+        "500"
+      ]
+    },
+    {
+      "operationId": "taskCategorizeDiscard",
+      "domain": "tasks",
+      "method": "POST",
+      "pathTemplate": "/me/tasks/categorize/{id}/discard",
+      "declaredCodes": [
+        "204",
+        "401",
+        "404",
+        "500"
+      ],
+      "observedCodes": [
+        "401"
+      ],
+      "state": "FAIL",
+      "steps": [
+        {
+          "scenario": "auth-sweep",
+          "name": "unauthenticated-taskCategorizeDiscard",
+          "state": "FAIL"
+        }
+      ],
+      "notes": [
+        "deeper coverage not run this invocation: ai-nokey"
+      ],
+      "uncoveredCodes": [
+        "204",
+        "404",
+        "500"
+      ]
+    },
+    {
+      "operationId": "taskTrashList",
+      "domain": "tasks",
+      "method": "GET",
+      "pathTemplate": "/me/tasks/trash",
+      "declaredCodes": [
+        "200",
+        "401",
+        "500"
+      ],
+      "observedCodes": [
+        "401"
+      ],
+      "state": "FAIL",
+      "steps": [
+        {
+          "scenario": "auth-sweep",
+          "name": "unauthenticated-taskTrashList",
+          "state": "FAIL"
+        }
+      ],
+      "notes": [
+        "deeper coverage not run this invocation: tasks-core, tasks-bulk"
+      ],
+      "uncoveredCodes": [
+        "200",
+        "500"
+      ]
+    },
+    {
+      "operationId": "taskTrashPurge",
+      "domain": "tasks",
+      "method": "DELETE",
+      "pathTemplate": "/me/tasks/trash",
+      "declaredCodes": [
+        "200",
+        "401",
+        "500"
+      ],
+      "observedCodes": [
+        "401"
+      ],
+      "state": "FAIL",
+      "steps": [
+        {
+          "scenario": "auth-sweep",
+          "name": "unauthenticated-taskTrashPurge",
+          "state": "FAIL"
+        }
+      ],
+      "notes": [
+        "deeper coverage not run this invocation: tasks-core"
+      ],
+      "uncoveredCodes": [
+        "200",
+        "500"
+      ]
+    },
+    {
+      "operationId": "taskTranslateQuota",
+      "domain": "tasks",
+      "method": "GET",
+      "pathTemplate": "/me/tasks/translate/quota",
+      "declaredCodes": [
+        "200",
+        "401",
+        "500"
+      ],
+      "observedCodes": [
+        "401"
+      ],
+      "state": "FAIL",
+      "steps": [
+        {
+          "scenario": "auth-sweep",
+          "name": "unauthenticated-taskTranslateQuota",
+          "state": "FAIL"
+        }
+      ],
+      "notes": [
+        "deeper coverage not run this invocation: ai-nokey"
+      ],
+      "uncoveredCodes": [
+        "200",
+        "500"
+      ]
+    },
+    {
+      "operationId": "taskTranslate",
+      "domain": "tasks",
+      "method": "POST",
+      "pathTemplate": "/me/tasks/translate",
+      "declaredCodes": [
+        "200",
+        "400",
+        "401",
+        "402",
+        "429",
+        "500",
+        "503"
+      ],
+      "observedCodes": [
+        "401"
+      ],
+      "state": "FAIL",
+      "steps": [
+        {
+          "scenario": "auth-sweep",
+          "name": "unauthenticated-taskTranslate",
+          "state": "FAIL"
+        }
+      ],
+      "notes": [
+        "deeper coverage not run this invocation: ai-nokey"
+      ],
+      "uncoveredCodes": [
+        "200",
+        "400",
+        "402",
+        "429",
+        "500",
+        "503"
+      ]
+    },
+    {
+      "operationId": "taskRestore",
+      "domain": "tasks",
+      "method": "POST",
+      "pathTemplate": "/me/tasks/{id}/restore",
+      "declaredCodes": [
+        "200",
+        "401",
+        "404",
+        "500"
+      ],
+      "observedCodes": [
+        "401"
+      ],
+      "state": "FAIL",
+      "steps": [
+        {
+          "scenario": "auth-sweep",
+          "name": "unauthenticated-taskRestore",
+          "state": "FAIL"
+        }
+      ],
+      "notes": [
+        "deeper coverage not run this invocation: tasks-core"
+      ],
+      "uncoveredCodes": [
+        "200",
+        "404",
+        "500"
+      ]
+    },
+    {
+      "operationId": "taskGet",
+      "domain": "tasks",
+      "method": "GET",
+      "pathTemplate": "/me/tasks/{id}",
+      "declaredCodes": [
+        "200",
+        "401",
+        "404",
+        "500"
+      ],
+      "observedCodes": [
+        "401"
+      ],
+      "state": "FAIL",
+      "steps": [
+        {
+          "scenario": "auth-sweep",
+          "name": "unauthenticated-taskGet",
+          "state": "FAIL"
+        }
+      ],
+      "notes": [
+        "deeper coverage not run this invocation: tasks-core"
+      ],
+      "uncoveredCodes": [
+        "200",
+        "404",
+        "500"
+      ]
+    },
+    {
+      "operationId": "taskUpdate",
+      "domain": "tasks",
+      "method": "PATCH",
+      "pathTemplate": "/me/tasks/{id}",
+      "declaredCodes": [
+        "200",
+        "400",
+        "401",
+        "404",
+        "500"
+      ],
+      "observedCodes": [
+        "401"
+      ],
+      "state": "FAIL",
+      "steps": [
+        {
+          "scenario": "auth-sweep",
+          "name": "unauthenticated-taskUpdate",
+          "state": "FAIL"
+        }
+      ],
+      "notes": [
+        "deeper coverage not run this invocation: tasks-core"
+      ],
+      "uncoveredCodes": [
+        "200",
+        "400",
+        "404",
+        "500"
+      ]
+    },
+    {
+      "operationId": "taskSoftDelete",
+      "domain": "tasks",
+      "method": "DELETE",
+      "pathTemplate": "/me/tasks/{id}",
+      "declaredCodes": [
+        "200",
+        "401",
+        "404",
+        "500"
+      ],
+      "observedCodes": [
+        "401"
+      ],
+      "state": "FAIL",
+      "steps": [
+        {
+          "scenario": "auth-sweep",
+          "name": "unauthenticated-taskSoftDelete",
+          "state": "FAIL"
+        }
+      ],
+      "notes": [
+        "deeper coverage not run this invocation: tasks-core"
+      ],
+      "uncoveredCodes": [
+        "200",
+        "404",
+        "500"
+      ]
+    },
+    {
+      "operationId": "taskSubtaskAdd",
+      "domain": "tasks",
+      "method": "POST",
+      "pathTemplate": "/me/tasks/{id}/subtasks",
+      "declaredCodes": [
+        "201",
+        "400",
+        "401",
+        "404",
+        "500"
+      ],
+      "observedCodes": [
+        "401"
+      ],
+      "state": "FAIL",
+      "steps": [
+        {
+          "scenario": "auth-sweep",
+          "name": "unauthenticated-taskSubtaskAdd",
+          "state": "FAIL"
+        }
+      ],
+      "notes": [
+        "deeper coverage not run this invocation: tasks-core"
+      ],
+      "uncoveredCodes": [
+        "201",
+        "400",
+        "404",
+        "500"
+      ]
+    },
+    {
+      "operationId": "taskSubtaskUpdate",
+      "domain": "tasks",
+      "method": "PATCH",
+      "pathTemplate": "/me/tasks/{id}/subtasks/{subId}",
+      "declaredCodes": [
+        "200",
+        "400",
+        "401",
+        "404",
+        "500"
+      ],
+      "observedCodes": [
+        "401"
+      ],
+      "state": "FAIL",
+      "steps": [
+        {
+          "scenario": "auth-sweep",
+          "name": "unauthenticated-taskSubtaskUpdate",
+          "state": "FAIL"
+        }
+      ],
+      "notes": [
+        "deeper coverage not run this invocation: tasks-core"
+      ],
+      "uncoveredCodes": [
+        "200",
+        "400",
+        "404",
+        "500"
+      ]
+    },
+    {
+      "operationId": "taskSubtaskDelete",
+      "domain": "tasks",
+      "method": "DELETE",
+      "pathTemplate": "/me/tasks/{id}/subtasks/{subId}",
+      "declaredCodes": [
+        "200",
+        "401",
+        "404",
+        "500"
+      ],
+      "observedCodes": [
+        "401"
+      ],
+      "state": "FAIL",
+      "steps": [
+        {
+          "scenario": "auth-sweep",
+          "name": "unauthenticated-taskSubtaskDelete",
+          "state": "FAIL"
+        }
+      ],
+      "notes": [
+        "deeper coverage not run this invocation: tasks-core"
+      ],
+      "uncoveredCodes": [
+        "200",
+        "404",
+        "500"
+      ]
+    },
+    {
+      "operationId": "clarList",
+      "domain": "tasks",
+      "method": "GET",
+      "pathTemplate": "/me/clarifications",
+      "declaredCodes": [
+        "200",
+        "401",
+        "500"
+      ],
+      "observedCodes": [
+        "401"
+      ],
+      "state": "FAIL",
+      "steps": [
+        {
+          "scenario": "auth-sweep",
+          "name": "unauthenticated-clarList",
+          "state": "FAIL"
+        }
+      ],
+      "notes": [
+        "deeper coverage not run this invocation: clarifications-digest"
+      ],
+      "uncoveredCodes": [
+        "200",
+        "500"
+      ]
+    },
+    {
+      "operationId": "clarResolve",
+      "domain": "tasks",
+      "method": "POST",
+      "pathTemplate": "/me/clarifications/{id}/resolve",
+      "declaredCodes": [
+        "200",
+        "400",
+        "401",
+        "404",
+        "500",
+        "503"
+      ],
+      "observedCodes": [
+        "401"
+      ],
+      "state": "FAIL",
+      "steps": [
+        {
+          "scenario": "auth-sweep",
+          "name": "unauthenticated-clarResolve",
+          "state": "FAIL"
+        }
+      ],
+      "notes": [
+        "deeper coverage not run this invocation: clarifications-digest"
+      ],
+      "uncoveredCodes": [
+        "200",
+        "400",
+        "404",
+        "500",
+        "503"
+      ]
+    },
+    {
+      "operationId": "clarDefer",
+      "domain": "tasks",
+      "method": "POST",
+      "pathTemplate": "/me/clarifications/{id}/defer",
+      "declaredCodes": [
+        "200",
+        "401",
+        "404",
+        "500"
+      ],
+      "observedCodes": [
+        "401"
+      ],
+      "state": "FAIL",
+      "steps": [
+        {
+          "scenario": "auth-sweep",
+          "name": "unauthenticated-clarDefer",
+          "state": "FAIL"
+        }
+      ],
+      "notes": [
+        "deeper coverage not run this invocation: clarifications-digest"
+      ],
+      "uncoveredCodes": [
+        "200",
+        "404",
+        "500"
+      ]
+    },
+    {
+      "operationId": "clarDrop",
+      "domain": "tasks",
+      "method": "POST",
+      "pathTemplate": "/me/clarifications/{id}/drop",
+      "declaredCodes": [
+        "200",
+        "401",
+        "404",
+        "500"
+      ],
+      "observedCodes": [
+        "401"
+      ],
+      "state": "FAIL",
+      "steps": [
+        {
+          "scenario": "auth-sweep",
+          "name": "unauthenticated-clarDrop",
+          "state": "FAIL"
+        }
+      ],
+      "notes": [
+        "deeper coverage not run this invocation: clarifications-digest"
+      ],
+      "uncoveredCodes": [
+        "200",
+        "404",
+        "500"
+      ]
+    },
+    {
+      "operationId": "taskDigest",
+      "domain": "tasks",
+      "method": "GET",
+      "pathTemplate": "/me/digest",
+      "declaredCodes": [
+        "200",
+        "400",
+        "401",
+        "500"
+      ],
+      "observedCodes": [
+        "401"
+      ],
+      "state": "FAIL",
+      "steps": [
+        {
+          "scenario": "auth-sweep",
+          "name": "unauthenticated-taskDigest",
+          "state": "FAIL"
+        }
+      ],
+      "notes": [
+        "deeper coverage not run this invocation: clarifications-digest"
+      ],
+      "uncoveredCodes": [
+        "200",
+        "400",
+        "500"
+      ]
+    },
+    {
+      "operationId": "taskNotificationsList",
+      "domain": "tasks",
+      "method": "GET",
+      "pathTemplate": "/me/notifications",
+      "declaredCodes": [
+        "200",
+        "401",
+        "500"
+      ],
+      "observedCodes": [
+        "401"
+      ],
+      "state": "FAIL",
+      "steps": [
+        {
+          "scenario": "auth-sweep",
+          "name": "unauthenticated-taskNotificationsList",
+          "state": "FAIL"
+        }
+      ],
+      "notes": [
+        "deeper coverage not run this invocation: clarifications-digest"
+      ],
+      "uncoveredCodes": [
+        "200",
+        "500"
+      ]
+    },
+    {
+      "operationId": "taskNotificationsMarkRead",
+      "domain": "tasks",
+      "method": "POST",
+      "pathTemplate": "/me/notifications/read",
+      "declaredCodes": [
+        "200",
+        "400",
+        "401",
+        "500"
+      ],
+      "observedCodes": [
+        "401"
+      ],
+      "state": "FAIL",
+      "steps": [
+        {
+          "scenario": "auth-sweep",
+          "name": "unauthenticated-taskNotificationsMarkRead",
+          "state": "FAIL"
+        }
+      ],
+      "notes": [
+        "deeper coverage not run this invocation: clarifications-digest"
+      ],
+      "uncoveredCodes": [
+        "200",
+        "400",
+        "500"
+      ]
+    },
+    {
+      "operationId": "taskRemindersUpcoming",
+      "domain": "tasks",
+      "method": "GET",
+      "pathTemplate": "/me/reminders/upcoming",
+      "declaredCodes": [
+        "200",
+        "401",
+        "500"
+      ],
+      "observedCodes": [
+        "401"
+      ],
+      "state": "FAIL",
+      "steps": [
+        {
+          "scenario": "auth-sweep",
+          "name": "unauthenticated-taskRemindersUpcoming",
+          "state": "FAIL"
+        }
+      ],
+      "notes": [
+        "deeper coverage not run this invocation: clarifications-digest"
+      ],
+      "uncoveredCodes": [
+        "200",
+        "500"
+      ]
+    },
+    {
+      "operationId": "scanUploadDocument",
+      "domain": "integrations",
+      "method": "POST",
+      "pathTemplate": "/me/document-scans",
+      "declaredCodes": [
+        "202",
+        "400",
+        "401",
+        "402",
+        "429",
+        "500"
+      ],
+      "observedCodes": [
+        "401"
+      ],
+      "state": "FAIL",
+      "steps": [
+        {
+          "scenario": "auth-sweep",
+          "name": "unauthenticated-scanUploadDocument",
+          "state": "FAIL"
+        }
+      ],
+      "notes": [
+        "deeper coverage not run this invocation: document-scans"
+      ],
+      "uncoveredCodes": [
+        "202",
+        "400",
+        "402",
+        "429",
+        "500"
+      ]
+    },
+    {
+      "operationId": "scanListDocuments",
+      "domain": "integrations",
+      "method": "GET",
+      "pathTemplate": "/me/document-scans",
+      "declaredCodes": [
+        "200",
+        "401"
+      ],
+      "observedCodes": [
+        "401"
+      ],
+      "state": "FAIL",
+      "steps": [
+        {
+          "scenario": "auth-sweep",
+          "name": "unauthenticated-scanListDocuments",
+          "state": "FAIL"
+        }
+      ],
+      "notes": [
+        "deeper coverage not run this invocation: document-scans"
+      ],
+      "uncoveredCodes": [
+        "200"
+      ]
+    },
+    {
+      "operationId": "scanReadQuota",
+      "domain": "integrations",
+      "method": "GET",
+      "pathTemplate": "/me/document-scans/quota",
+      "declaredCodes": [
+        "200",
+        "401",
+        "404"
+      ],
+      "observedCodes": [
+        "401"
+      ],
+      "state": "FAIL",
+      "steps": [
+        {
+          "scenario": "auth-sweep",
+          "name": "unauthenticated-scanReadQuota",
+          "state": "FAIL"
+        }
+      ],
+      "notes": [
+        "deeper coverage not run this invocation: document-scans"
+      ],
+      "uncoveredCodes": [
+        "200",
+        "404"
+      ]
+    },
+    {
+      "operationId": "scanGetDocument",
+      "domain": "integrations",
+      "method": "GET",
+      "pathTemplate": "/me/document-scans/{id}",
+      "declaredCodes": [
+        "200",
+        "401",
+        "404"
+      ],
+      "observedCodes": [
+        "401"
+      ],
+      "state": "FAIL",
+      "steps": [
+        {
+          "scenario": "auth-sweep",
+          "name": "unauthenticated-scanGetDocument",
+          "state": "FAIL"
+        }
+      ],
+      "notes": [
+        "deeper coverage not run this invocation: document-scans"
+      ],
+      "uncoveredCodes": [
+        "200",
+        "404"
+      ]
+    },
+    {
+      "operationId": "scanDeleteDocument",
+      "domain": "integrations",
+      "method": "DELETE",
+      "pathTemplate": "/me/document-scans/{id}",
+      "declaredCodes": [
+        "204",
+        "401",
+        "404"
+      ],
+      "observedCodes": [
+        "401"
+      ],
+      "state": "FAIL",
+      "steps": [
+        {
+          "scenario": "auth-sweep",
+          "name": "unauthenticated-scanDeleteDocument",
+          "state": "FAIL"
+        }
+      ],
+      "notes": [
+        "deeper coverage not run this invocation: document-scans"
+      ],
+      "uncoveredCodes": [
+        "204",
+        "404"
+      ]
+    },
+    {
+      "operationId": "scanGetDocumentFile",
+      "domain": "integrations",
+      "method": "GET",
+      "pathTemplate": "/me/document-scans/{id}/file",
+      "declaredCodes": [
+        "200",
+        "401",
+        "404",
+        "500"
+      ],
+      "observedCodes": [
+        "401"
+      ],
+      "state": "FAIL",
+      "steps": [
+        {
+          "scenario": "auth-sweep",
+          "name": "unauthenticated-scanGetDocumentFile",
+          "state": "FAIL"
+        }
+      ],
+      "notes": [
+        "deeper coverage not run this invocation: document-scans"
+      ],
+      "uncoveredCodes": [
+        "200",
+        "404",
+        "500"
+      ]
+    },
+    {
+      "operationId": "scanReprocessDocument",
+      "domain": "integrations",
+      "method": "POST",
+      "pathTemplate": "/me/document-scans/{id}/reprocess",
+      "declaredCodes": [
+        "200",
+        "202",
+        "400",
+        "401",
+        "404",
+        "429"
+      ],
+      "observedCodes": [
+        "401"
+      ],
+      "state": "FAIL",
+      "steps": [
+        {
+          "scenario": "auth-sweep",
+          "name": "unauthenticated-scanReprocessDocument",
+          "state": "FAIL"
+        }
+      ],
+      "notes": [
+        "deeper coverage not run this invocation: document-scans"
+      ],
+      "uncoveredCodes": [
+        "200",
+        "202",
+        "400",
+        "404",
+        "429"
+      ]
+    },
+    {
+      "operationId": "scanReviewDocument",
+      "domain": "integrations",
+      "method": "POST",
+      "pathTemplate": "/me/document-scans/{id}/review",
+      "declaredCodes": [
+        "200",
+        "400",
+        "401",
+        "404"
+      ],
+      "observedCodes": [
+        "401"
+      ],
+      "state": "FAIL",
+      "steps": [
+        {
+          "scenario": "auth-sweep",
+          "name": "unauthenticated-scanReviewDocument",
+          "state": "FAIL"
+        }
+      ],
+      "notes": [
+        "deeper coverage not run this invocation: document-scans"
+      ],
+      "uncoveredCodes": [
+        "200",
+        "400",
+        "404"
+      ]
+    },
+    {
+      "operationId": "icsSubscribeFeed",
+      "domain": "integrations",
+      "method": "POST",
+      "pathTemplate": "/me/ics-feeds",
+      "declaredCodes": [
+        "200",
+        "201",
+        "400",
+        "401"
+      ],
+      "observedCodes": [
+        "401"
+      ],
+      "state": "FAIL",
+      "steps": [
+        {
+          "scenario": "auth-sweep",
+          "name": "unauthenticated-icsSubscribeFeed",
+          "state": "FAIL"
+        }
+      ],
+      "notes": [
+        "deeper coverage not run this invocation: integrations-unconfigured"
+      ],
+      "uncoveredCodes": [
+        "200",
+        "201",
+        "400"
+      ]
+    },
+    {
+      "operationId": "icsListFeeds",
+      "domain": "integrations",
+      "method": "GET",
+      "pathTemplate": "/me/ics-feeds",
+      "declaredCodes": [
+        "200",
+        "401"
+      ],
+      "observedCodes": [
+        "401"
+      ],
+      "state": "FAIL",
+      "steps": [
+        {
+          "scenario": "auth-sweep",
+          "name": "unauthenticated-icsListFeeds",
+          "state": "FAIL"
+        }
+      ],
+      "notes": [
+        "deeper coverage not run this invocation: integrations-unconfigured"
+      ],
+      "uncoveredCodes": [
+        "200"
+      ]
+    },
+    {
+      "operationId": "icsSyncFeed",
+      "domain": "integrations",
+      "method": "POST",
+      "pathTemplate": "/me/ics-feeds/{id}/sync",
+      "declaredCodes": [
+        "200",
+        "400",
+        "401",
+        "404"
+      ],
+      "observedCodes": [
+        "401"
+      ],
+      "state": "FAIL",
+      "steps": [
+        {
+          "scenario": "auth-sweep",
+          "name": "unauthenticated-icsSyncFeed",
+          "state": "FAIL"
+        }
+      ],
+      "notes": [
+        "deeper coverage not run this invocation: integrations-unconfigured"
+      ],
+      "uncoveredCodes": [
+        "200",
+        "400",
+        "404"
+      ]
+    },
+    {
+      "operationId": "icsDeleteFeed",
+      "domain": "integrations",
+      "method": "DELETE",
+      "pathTemplate": "/me/ics-feeds/{id}",
+      "declaredCodes": [
+        "200",
+        "401",
+        "404"
+      ],
+      "observedCodes": [
+        "401"
+      ],
+      "state": "FAIL",
+      "steps": [
+        {
+          "scenario": "auth-sweep",
+          "name": "unauthenticated-icsDeleteFeed",
+          "state": "FAIL"
+        }
+      ],
+      "notes": [
+        "deeper coverage not run this invocation: integrations-unconfigured"
+      ],
+      "uncoveredCodes": [
+        "200",
+        "404"
+      ]
+    },
+    {
+      "operationId": "googBeginAuthorize",
+      "domain": "integrations",
+      "method": "POST",
+      "pathTemplate": "/integrations/google/authorize",
+      "declaredCodes": [
+        "200",
+        "400",
+        "401"
+      ],
+      "observedCodes": [
+        "401"
+      ],
+      "state": "FAIL",
+      "steps": [
+        {
+          "scenario": "auth-sweep",
+          "name": "unauthenticated-googBeginAuthorize",
+          "state": "FAIL"
+        }
+      ],
+      "notes": [
+        "deeper coverage not run this invocation: integrations-unconfigured"
+      ],
+      "uncoveredCodes": [
+        "200",
+        "400"
+      ]
+    },
+    {
+      "operationId": "googOauthCallback",
+      "domain": "integrations",
+      "method": "GET",
+      "pathTemplate": "/integrations/google/callback",
+      "declaredCodes": [
+        "200",
+        "302"
+      ],
+      "observedCodes": [],
+      "state": "SKIPPED",
+      "steps": [],
+      "notes": [
+        "covered only by scenario(s) not run: integrations-unconfigured"
+      ],
+      "uncoveredCodes": [
+        "200",
+        "302"
+      ]
+    },
+    {
+      "operationId": "googGetIntegration",
+      "domain": "integrations",
+      "method": "GET",
+      "pathTemplate": "/integrations/google",
+      "declaredCodes": [
+        "200",
+        "401"
+      ],
+      "observedCodes": [
+        "401"
+      ],
+      "state": "FAIL",
+      "steps": [
+        {
+          "scenario": "auth-sweep",
+          "name": "unauthenticated-googGetIntegration",
+          "state": "FAIL"
+        }
+      ],
+      "notes": [
+        "deeper coverage not run this invocation: integrations-unconfigured"
+      ],
+      "uncoveredCodes": [
+        "200"
+      ]
+    },
+    {
+      "operationId": "googDisconnect",
+      "domain": "integrations",
+      "method": "DELETE",
+      "pathTemplate": "/integrations/google",
+      "declaredCodes": [
+        "200",
+        "401",
+        "404"
+      ],
+      "observedCodes": [
+        "401"
+      ],
+      "state": "FAIL",
+      "steps": [
+        {
+          "scenario": "auth-sweep",
+          "name": "unauthenticated-googDisconnect",
+          "state": "FAIL"
+        }
+      ],
+      "notes": [
+        "deeper coverage not run this invocation: integrations-unconfigured"
+      ],
+      "uncoveredCodes": [
+        "200",
+        "404"
+      ]
+    },
+    {
+      "operationId": "googSyncNow",
+      "domain": "integrations",
+      "method": "POST",
+      "pathTemplate": "/integrations/google/sync",
+      "declaredCodes": [
+        "200",
+        "400",
+        "401",
+        "404"
+      ],
+      "observedCodes": [
+        "401"
+      ],
+      "state": "FAIL",
+      "steps": [
+        {
+          "scenario": "auth-sweep",
+          "name": "unauthenticated-googSyncNow",
+          "state": "FAIL"
+        }
+      ],
+      "notes": [
+        "deeper coverage not run this invocation: integrations-unconfigured"
+      ],
+      "uncoveredCodes": [
+        "200",
+        "400",
+        "404"
+      ]
+    },
+    {
+      "operationId": "aiGetConversation",
+      "domain": "integrations",
+      "method": "GET",
+      "pathTemplate": "/ai/conversation",
+      "declaredCodes": [
+        "200",
+        "401"
+      ],
+      "observedCodes": [
+        "401"
+      ],
+      "state": "FAIL",
+      "steps": [
+        {
+          "scenario": "auth-sweep",
+          "name": "unauthenticated-aiGetConversation",
+          "state": "FAIL"
+        }
+      ],
+      "notes": [
+        "deeper coverage not run this invocation: ai-nokey"
+      ],
+      "uncoveredCodes": [
+        "200"
+      ]
+    },
+    {
+      "operationId": "aiResetConversation",
+      "domain": "integrations",
+      "method": "POST",
+      "pathTemplate": "/ai/conversation/reset",
+      "declaredCodes": [
+        "200",
+        "401"
+      ],
+      "observedCodes": [
+        "401"
+      ],
+      "state": "FAIL",
+      "steps": [
+        {
+          "scenario": "auth-sweep",
+          "name": "unauthenticated-aiResetConversation",
+          "state": "FAIL"
+        }
+      ],
+      "notes": [
+        "deeper coverage not run this invocation: ai-nokey"
+      ],
+      "uncoveredCodes": [
+        "200"
+      ]
+    },
+    {
+      "operationId": "aiGetQuota",
+      "domain": "integrations",
+      "method": "GET",
+      "pathTemplate": "/ai/quota",
+      "declaredCodes": [
+        "200",
+        "401"
+      ],
+      "observedCodes": [
+        "401"
+      ],
+      "state": "FAIL",
+      "steps": [
+        {
+          "scenario": "auth-sweep",
+          "name": "unauthenticated-aiGetQuota",
+          "state": "FAIL"
+        }
+      ],
+      "notes": [
+        "deeper coverage not run this invocation: ai-nokey"
+      ],
+      "uncoveredCodes": [
+        "200"
+      ]
+    },
+    {
+      "operationId": "aiAsk",
+      "domain": "integrations",
+      "method": "POST",
+      "pathTemplate": "/ai/ask",
+      "declaredCodes": [
+        "200",
+        "400",
+        "401",
+        "402",
+        "429",
+        "503"
+      ],
+      "observedCodes": [
+        "401"
+      ],
+      "state": "FAIL",
+      "steps": [
+        {
+          "scenario": "auth-sweep",
+          "name": "unauthenticated-aiAsk",
+          "state": "FAIL"
+        }
+      ],
+      "notes": [
+        "deeper coverage not run this invocation: ai-nokey"
+      ],
+      "uncoveredCodes": [
+        "200",
+        "400",
+        "402",
+        "429",
+        "503"
+      ]
+    },
+    {
+      "operationId": "aiConfirmTool",
+      "domain": "integrations",
+      "method": "POST",
+      "pathTemplate": "/ai/tools/confirm/{callId}",
+      "declaredCodes": [
+        "200",
+        "400",
+        "401",
+        "403",
+        "404",
+        "429"
+      ],
+      "observedCodes": [
+        "401"
+      ],
+      "state": "FAIL",
+      "steps": [
+        {
+          "scenario": "auth-sweep",
+          "name": "unauthenticated-aiConfirmTool",
+          "state": "FAIL"
+        }
+      ],
+      "notes": [
+        "deeper coverage not run this invocation: ai-nokey"
+      ],
+      "uncoveredCodes": [
+        "200",
+        "400",
+        "403",
+        "404",
+        "429"
+      ]
+    },
+    {
+      "operationId": "aiTranscribeVoice",
+      "domain": "integrations",
+      "method": "POST",
+      "pathTemplate": "/ai/voice/transcribe",
+      "declaredCodes": [
+        "200",
+        "400",
+        "401",
+        "402",
+        "429",
+        "500",
+        "503"
+      ],
+      "observedCodes": [
+        "401"
+      ],
+      "state": "FAIL",
+      "steps": [
+        {
+          "scenario": "auth-sweep",
+          "name": "unauthenticated-aiTranscribeVoice",
+          "state": "FAIL"
+        }
+      ],
+      "notes": [
+        "deeper coverage not run this invocation: ai-nokey"
+      ],
+      "uncoveredCodes": [
+        "200",
+        "400",
+        "402",
+        "429",
+        "500",
+        "503"
+      ]
+    },
+    {
+      "operationId": "voiceUploadNote",
+      "domain": "integrations",
+      "method": "POST",
+      "pathTemplate": "/me/voice-notes",
+      "declaredCodes": [
+        "202",
+        "400",
+        "401",
+        "429",
+        "500"
+      ],
+      "observedCodes": [
+        "401"
+      ],
+      "state": "FAIL",
+      "steps": [
+        {
+          "scenario": "auth-sweep",
+          "name": "unauthenticated-voiceUploadNote",
+          "state": "FAIL"
+        }
+      ],
+      "notes": [
+        "deeper coverage not run this invocation: voice-notes"
+      ],
+      "uncoveredCodes": [
+        "202",
+        "400",
+        "429",
+        "500"
+      ]
+    },
+    {
+      "operationId": "voiceListNotes",
+      "domain": "integrations",
+      "method": "GET",
+      "pathTemplate": "/me/voice-notes",
+      "declaredCodes": [
+        "200",
+        "401"
+      ],
+      "observedCodes": [
+        "401"
+      ],
+      "state": "FAIL",
+      "steps": [
+        {
+          "scenario": "auth-sweep",
+          "name": "unauthenticated-voiceListNotes",
+          "state": "FAIL"
+        }
+      ],
+      "notes": [
+        "deeper coverage not run this invocation: voice-notes"
+      ],
+      "uncoveredCodes": [
+        "200"
+      ]
+    },
+    {
+      "operationId": "voiceGetNote",
+      "domain": "integrations",
+      "method": "GET",
+      "pathTemplate": "/me/voice-notes/{id}",
+      "declaredCodes": [
+        "200",
+        "401",
+        "404"
+      ],
+      "observedCodes": [
+        "401"
+      ],
+      "state": "FAIL",
+      "steps": [
+        {
+          "scenario": "auth-sweep",
+          "name": "unauthenticated-voiceGetNote",
+          "state": "FAIL"
+        }
+      ],
+      "notes": [
+        "deeper coverage not run this invocation: voice-notes"
+      ],
+      "uncoveredCodes": [
+        "200",
+        "404"
+      ]
+    },
+    {
+      "operationId": "voiceExtractTasks",
+      "domain": "integrations",
+      "method": "POST",
+      "pathTemplate": "/me/voice-notes/{id}/extract-tasks",
+      "declaredCodes": [
+        "200",
+        "400",
+        "401",
+        "404"
+      ],
+      "observedCodes": [
+        "401"
+      ],
+      "state": "FAIL",
+      "steps": [
+        {
+          "scenario": "auth-sweep",
+          "name": "unauthenticated-voiceExtractTasks",
+          "state": "FAIL"
+        }
+      ],
+      "notes": [
+        "deeper coverage not run this invocation: voice-notes"
+      ],
+      "uncoveredCodes": [
+        "200",
+        "400",
+        "404"
+      ]
+    },
+    {
+      "operationId": "voiceReviewNote",
+      "domain": "integrations",
+      "method": "POST",
+      "pathTemplate": "/me/voice-notes/{id}/review",
+      "declaredCodes": [
+        "200",
+        "400",
+        "401",
+        "404"
+      ],
+      "observedCodes": [
+        "401"
+      ],
+      "state": "FAIL",
+      "steps": [
+        {
+          "scenario": "auth-sweep",
+          "name": "unauthenticated-voiceReviewNote",
+          "state": "FAIL"
+        }
+      ],
+      "notes": [
+        "deeper coverage not run this invocation: voice-notes"
+      ],
+      "uncoveredCodes": [
+        "200",
+        "400",
+        "404"
+      ]
+    }
+  ],
+  "steps": [
+    {
+      "scenario": "auth-sweep",
+      "name": "unauthenticated-authChangePassword",
+      "op": "authChangePassword",
+      "frameworkProbe": false,
+      "request": {
+        "method": "POST",
+        "path": "/auth/change-password"
+      },
+      "referenceStatus": 401,
+      "candidateStatus": 401,
+      "diffs": [],
+      "notes": [],
+      "state": "PASS",
+      "diffsTruncated": false
+    },
+    {
+      "scenario": "auth-sweep",
+      "name": "unauthenticated-authSignout",
+      "op": "authSignout",
+      "frameworkProbe": false,
+      "request": {
+        "method": "POST",
+        "path": "/auth/signout"
+      },
+      "referenceStatus": 401,
+      "candidateStatus": 401,
+      "diffs": [],
+      "notes": [],
+      "state": "PASS",
+      "diffsTruncated": false
+    },
+    {
+      "scenario": "auth-sweep",
+      "name": "unauthenticated-authMe",
+      "op": "authMe",
+      "frameworkProbe": false,
+      "request": {
+        "method": "GET",
+        "path": "/auth/me"
+      },
+      "referenceStatus": 401,
+      "candidateStatus": 401,
+      "diffs": [],
+      "notes": [],
+      "state": "PASS",
+      "diffsTruncated": false
+    },
+    {
+      "scenario": "auth-sweep",
+      "name": "unauthenticated-authSessionsList",
+      "op": "authSessionsList",
+      "frameworkProbe": false,
+      "request": {
+        "method": "POST",
+        "path": "/auth/sessions/list"
+      },
+      "referenceStatus": 401,
+      "candidateStatus": 401,
+      "diffs": [],
+      "notes": [],
+      "state": "PASS",
+      "diffsTruncated": false
+    },
+    {
+      "scenario": "auth-sweep",
+      "name": "unauthenticated-authSessionRevoke",
+      "op": "authSessionRevoke",
+      "frameworkProbe": false,
+      "request": {
+        "method": "DELETE",
+        "path": "/auth/sessions/6a78c437aa461ae1dc64ffff"
+      },
+      "referenceStatus": 401,
+      "candidateStatus": 401,
+      "diffs": [],
+      "notes": [],
+      "state": "PASS",
+      "diffsTruncated": false
+    },
+    {
+      "scenario": "auth-sweep",
+      "name": "unauthenticated-authSessionsRevokeOthers",
+      "op": "authSessionsRevokeOthers",
+      "frameworkProbe": false,
+      "request": {
+        "method": "POST",
+        "path": "/auth/sessions/revoke-others"
+      },
+      "referenceStatus": 401,
+      "candidateStatus": 401,
+      "diffs": [],
+      "notes": [],
+      "state": "PASS",
+      "diffsTruncated": false
+    },
+    {
+      "scenario": "auth-sweep",
+      "name": "unauthenticated-authVerifyEmailSendCode",
+      "op": "authVerifyEmailSendCode",
+      "frameworkProbe": false,
+      "request": {
+        "method": "POST",
+        "path": "/auth/verify-email/send-code"
+      },
+      "referenceStatus": 401,
+      "candidateStatus": 401,
+      "diffs": [],
+      "notes": [],
+      "state": "PASS",
+      "diffsTruncated": false
+    },
+    {
+      "scenario": "auth-sweep",
+      "name": "unauthenticated-authVerifyEmailConfirmCode",
+      "op": "authVerifyEmailConfirmCode",
+      "frameworkProbe": false,
+      "request": {
+        "method": "POST",
+        "path": "/auth/verify-email/confirm-code"
+      },
+      "referenceStatus": 401,
+      "candidateStatus": 401,
+      "diffs": [],
+      "notes": [],
+      "state": "PASS",
+      "diffsTruncated": false
+    },
+    {
+      "scenario": "auth-sweep",
+      "name": "unauthenticated-authChangeEmailRequest",
+      "op": "authChangeEmailRequest",
+      "frameworkProbe": false,
+      "request": {
+        "method": "POST",
+        "path": "/auth/change-email"
+      },
+      "referenceStatus": 401,
+      "candidateStatus": 401,
+      "diffs": [],
+      "notes": [],
+      "state": "PASS",
+      "diffsTruncated": false
+    },
+    {
+      "scenario": "auth-sweep",
+      "name": "unauthenticated-authChangeEmailCancel",
+      "op": "authChangeEmailCancel",
+      "frameworkProbe": false,
+      "request": {
+        "method": "DELETE",
+        "path": "/auth/change-email"
+      },
+      "referenceStatus": 401,
+      "candidateStatus": 401,
+      "diffs": [],
+      "notes": [],
+      "state": "PASS",
+      "diffsTruncated": false
+    },
+    {
+      "scenario": "auth-sweep",
+      "name": "unauthenticated-authChangeEmailConfirm",
+      "op": "authChangeEmailConfirm",
+      "frameworkProbe": false,
+      "request": {
+        "method": "POST",
+        "path": "/auth/change-email/confirm"
+      },
+      "referenceStatus": 401,
+      "candidateStatus": 401,
+      "diffs": [],
+      "notes": [],
+      "state": "PASS",
+      "diffsTruncated": false
+    },
+    {
+      "scenario": "auth-sweep",
+      "name": "unauthenticated-authUpdateMe",
+      "op": "authUpdateMe",
+      "frameworkProbe": false,
+      "request": {
+        "method": "PATCH",
+        "path": "/me"
+      },
+      "referenceStatus": 401,
+      "candidateStatus": 404,
+      "diffs": [
+        {
+          "path": "status",
+          "kind": "status",
+          "reference": "401",
+          "candidate": "404"
+        },
+        {
+          "path": "header.content-type",
+          "kind": "header",
+          "reference": "\"application/json; charset=utf-8\"",
+          "candidate": "null"
+        },
+        {
+          "path": "$.error",
+          "kind": "error-envelope",
+          "reference": "error envelope",
+          "candidate": "no error envelope"
+        },
+        {
+          "path": "$",
+          "kind": "type",
+          "reference": "object {\"error\":{\"code\":\"missing_token\",\"message\":\"Missing access token\"}}",
+          "candidate": "null null"
+        }
+      ],
+      "notes": [],
+      "state": "FAIL",
+      "diffsTruncated": false
+    },
+    {
+      "scenario": "auth-sweep",
+      "name": "unauthenticated-authDeleteMe",
+      "op": "authDeleteMe",
+      "frameworkProbe": false,
+      "request": {
+        "method": "DELETE",
+        "path": "/me"
+      },
+      "referenceStatus": 401,
+      "candidateStatus": 404,
+      "diffs": [
+        {
+          "path": "status",
+          "kind": "status",
+          "reference": "401",
+          "candidate": "404"
+        },
+        {
+          "path": "header.content-type",
+          "kind": "header",
+          "reference": "\"application/json; charset=utf-8\"",
+          "candidate": "null"
+        },
+        {
+          "path": "$.error",
+          "kind": "error-envelope",
+          "reference": "error envelope",
+          "candidate": "no error envelope"
+        },
+        {
+          "path": "$",
+          "kind": "type",
+          "reference": "object {\"error\":{\"code\":\"missing_token\",\"message\":\"Missing access token\"}}",
+          "candidate": "null null"
+        }
+      ],
+      "notes": [],
+      "state": "FAIL",
+      "diffsTruncated": false
+    },
+    {
+      "scenario": "auth-sweep",
+      "name": "unauthenticated-authExportMe",
+      "op": "authExportMe",
+      "frameworkProbe": false,
+      "request": {
+        "method": "GET",
+        "path": "/me/export"
+      },
+      "referenceStatus": 401,
+      "candidateStatus": 404,
+      "diffs": [
+        {
+          "path": "status",
+          "kind": "status",
+          "reference": "401",
+          "candidate": "404"
+        },
+        {
+          "path": "header.content-type",
+          "kind": "header",
+          "reference": "\"application/json; charset=utf-8\"",
+          "candidate": "null"
+        },
+        {
+          "path": "$.error",
+          "kind": "error-envelope",
+          "reference": "error envelope",
+          "candidate": "no error envelope"
+        },
+        {
+          "path": "$",
+          "kind": "type",
+          "reference": "object {\"error\":{\"code\":\"missing_token\",\"message\":\"Missing access token\"}}",
+          "candidate": "null null"
+        }
+      ],
+      "notes": [],
+      "state": "FAIL",
+      "diffsTruncated": false
+    },
+    {
+      "scenario": "auth-sweep",
+      "name": "unauthenticated-authGetSubscription",
+      "op": "authGetSubscription",
+      "frameworkProbe": false,
+      "request": {
+        "method": "GET",
+        "path": "/me/subscription"
+      },
+      "referenceStatus": 401,
+      "candidateStatus": 404,
+      "diffs": [
+        {
+          "path": "status",
+          "kind": "status",
+          "reference": "401",
+          "candidate": "404"
+        },
+        {
+          "path": "header.content-type",
+          "kind": "header",
+          "reference": "\"application/json; charset=utf-8\"",
+          "candidate": "null"
+        },
+        {
+          "path": "$.error",
+          "kind": "error-envelope",
+          "reference": "error envelope",
+          "candidate": "no error envelope"
+        },
+        {
+          "path": "$",
+          "kind": "type",
+          "reference": "object {\"error\":{\"code\":\"missing_token\",\"message\":\"Missing access token\"}}",
+          "candidate": "null null"
+        }
+      ],
+      "notes": [],
+      "state": "FAIL",
+      "diffsTruncated": false
+    },
+    {
+      "scenario": "auth-sweep",
+      "name": "unauthenticated-authGetInvoices",
+      "op": "authGetInvoices",
+      "frameworkProbe": false,
+      "request": {
+        "method": "GET",
+        "path": "/me/billing/invoices"
+      },
+      "referenceStatus": 401,
+      "candidateStatus": 404,
+      "diffs": [
+        {
+          "path": "status",
+          "kind": "status",
+          "reference": "401",
+          "candidate": "404"
+        },
+        {
+          "path": "header.content-type",
+          "kind": "header",
+          "reference": "\"application/json; charset=utf-8\"",
+          "candidate": "null"
+        },
+        {
+          "path": "$.error",
+          "kind": "error-envelope",
+          "reference": "error envelope",
+          "candidate": "no error envelope"
+        },
+        {
+          "path": "$",
+          "kind": "type",
+          "reference": "object {\"error\":{\"code\":\"missing_token\",\"message\":\"Missing access token\"}}",
+          "candidate": "null null"
+        }
+      ],
+      "notes": [],
+      "state": "FAIL",
+      "diffsTruncated": false
+    },
+    {
+      "scenario": "auth-sweep",
+      "name": "unauthenticated-authGetIntegrations",
+      "op": "authGetIntegrations",
+      "frameworkProbe": false,
+      "request": {
+        "method": "GET",
+        "path": "/me/integrations"
+      },
+      "referenceStatus": 401,
+      "candidateStatus": 404,
+      "diffs": [
+        {
+          "path": "status",
+          "kind": "status",
+          "reference": "401",
+          "candidate": "404"
+        },
+        {
+          "path": "header.content-type",
+          "kind": "header",
+          "reference": "\"application/json; charset=utf-8\"",
+          "candidate": "null"
+        },
+        {
+          "path": "$.error",
+          "kind": "error-envelope",
+          "reference": "error envelope",
+          "candidate": "no error envelope"
+        },
+        {
+          "path": "$",
+          "kind": "type",
+          "reference": "object {\"error\":{\"code\":\"missing_token\",\"message\":\"Missing access token\"}}",
+          "candidate": "null null"
+        }
+      ],
+      "notes": [],
+      "state": "FAIL",
+      "diffsTruncated": false
+    },
+    {
+      "scenario": "auth-sweep",
+      "name": "unauthenticated-taskList",
+      "op": "taskList",
+      "frameworkProbe": false,
+      "request": {
+        "method": "GET",
+        "path": "/me/tasks"
+      },
+      "referenceStatus": 401,
+      "candidateStatus": 404,
+      "diffs": [
+        {
+          "path": "status",
+          "kind": "status",
+          "reference": "401",
+          "candidate": "404"
+        },
+        {
+          "path": "header.content-type",
+          "kind": "header",
+          "reference": "\"application/json; charset=utf-8\"",
+          "candidate": "null"
+        },
+        {
+          "path": "$.error",
+          "kind": "error-envelope",
+          "reference": "error envelope",
+          "candidate": "no error envelope"
+        },
+        {
+          "path": "$",
+          "kind": "type",
+          "reference": "object {\"error\":{\"code\":\"missing_token\",\"message\":\"Missing access token\"}}",
+          "candidate": "null null"
+        }
+      ],
+      "notes": [],
+      "state": "FAIL",
+      "diffsTruncated": false
+    },
+    {
+      "scenario": "auth-sweep",
+      "name": "unauthenticated-taskCreate",
+      "op": "taskCreate",
+      "frameworkProbe": false,
+      "request": {
+        "method": "POST",
+        "path": "/me/tasks"
+      },
+      "referenceStatus": 401,
+      "candidateStatus": 404,
+      "diffs": [
+        {
+          "path": "status",
+          "kind": "status",
+          "reference": "401",
+          "candidate": "404"
+        },
+        {
+          "path": "header.content-type",
+          "kind": "header",
+          "reference": "\"application/json; charset=utf-8\"",
+          "candidate": "null"
+        },
+        {
+          "path": "$.error",
+          "kind": "error-envelope",
+          "reference": "error envelope",
+          "candidate": "no error envelope"
+        },
+        {
+          "path": "$",
+          "kind": "type",
+          "reference": "object {\"error\":{\"code\":\"missing_token\",\"message\":\"Missing access token\"}}",
+          "candidate": "null null"
+        }
+      ],
+      "notes": [],
+      "state": "FAIL",
+      "diffsTruncated": false
+    },
+    {
+      "scenario": "auth-sweep",
+      "name": "unauthenticated-taskCounts",
+      "op": "taskCounts",
+      "frameworkProbe": false,
+      "request": {
+        "method": "GET",
+        "path": "/me/tasks/counts"
+      },
+      "referenceStatus": 401,
+      "candidateStatus": 404,
+      "diffs": [
+        {
+          "path": "status",
+          "kind": "status",
+          "reference": "401",
+          "candidate": "404"
+        },
+        {
+          "path": "header.content-type",
+          "kind": "header",
+          "reference": "\"application/json; charset=utf-8\"",
+          "candidate": "null"
+        },
+        {
+          "path": "$.error",
+          "kind": "error-envelope",
+          "reference": "error envelope",
+          "candidate": "no error envelope"
+        },
+        {
+          "path": "$",
+          "kind": "type",
+          "reference": "object {\"error\":{\"code\":\"missing_token\",\"message\":\"Missing access token\"}}",
+          "candidate": "null null"
+        }
+      ],
+      "notes": [],
+      "state": "FAIL",
+      "diffsTruncated": false
+    },
+    {
+      "scenario": "auth-sweep",
+      "name": "unauthenticated-taskTags",
+      "op": "taskTags",
+      "frameworkProbe": false,
+      "request": {
+        "method": "GET",
+        "path": "/me/tasks/tags"
+      },
+      "referenceStatus": 401,
+      "candidateStatus": 404,
+      "diffs": [
+        {
+          "path": "status",
+          "kind": "status",
+          "reference": "401",
+          "candidate": "404"
+        },
+        {
+          "path": "header.content-type",
+          "kind": "header",
+          "reference": "\"application/json; charset=utf-8\"",
+          "candidate": "null"
+        },
+        {
+          "path": "$.error",
+          "kind": "error-envelope",
+          "reference": "error envelope",
+          "candidate": "no error envelope"
+        },
+        {
+          "path": "$",
+          "kind": "type",
+          "reference": "object {\"error\":{\"code\":\"missing_token\",\"message\":\"Missing access token\"}}",
+          "candidate": "null null"
+        }
+      ],
+      "notes": [],
+      "state": "FAIL",
+      "diffsTruncated": false
+    },
+    {
+      "scenario": "auth-sweep",
+      "name": "unauthenticated-taskSearch",
+      "op": "taskSearch",
+      "frameworkProbe": false,
+      "request": {
+        "method": "POST",
+        "path": "/me/tasks/search"
+      },
+      "referenceStatus": 401,
+      "candidateStatus": 404,
+      "diffs": [
+        {
+          "path": "status",
+          "kind": "status",
+          "reference": "401",
+          "candidate": "404"
+        },
+        {
+          "path": "header.content-type",
+          "kind": "header",
+          "reference": "\"application/json; charset=utf-8\"",
+          "candidate": "null"
+        },
+        {
+          "path": "$.error",
+          "kind": "error-envelope",
+          "reference": "error envelope",
+          "candidate": "no error envelope"
+        },
+        {
+          "path": "$",
+          "kind": "type",
+          "reference": "object {\"error\":{\"code\":\"missing_token\",\"message\":\"Missing access token\"}}",
+          "candidate": "null null"
+        }
+      ],
+      "notes": [],
+      "state": "FAIL",
+      "diffsTruncated": false
+    },
+    {
+      "scenario": "auth-sweep",
+      "name": "unauthenticated-taskSummarize",
+      "op": "taskSummarize",
+      "frameworkProbe": false,
+      "request": {
+        "method": "POST",
+        "path": "/me/tasks/summarize"
+      },
+      "referenceStatus": 401,
+      "candidateStatus": 404,
+      "diffs": [
+        {
+          "path": "status",
+          "kind": "status",
+          "reference": "401",
+          "candidate": "404"
+        },
+        {
+          "path": "header.content-type",
+          "kind": "header",
+          "reference": "\"application/json; charset=utf-8\"",
+          "candidate": "null"
+        },
+        {
+          "path": "$.error",
+          "kind": "error-envelope",
+          "reference": "error envelope",
+          "candidate": "no error envelope"
+        },
+        {
+          "path": "$",
+          "kind": "type",
+          "reference": "object {\"error\":{\"code\":\"missing_token\",\"message\":\"Missing access token\"}}",
+          "candidate": "null null"
+        }
+      ],
+      "notes": [],
+      "state": "FAIL",
+      "diffsTruncated": false
+    },
+    {
+      "scenario": "auth-sweep",
+      "name": "unauthenticated-taskEstimateBacklog",
+      "op": "taskEstimateBacklog",
+      "frameworkProbe": false,
+      "request": {
+        "method": "POST",
+        "path": "/me/tasks/estimate-backlog"
+      },
+      "referenceStatus": 401,
+      "candidateStatus": 404,
+      "diffs": [
+        {
+          "path": "status",
+          "kind": "status",
+          "reference": "401",
+          "candidate": "404"
+        },
+        {
+          "path": "header.content-type",
+          "kind": "header",
+          "reference": "\"application/json; charset=utf-8\"",
+          "candidate": "null"
+        },
+        {
+          "path": "$.error",
+          "kind": "error-envelope",
+          "reference": "error envelope",
+          "candidate": "no error envelope"
+        },
+        {
+          "path": "$",
+          "kind": "type",
+          "reference": "object {\"error\":{\"code\":\"missing_token\",\"message\":\"Missing access token\"}}",
+          "candidate": "null null"
+        }
+      ],
+      "notes": [],
+      "state": "FAIL",
+      "diffsTruncated": false
+    },
+    {
+      "scenario": "auth-sweep",
+      "name": "unauthenticated-taskBulkPreview",
+      "op": "taskBulkPreview",
+      "frameworkProbe": false,
+      "request": {
+        "method": "POST",
+        "path": "/me/tasks/bulk/preview"
+      },
+      "referenceStatus": 401,
+      "candidateStatus": 404,
+      "diffs": [
+        {
+          "path": "status",
+          "kind": "status",
+          "reference": "401",
+          "candidate": "404"
+        },
+        {
+          "path": "header.content-type",
+          "kind": "header",
+          "reference": "\"application/json; charset=utf-8\"",
+          "candidate": "null"
+        },
+        {
+          "path": "$.error",
+          "kind": "error-envelope",
+          "reference": "error envelope",
+          "candidate": "no error envelope"
+        },
+        {
+          "path": "$",
+          "kind": "type",
+          "reference": "object {\"error\":{\"code\":\"missing_token\",\"message\":\"Missing access token\"}}",
+          "candidate": "null null"
+        }
+      ],
+      "notes": [],
+      "state": "FAIL",
+      "diffsTruncated": false
+    },
+    {
+      "scenario": "auth-sweep",
+      "name": "unauthenticated-taskBulkApply",
+      "op": "taskBulkApply",
+      "frameworkProbe": false,
+      "request": {
+        "method": "POST",
+        "path": "/me/tasks/bulk"
+      },
+      "referenceStatus": 401,
+      "candidateStatus": 404,
+      "diffs": [
+        {
+          "path": "status",
+          "kind": "status",
+          "reference": "401",
+          "candidate": "404"
+        },
+        {
+          "path": "header.content-type",
+          "kind": "header",
+          "reference": "\"application/json; charset=utf-8\"",
+          "candidate": "null"
+        },
+        {
+          "path": "$.error",
+          "kind": "error-envelope",
+          "reference": "error envelope",
+          "candidate": "no error envelope"
+        },
+        {
+          "path": "$",
+          "kind": "type",
+          "reference": "object {\"error\":{\"code\":\"missing_token\",\"message\":\"Missing access token\"}}",
+          "candidate": "null null"
+        }
+      ],
+      "notes": [],
+      "state": "FAIL",
+      "diffsTruncated": false
+    },
+    {
+      "scenario": "auth-sweep",
+      "name": "unauthenticated-taskUndo",
+      "op": "taskUndo",
+      "frameworkProbe": false,
+      "request": {
+        "method": "POST",
+        "path": "/me/tasks/undo/6a78c437aa461ae1dc64ffff"
+      },
+      "referenceStatus": 401,
+      "candidateStatus": 404,
+      "diffs": [
+        {
+          "path": "status",
+          "kind": "status",
+          "reference": "401",
+          "candidate": "404"
+        },
+        {
+          "path": "header.content-type",
+          "kind": "header",
+          "reference": "\"application/json; charset=utf-8\"",
+          "candidate": "null"
+        },
+        {
+          "path": "$.error",
+          "kind": "error-envelope",
+          "reference": "error envelope",
+          "candidate": "no error envelope"
+        },
+        {
+          "path": "$",
+          "kind": "type",
+          "reference": "object {\"error\":{\"code\":\"missing_token\",\"message\":\"Missing access token\"}}",
+          "candidate": "null null"
+        }
+      ],
+      "notes": [],
+      "state": "FAIL",
+      "diffsTruncated": false
+    },
+    {
+      "scenario": "auth-sweep",
+      "name": "unauthenticated-taskCategorizePropose",
+      "op": "taskCategorizePropose",
+      "frameworkProbe": false,
+      "request": {
+        "method": "POST",
+        "path": "/me/tasks/categorize"
+      },
+      "referenceStatus": 401,
+      "candidateStatus": 404,
+      "diffs": [
+        {
+          "path": "status",
+          "kind": "status",
+          "reference": "401",
+          "candidate": "404"
+        },
+        {
+          "path": "header.content-type",
+          "kind": "header",
+          "reference": "\"application/json; charset=utf-8\"",
+          "candidate": "null"
+        },
+        {
+          "path": "$.error",
+          "kind": "error-envelope",
+          "reference": "error envelope",
+          "candidate": "no error envelope"
+        },
+        {
+          "path": "$",
+          "kind": "type",
+          "reference": "object {\"error\":{\"code\":\"missing_token\",\"message\":\"Missing access token\"}}",
+          "candidate": "null null"
+        }
+      ],
+      "notes": [],
+      "state": "FAIL",
+      "diffsTruncated": false
+    },
+    {
+      "scenario": "auth-sweep",
+      "name": "unauthenticated-taskCategorizePending",
+      "op": "taskCategorizePending",
+      "frameworkProbe": false,
+      "request": {
+        "method": "GET",
+        "path": "/me/tasks/categorize/pending"
+      },
+      "referenceStatus": 401,
+      "candidateStatus": 404,
+      "diffs": [
+        {
+          "path": "status",
+          "kind": "status",
+          "reference": "401",
+          "candidate": "404"
+        },
+        {
+          "path": "header.content-type",
+          "kind": "header",
+          "reference": "\"application/json; charset=utf-8\"",
+          "candidate": "null"
+        },
+        {
+          "path": "$.error",
+          "kind": "error-envelope",
+          "reference": "error envelope",
+          "candidate": "no error envelope"
+        },
+        {
+          "path": "$",
+          "kind": "type",
+          "reference": "object {\"error\":{\"code\":\"missing_token\",\"message\":\"Missing access token\"}}",
+          "candidate": "null null"
+        }
+      ],
+      "notes": [],
+      "state": "FAIL",
+      "diffsTruncated": false
+    },
+    {
+      "scenario": "auth-sweep",
+      "name": "unauthenticated-taskCategorizeApply",
+      "op": "taskCategorizeApply",
+      "frameworkProbe": false,
+      "request": {
+        "method": "POST",
+        "path": "/me/tasks/categorize/6a78c437aa461ae1dc64ffff/apply"
+      },
+      "referenceStatus": 401,
+      "candidateStatus": 404,
+      "diffs": [
+        {
+          "path": "status",
+          "kind": "status",
+          "reference": "401",
+          "candidate": "404"
+        },
+        {
+          "path": "header.content-type",
+          "kind": "header",
+          "reference": "\"application/json; charset=utf-8\"",
+          "candidate": "null"
+        },
+        {
+          "path": "$.error",
+          "kind": "error-envelope",
+          "reference": "error envelope",
+          "candidate": "no error envelope"
+        },
+        {
+          "path": "$",
+          "kind": "type",
+          "reference": "object {\"error\":{\"code\":\"missing_token\",\"message\":\"Missing access token\"}}",
+          "candidate": "null null"
+        }
+      ],
+      "notes": [],
+      "state": "FAIL",
+      "diffsTruncated": false
+    },
+    {
+      "scenario": "auth-sweep",
+      "name": "unauthenticated-taskCategorizeDiscard",
+      "op": "taskCategorizeDiscard",
+      "frameworkProbe": false,
+      "request": {
+        "method": "POST",
+        "path": "/me/tasks/categorize/6a78c437aa461ae1dc64ffff/discard"
+      },
+      "referenceStatus": 401,
+      "candidateStatus": 404,
+      "diffs": [
+        {
+          "path": "status",
+          "kind": "status",
+          "reference": "401",
+          "candidate": "404"
+        },
+        {
+          "path": "header.content-type",
+          "kind": "header",
+          "reference": "\"application/json; charset=utf-8\"",
+          "candidate": "null"
+        },
+        {
+          "path": "$.error",
+          "kind": "error-envelope",
+          "reference": "error envelope",
+          "candidate": "no error envelope"
+        },
+        {
+          "path": "$",
+          "kind": "type",
+          "reference": "object {\"error\":{\"code\":\"missing_token\",\"message\":\"Missing access token\"}}",
+          "candidate": "null null"
+        }
+      ],
+      "notes": [],
+      "state": "FAIL",
+      "diffsTruncated": false
+    },
+    {
+      "scenario": "auth-sweep",
+      "name": "unauthenticated-taskTrashList",
+      "op": "taskTrashList",
+      "frameworkProbe": false,
+      "request": {
+        "method": "GET",
+        "path": "/me/tasks/trash"
+      },
+      "referenceStatus": 401,
+      "candidateStatus": 404,
+      "diffs": [
+        {
+          "path": "status",
+          "kind": "status",
+          "reference": "401",
+          "candidate": "404"
+        },
+        {
+          "path": "header.content-type",
+          "kind": "header",
+          "reference": "\"application/json; charset=utf-8\"",
+          "candidate": "null"
+        },
+        {
+          "path": "$.error",
+          "kind": "error-envelope",
+          "reference": "error envelope",
+          "candidate": "no error envelope"
+        },
+        {
+          "path": "$",
+          "kind": "type",
+          "reference": "object {\"error\":{\"code\":\"missing_token\",\"message\":\"Missing access token\"}}",
+          "candidate": "null null"
+        }
+      ],
+      "notes": [],
+      "state": "FAIL",
+      "diffsTruncated": false
+    },
+    {
+      "scenario": "auth-sweep",
+      "name": "unauthenticated-taskTrashPurge",
+      "op": "taskTrashPurge",
+      "frameworkProbe": false,
+      "request": {
+        "method": "DELETE",
+        "path": "/me/tasks/trash"
+      },
+      "referenceStatus": 401,
+      "candidateStatus": 404,
+      "diffs": [
+        {
+          "path": "status",
+          "kind": "status",
+          "reference": "401",
+          "candidate": "404"
+        },
+        {
+          "path": "header.content-type",
+          "kind": "header",
+          "reference": "\"application/json; charset=utf-8\"",
+          "candidate": "null"
+        },
+        {
+          "path": "$.error",
+          "kind": "error-envelope",
+          "reference": "error envelope",
+          "candidate": "no error envelope"
+        },
+        {
+          "path": "$",
+          "kind": "type",
+          "reference": "object {\"error\":{\"code\":\"missing_token\",\"message\":\"Missing access token\"}}",
+          "candidate": "null null"
+        }
+      ],
+      "notes": [],
+      "state": "FAIL",
+      "diffsTruncated": false
+    },
+    {
+      "scenario": "auth-sweep",
+      "name": "unauthenticated-taskTranslateQuota",
+      "op": "taskTranslateQuota",
+      "frameworkProbe": false,
+      "request": {
+        "method": "GET",
+        "path": "/me/tasks/translate/quota"
+      },
+      "referenceStatus": 401,
+      "candidateStatus": 404,
+      "diffs": [
+        {
+          "path": "status",
+          "kind": "status",
+          "reference": "401",
+          "candidate": "404"
+        },
+        {
+          "path": "header.content-type",
+          "kind": "header",
+          "reference": "\"application/json; charset=utf-8\"",
+          "candidate": "null"
+        },
+        {
+          "path": "$.error",
+          "kind": "error-envelope",
+          "reference": "error envelope",
+          "candidate": "no error envelope"
+        },
+        {
+          "path": "$",
+          "kind": "type",
+          "reference": "object {\"error\":{\"code\":\"missing_token\",\"message\":\"Missing access token\"}}",
+          "candidate": "null null"
+        }
+      ],
+      "notes": [],
+      "state": "FAIL",
+      "diffsTruncated": false
+    },
+    {
+      "scenario": "auth-sweep",
+      "name": "unauthenticated-taskTranslate",
+      "op": "taskTranslate",
+      "frameworkProbe": false,
+      "request": {
+        "method": "POST",
+        "path": "/me/tasks/translate"
+      },
+      "referenceStatus": 401,
+      "candidateStatus": 404,
+      "diffs": [
+        {
+          "path": "status",
+          "kind": "status",
+          "reference": "401",
+          "candidate": "404"
+        },
+        {
+          "path": "header.content-type",
+          "kind": "header",
+          "reference": "\"application/json; charset=utf-8\"",
+          "candidate": "null"
+        },
+        {
+          "path": "$.error",
+          "kind": "error-envelope",
+          "reference": "error envelope",
+          "candidate": "no error envelope"
+        },
+        {
+          "path": "$",
+          "kind": "type",
+          "reference": "object {\"error\":{\"code\":\"missing_token\",\"message\":\"Missing access token\"}}",
+          "candidate": "null null"
+        }
+      ],
+      "notes": [],
+      "state": "FAIL",
+      "diffsTruncated": false
+    },
+    {
+      "scenario": "auth-sweep",
+      "name": "unauthenticated-taskRestore",
+      "op": "taskRestore",
+      "frameworkProbe": false,
+      "request": {
+        "method": "POST",
+        "path": "/me/tasks/6a78c437aa461ae1dc64ffff/restore"
+      },
+      "referenceStatus": 401,
+      "candidateStatus": 404,
+      "diffs": [
+        {
+          "path": "status",
+          "kind": "status",
+          "reference": "401",
+          "candidate": "404"
+        },
+        {
+          "path": "header.content-type",
+          "kind": "header",
+          "reference": "\"application/json; charset=utf-8\"",
+          "candidate": "null"
+        },
+        {
+          "path": "$.error",
+          "kind": "error-envelope",
+          "reference": "error envelope",
+          "candidate": "no error envelope"
+        },
+        {
+          "path": "$",
+          "kind": "type",
+          "reference": "object {\"error\":{\"code\":\"missing_token\",\"message\":\"Missing access token\"}}",
+          "candidate": "null null"
+        }
+      ],
+      "notes": [],
+      "state": "FAIL",
+      "diffsTruncated": false
+    },
+    {
+      "scenario": "auth-sweep",
+      "name": "unauthenticated-taskGet",
+      "op": "taskGet",
+      "frameworkProbe": false,
+      "request": {
+        "method": "GET",
+        "path": "/me/tasks/6a78c437aa461ae1dc64ffff"
+      },
+      "referenceStatus": 401,
+      "candidateStatus": 404,
+      "diffs": [
+        {
+          "path": "status",
+          "kind": "status",
+          "reference": "401",
+          "candidate": "404"
+        },
+        {
+          "path": "header.content-type",
+          "kind": "header",
+          "reference": "\"application/json; charset=utf-8\"",
+          "candidate": "null"
+        },
+        {
+          "path": "$.error",
+          "kind": "error-envelope",
+          "reference": "error envelope",
+          "candidate": "no error envelope"
+        },
+        {
+          "path": "$",
+          "kind": "type",
+          "reference": "object {\"error\":{\"code\":\"missing_token\",\"message\":\"Missing access token\"}}",
+          "candidate": "null null"
+        }
+      ],
+      "notes": [],
+      "state": "FAIL",
+      "diffsTruncated": false
+    },
+    {
+      "scenario": "auth-sweep",
+      "name": "unauthenticated-taskUpdate",
+      "op": "taskUpdate",
+      "frameworkProbe": false,
+      "request": {
+        "method": "PATCH",
+        "path": "/me/tasks/6a78c437aa461ae1dc64ffff"
+      },
+      "referenceStatus": 401,
+      "candidateStatus": 404,
+      "diffs": [
+        {
+          "path": "status",
+          "kind": "status",
+          "reference": "401",
+          "candidate": "404"
+        },
+        {
+          "path": "header.content-type",
+          "kind": "header",
+          "reference": "\"application/json; charset=utf-8\"",
+          "candidate": "null"
+        },
+        {
+          "path": "$.error",
+          "kind": "error-envelope",
+          "reference": "error envelope",
+          "candidate": "no error envelope"
+        },
+        {
+          "path": "$",
+          "kind": "type",
+          "reference": "object {\"error\":{\"code\":\"missing_token\",\"message\":\"Missing access token\"}}",
+          "candidate": "null null"
+        }
+      ],
+      "notes": [],
+      "state": "FAIL",
+      "diffsTruncated": false
+    },
+    {
+      "scenario": "auth-sweep",
+      "name": "unauthenticated-taskSoftDelete",
+      "op": "taskSoftDelete",
+      "frameworkProbe": false,
+      "request": {
+        "method": "DELETE",
+        "path": "/me/tasks/6a78c437aa461ae1dc64ffff"
+      },
+      "referenceStatus": 401,
+      "candidateStatus": 404,
+      "diffs": [
+        {
+          "path": "status",
+          "kind": "status",
+          "reference": "401",
+          "candidate": "404"
+        },
+        {
+          "path": "header.content-type",
+          "kind": "header",
+          "reference": "\"application/json; charset=utf-8\"",
+          "candidate": "null"
+        },
+        {
+          "path": "$.error",
+          "kind": "error-envelope",
+          "reference": "error envelope",
+          "candidate": "no error envelope"
+        },
+        {
+          "path": "$",
+          "kind": "type",
+          "reference": "object {\"error\":{\"code\":\"missing_token\",\"message\":\"Missing access token\"}}",
+          "candidate": "null null"
+        }
+      ],
+      "notes": [],
+      "state": "FAIL",
+      "diffsTruncated": false
+    },
+    {
+      "scenario": "auth-sweep",
+      "name": "unauthenticated-taskSubtaskAdd",
+      "op": "taskSubtaskAdd",
+      "frameworkProbe": false,
+      "request": {
+        "method": "POST",
+        "path": "/me/tasks/6a78c437aa461ae1dc64ffff/subtasks"
+      },
+      "referenceStatus": 401,
+      "candidateStatus": 404,
+      "diffs": [
+        {
+          "path": "status",
+          "kind": "status",
+          "reference": "401",
+          "candidate": "404"
+        },
+        {
+          "path": "header.content-type",
+          "kind": "header",
+          "reference": "\"application/json; charset=utf-8\"",
+          "candidate": "null"
+        },
+        {
+          "path": "$.error",
+          "kind": "error-envelope",
+          "reference": "error envelope",
+          "candidate": "no error envelope"
+        },
+        {
+          "path": "$",
+          "kind": "type",
+          "reference": "object {\"error\":{\"code\":\"missing_token\",\"message\":\"Missing access token\"}}",
+          "candidate": "null null"
+        }
+      ],
+      "notes": [],
+      "state": "FAIL",
+      "diffsTruncated": false
+    },
+    {
+      "scenario": "auth-sweep",
+      "name": "unauthenticated-taskSubtaskUpdate",
+      "op": "taskSubtaskUpdate",
+      "frameworkProbe": false,
+      "request": {
+        "method": "PATCH",
+        "path": "/me/tasks/6a78c437aa461ae1dc64ffff/subtasks/6a78c437aa461ae1dc64ffff"
+      },
+      "referenceStatus": 401,
+      "candidateStatus": 404,
+      "diffs": [
+        {
+          "path": "status",
+          "kind": "status",
+          "reference": "401",
+          "candidate": "404"
+        },
+        {
+          "path": "header.content-type",
+          "kind": "header",
+          "reference": "\"application/json; charset=utf-8\"",
+          "candidate": "null"
+        },
+        {
+          "path": "$.error",
+          "kind": "error-envelope",
+          "reference": "error envelope",
+          "candidate": "no error envelope"
+        },
+        {
+          "path": "$",
+          "kind": "type",
+          "reference": "object {\"error\":{\"code\":\"missing_token\",\"message\":\"Missing access token\"}}",
+          "candidate": "null null"
+        }
+      ],
+      "notes": [],
+      "state": "FAIL",
+      "diffsTruncated": false
+    },
+    {
+      "scenario": "auth-sweep",
+      "name": "unauthenticated-taskSubtaskDelete",
+      "op": "taskSubtaskDelete",
+      "frameworkProbe": false,
+      "request": {
+        "method": "DELETE",
+        "path": "/me/tasks/6a78c437aa461ae1dc64ffff/subtasks/6a78c437aa461ae1dc64ffff"
+      },
+      "referenceStatus": 401,
+      "candidateStatus": 404,
+      "diffs": [
+        {
+          "path": "status",
+          "kind": "status",
+          "reference": "401",
+          "candidate": "404"
+        },
+        {
+          "path": "header.content-type",
+          "kind": "header",
+          "reference": "\"application/json; charset=utf-8\"",
+          "candidate": "null"
+        },
+        {
+          "path": "$.error",
+          "kind": "error-envelope",
+          "reference": "error envelope",
+          "candidate": "no error envelope"
+        },
+        {
+          "path": "$",
+          "kind": "type",
+          "reference": "object {\"error\":{\"code\":\"missing_token\",\"message\":\"Missing access token\"}}",
+          "candidate": "null null"
+        }
+      ],
+      "notes": [],
+      "state": "FAIL",
+      "diffsTruncated": false
+    },
+    {
+      "scenario": "auth-sweep",
+      "name": "unauthenticated-clarList",
+      "op": "clarList",
+      "frameworkProbe": false,
+      "request": {
+        "method": "GET",
+        "path": "/me/clarifications"
+      },
+      "referenceStatus": 401,
+      "candidateStatus": 404,
+      "diffs": [
+        {
+          "path": "status",
+          "kind": "status",
+          "reference": "401",
+          "candidate": "404"
+        },
+        {
+          "path": "header.content-type",
+          "kind": "header",
+          "reference": "\"application/json; charset=utf-8\"",
+          "candidate": "null"
+        },
+        {
+          "path": "$.error",
+          "kind": "error-envelope",
+          "reference": "error envelope",
+          "candidate": "no error envelope"
+        },
+        {
+          "path": "$",
+          "kind": "type",
+          "reference": "object {\"error\":{\"code\":\"missing_token\",\"message\":\"Missing access token\"}}",
+          "candidate": "null null"
+        }
+      ],
+      "notes": [],
+      "state": "FAIL",
+      "diffsTruncated": false
+    },
+    {
+      "scenario": "auth-sweep",
+      "name": "unauthenticated-clarResolve",
+      "op": "clarResolve",
+      "frameworkProbe": false,
+      "request": {
+        "method": "POST",
+        "path": "/me/clarifications/6a78c437aa461ae1dc64ffff/resolve"
+      },
+      "referenceStatus": 401,
+      "candidateStatus": 404,
+      "diffs": [
+        {
+          "path": "status",
+          "kind": "status",
+          "reference": "401",
+          "candidate": "404"
+        },
+        {
+          "path": "header.content-type",
+          "kind": "header",
+          "reference": "\"application/json; charset=utf-8\"",
+          "candidate": "null"
+        },
+        {
+          "path": "$.error",
+          "kind": "error-envelope",
+          "reference": "error envelope",
+          "candidate": "no error envelope"
+        },
+        {
+          "path": "$",
+          "kind": "type",
+          "reference": "object {\"error\":{\"code\":\"missing_token\",\"message\":\"Missing access token\"}}",
+          "candidate": "null null"
+        }
+      ],
+      "notes": [],
+      "state": "FAIL",
+      "diffsTruncated": false
+    },
+    {
+      "scenario": "auth-sweep",
+      "name": "unauthenticated-clarDefer",
+      "op": "clarDefer",
+      "frameworkProbe": false,
+      "request": {
+        "method": "POST",
+        "path": "/me/clarifications/6a78c437aa461ae1dc64ffff/defer"
+      },
+      "referenceStatus": 401,
+      "candidateStatus": 404,
+      "diffs": [
+        {
+          "path": "status",
+          "kind": "status",
+          "reference": "401",
+          "candidate": "404"
+        },
+        {
+          "path": "header.content-type",
+          "kind": "header",
+          "reference": "\"application/json; charset=utf-8\"",
+          "candidate": "null"
+        },
+        {
+          "path": "$.error",
+          "kind": "error-envelope",
+          "reference": "error envelope",
+          "candidate": "no error envelope"
+        },
+        {
+          "path": "$",
+          "kind": "type",
+          "reference": "object {\"error\":{\"code\":\"missing_token\",\"message\":\"Missing access token\"}}",
+          "candidate": "null null"
+        }
+      ],
+      "notes": [],
+      "state": "FAIL",
+      "diffsTruncated": false
+    },
+    {
+      "scenario": "auth-sweep",
+      "name": "unauthenticated-clarDrop",
+      "op": "clarDrop",
+      "frameworkProbe": false,
+      "request": {
+        "method": "POST",
+        "path": "/me/clarifications/6a78c437aa461ae1dc64ffff/drop"
+      },
+      "referenceStatus": 401,
+      "candidateStatus": 404,
+      "diffs": [
+        {
+          "path": "status",
+          "kind": "status",
+          "reference": "401",
+          "candidate": "404"
+        },
+        {
+          "path": "header.content-type",
+          "kind": "header",
+          "reference": "\"application/json; charset=utf-8\"",
+          "candidate": "null"
+        },
+        {
+          "path": "$.error",
+          "kind": "error-envelope",
+          "reference": "error envelope",
+          "candidate": "no error envelope"
+        },
+        {
+          "path": "$",
+          "kind": "type",
+          "reference": "object {\"error\":{\"code\":\"missing_token\",\"message\":\"Missing access token\"}}",
+          "candidate": "null null"
+        }
+      ],
+      "notes": [],
+      "state": "FAIL",
+      "diffsTruncated": false
+    },
+    {
+      "scenario": "auth-sweep",
+      "name": "unauthenticated-taskDigest",
+      "op": "taskDigest",
+      "frameworkProbe": false,
+      "request": {
+        "method": "GET",
+        "path": "/me/digest"
+      },
+      "referenceStatus": 401,
+      "candidateStatus": 404,
+      "diffs": [
+        {
+          "path": "status",
+          "kind": "status",
+          "reference": "401",
+          "candidate": "404"
+        },
+        {
+          "path": "header.content-type",
+          "kind": "header",
+          "reference": "\"application/json; charset=utf-8\"",
+          "candidate": "null"
+        },
+        {
+          "path": "$.error",
+          "kind": "error-envelope",
+          "reference": "error envelope",
+          "candidate": "no error envelope"
+        },
+        {
+          "path": "$",
+          "kind": "type",
+          "reference": "object {\"error\":{\"code\":\"missing_token\",\"message\":\"Missing access token\"}}",
+          "candidate": "null null"
+        }
+      ],
+      "notes": [],
+      "state": "FAIL",
+      "diffsTruncated": false
+    },
+    {
+      "scenario": "auth-sweep",
+      "name": "unauthenticated-taskNotificationsList",
+      "op": "taskNotificationsList",
+      "frameworkProbe": false,
+      "request": {
+        "method": "GET",
+        "path": "/me/notifications"
+      },
+      "referenceStatus": 401,
+      "candidateStatus": 404,
+      "diffs": [
+        {
+          "path": "status",
+          "kind": "status",
+          "reference": "401",
+          "candidate": "404"
+        },
+        {
+          "path": "header.content-type",
+          "kind": "header",
+          "reference": "\"application/json; charset=utf-8\"",
+          "candidate": "null"
+        },
+        {
+          "path": "$.error",
+          "kind": "error-envelope",
+          "reference": "error envelope",
+          "candidate": "no error envelope"
+        },
+        {
+          "path": "$",
+          "kind": "type",
+          "reference": "object {\"error\":{\"code\":\"missing_token\",\"message\":\"Missing access token\"}}",
+          "candidate": "null null"
+        }
+      ],
+      "notes": [],
+      "state": "FAIL",
+      "diffsTruncated": false
+    },
+    {
+      "scenario": "auth-sweep",
+      "name": "unauthenticated-taskNotificationsMarkRead",
+      "op": "taskNotificationsMarkRead",
+      "frameworkProbe": false,
+      "request": {
+        "method": "POST",
+        "path": "/me/notifications/read"
+      },
+      "referenceStatus": 401,
+      "candidateStatus": 404,
+      "diffs": [
+        {
+          "path": "status",
+          "kind": "status",
+          "reference": "401",
+          "candidate": "404"
+        },
+        {
+          "path": "header.content-type",
+          "kind": "header",
+          "reference": "\"application/json; charset=utf-8\"",
+          "candidate": "null"
+        },
+        {
+          "path": "$.error",
+          "kind": "error-envelope",
+          "reference": "error envelope",
+          "candidate": "no error envelope"
+        },
+        {
+          "path": "$",
+          "kind": "type",
+          "reference": "object {\"error\":{\"code\":\"missing_token\",\"message\":\"Missing access token\"}}",
+          "candidate": "null null"
+        }
+      ],
+      "notes": [],
+      "state": "FAIL",
+      "diffsTruncated": false
+    },
+    {
+      "scenario": "auth-sweep",
+      "name": "unauthenticated-taskRemindersUpcoming",
+      "op": "taskRemindersUpcoming",
+      "frameworkProbe": false,
+      "request": {
+        "method": "GET",
+        "path": "/me/reminders/upcoming"
+      },
+      "referenceStatus": 401,
+      "candidateStatus": 404,
+      "diffs": [
+        {
+          "path": "status",
+          "kind": "status",
+          "reference": "401",
+          "candidate": "404"
+        },
+        {
+          "path": "header.content-type",
+          "kind": "header",
+          "reference": "\"application/json; charset=utf-8\"",
+          "candidate": "null"
+        },
+        {
+          "path": "$.error",
+          "kind": "error-envelope",
+          "reference": "error envelope",
+          "candidate": "no error envelope"
+        },
+        {
+          "path": "$",
+          "kind": "type",
+          "reference": "object {\"error\":{\"code\":\"missing_token\",\"message\":\"Missing access token\"}}",
+          "candidate": "null null"
+        }
+      ],
+      "notes": [],
+      "state": "FAIL",
+      "diffsTruncated": false
+    },
+    {
+      "scenario": "auth-sweep",
+      "name": "unauthenticated-scanUploadDocument",
+      "op": "scanUploadDocument",
+      "frameworkProbe": false,
+      "request": {
+        "method": "POST",
+        "path": "/me/document-scans"
+      },
+      "referenceStatus": 401,
+      "candidateStatus": 404,
+      "diffs": [
+        {
+          "path": "status",
+          "kind": "status",
+          "reference": "401",
+          "candidate": "404"
+        },
+        {
+          "path": "header.content-type",
+          "kind": "header",
+          "reference": "\"application/json; charset=utf-8\"",
+          "candidate": "null"
+        },
+        {
+          "path": "$.error",
+          "kind": "error-envelope",
+          "reference": "error envelope",
+          "candidate": "no error envelope"
+        },
+        {
+          "path": "$",
+          "kind": "type",
+          "reference": "object {\"error\":{\"code\":\"missing_token\",\"message\":\"Missing access token\"}}",
+          "candidate": "null null"
+        }
+      ],
+      "notes": [],
+      "state": "FAIL",
+      "diffsTruncated": false
+    },
+    {
+      "scenario": "auth-sweep",
+      "name": "unauthenticated-scanListDocuments",
+      "op": "scanListDocuments",
+      "frameworkProbe": false,
+      "request": {
+        "method": "GET",
+        "path": "/me/document-scans"
+      },
+      "referenceStatus": 401,
+      "candidateStatus": 404,
+      "diffs": [
+        {
+          "path": "status",
+          "kind": "status",
+          "reference": "401",
+          "candidate": "404"
+        },
+        {
+          "path": "header.content-type",
+          "kind": "header",
+          "reference": "\"application/json; charset=utf-8\"",
+          "candidate": "null"
+        },
+        {
+          "path": "$.error",
+          "kind": "error-envelope",
+          "reference": "error envelope",
+          "candidate": "no error envelope"
+        },
+        {
+          "path": "$",
+          "kind": "type",
+          "reference": "object {\"error\":{\"code\":\"missing_token\",\"message\":\"Missing access token\"}}",
+          "candidate": "null null"
+        }
+      ],
+      "notes": [],
+      "state": "FAIL",
+      "diffsTruncated": false
+    },
+    {
+      "scenario": "auth-sweep",
+      "name": "unauthenticated-scanReadQuota",
+      "op": "scanReadQuota",
+      "frameworkProbe": false,
+      "request": {
+        "method": "GET",
+        "path": "/me/document-scans/quota"
+      },
+      "referenceStatus": 401,
+      "candidateStatus": 404,
+      "diffs": [
+        {
+          "path": "status",
+          "kind": "status",
+          "reference": "401",
+          "candidate": "404"
+        },
+        {
+          "path": "header.content-type",
+          "kind": "header",
+          "reference": "\"application/json; charset=utf-8\"",
+          "candidate": "null"
+        },
+        {
+          "path": "$.error",
+          "kind": "error-envelope",
+          "reference": "error envelope",
+          "candidate": "no error envelope"
+        },
+        {
+          "path": "$",
+          "kind": "type",
+          "reference": "object {\"error\":{\"code\":\"missing_token\",\"message\":\"Missing access token\"}}",
+          "candidate": "null null"
+        }
+      ],
+      "notes": [],
+      "state": "FAIL",
+      "diffsTruncated": false
+    },
+    {
+      "scenario": "auth-sweep",
+      "name": "unauthenticated-scanGetDocument",
+      "op": "scanGetDocument",
+      "frameworkProbe": false,
+      "request": {
+        "method": "GET",
+        "path": "/me/document-scans/6a78c437aa461ae1dc64ffff"
+      },
+      "referenceStatus": 401,
+      "candidateStatus": 404,
+      "diffs": [
+        {
+          "path": "status",
+          "kind": "status",
+          "reference": "401",
+          "candidate": "404"
+        },
+        {
+          "path": "header.content-type",
+          "kind": "header",
+          "reference": "\"application/json; charset=utf-8\"",
+          "candidate": "null"
+        },
+        {
+          "path": "$.error",
+          "kind": "error-envelope",
+          "reference": "error envelope",
+          "candidate": "no error envelope"
+        },
+        {
+          "path": "$",
+          "kind": "type",
+          "reference": "object {\"error\":{\"code\":\"missing_token\",\"message\":\"Missing access token\"}}",
+          "candidate": "null null"
+        }
+      ],
+      "notes": [],
+      "state": "FAIL",
+      "diffsTruncated": false
+    },
+    {
+      "scenario": "auth-sweep",
+      "name": "unauthenticated-scanDeleteDocument",
+      "op": "scanDeleteDocument",
+      "frameworkProbe": false,
+      "request": {
+        "method": "DELETE",
+        "path": "/me/document-scans/6a78c437aa461ae1dc64ffff"
+      },
+      "referenceStatus": 401,
+      "candidateStatus": 404,
+      "diffs": [
+        {
+          "path": "status",
+          "kind": "status",
+          "reference": "401",
+          "candidate": "404"
+        },
+        {
+          "path": "header.content-type",
+          "kind": "header",
+          "reference": "\"application/json; charset=utf-8\"",
+          "candidate": "null"
+        },
+        {
+          "path": "$.error",
+          "kind": "error-envelope",
+          "reference": "error envelope",
+          "candidate": "no error envelope"
+        },
+        {
+          "path": "$",
+          "kind": "type",
+          "reference": "object {\"error\":{\"code\":\"missing_token\",\"message\":\"Missing access token\"}}",
+          "candidate": "null null"
+        }
+      ],
+      "notes": [],
+      "state": "FAIL",
+      "diffsTruncated": false
+    },
+    {
+      "scenario": "auth-sweep",
+      "name": "unauthenticated-scanGetDocumentFile",
+      "op": "scanGetDocumentFile",
+      "frameworkProbe": false,
+      "request": {
+        "method": "GET",
+        "path": "/me/document-scans/6a78c437aa461ae1dc64ffff/file"
+      },
+      "referenceStatus": 401,
+      "candidateStatus": 404,
+      "diffs": [
+        {
+          "path": "status",
+          "kind": "status",
+          "reference": "401",
+          "candidate": "404"
+        },
+        {
+          "path": "header.content-type",
+          "kind": "header",
+          "reference": "\"application/json; charset=utf-8\"",
+          "candidate": "null"
+        },
+        {
+          "path": "$.error",
+          "kind": "error-envelope",
+          "reference": "error envelope",
+          "candidate": "no error envelope"
+        },
+        {
+          "path": "$",
+          "kind": "type",
+          "reference": "object {\"error\":{\"code\":\"missing_token\",\"message\":\"Missing access token\"}}",
+          "candidate": "null null"
+        }
+      ],
+      "notes": [],
+      "state": "FAIL",
+      "diffsTruncated": false
+    },
+    {
+      "scenario": "auth-sweep",
+      "name": "unauthenticated-scanReprocessDocument",
+      "op": "scanReprocessDocument",
+      "frameworkProbe": false,
+      "request": {
+        "method": "POST",
+        "path": "/me/document-scans/6a78c437aa461ae1dc64ffff/reprocess"
+      },
+      "referenceStatus": 401,
+      "candidateStatus": 404,
+      "diffs": [
+        {
+          "path": "status",
+          "kind": "status",
+          "reference": "401",
+          "candidate": "404"
+        },
+        {
+          "path": "header.content-type",
+          "kind": "header",
+          "reference": "\"application/json; charset=utf-8\"",
+          "candidate": "null"
+        },
+        {
+          "path": "$.error",
+          "kind": "error-envelope",
+          "reference": "error envelope",
+          "candidate": "no error envelope"
+        },
+        {
+          "path": "$",
+          "kind": "type",
+          "reference": "object {\"error\":{\"code\":\"missing_token\",\"message\":\"Missing access token\"}}",
+          "candidate": "null null"
+        }
+      ],
+      "notes": [],
+      "state": "FAIL",
+      "diffsTruncated": false
+    },
+    {
+      "scenario": "auth-sweep",
+      "name": "unauthenticated-scanReviewDocument",
+      "op": "scanReviewDocument",
+      "frameworkProbe": false,
+      "request": {
+        "method": "POST",
+        "path": "/me/document-scans/6a78c437aa461ae1dc64ffff/review"
+      },
+      "referenceStatus": 401,
+      "candidateStatus": 404,
+      "diffs": [
+        {
+          "path": "status",
+          "kind": "status",
+          "reference": "401",
+          "candidate": "404"
+        },
+        {
+          "path": "header.content-type",
+          "kind": "header",
+          "reference": "\"application/json; charset=utf-8\"",
+          "candidate": "null"
+        },
+        {
+          "path": "$.error",
+          "kind": "error-envelope",
+          "reference": "error envelope",
+          "candidate": "no error envelope"
+        },
+        {
+          "path": "$",
+          "kind": "type",
+          "reference": "object {\"error\":{\"code\":\"missing_token\",\"message\":\"Missing access token\"}}",
+          "candidate": "null null"
+        }
+      ],
+      "notes": [],
+      "state": "FAIL",
+      "diffsTruncated": false
+    },
+    {
+      "scenario": "auth-sweep",
+      "name": "unauthenticated-icsSubscribeFeed",
+      "op": "icsSubscribeFeed",
+      "frameworkProbe": false,
+      "request": {
+        "method": "POST",
+        "path": "/me/ics-feeds"
+      },
+      "referenceStatus": 401,
+      "candidateStatus": 404,
+      "diffs": [
+        {
+          "path": "status",
+          "kind": "status",
+          "reference": "401",
+          "candidate": "404"
+        },
+        {
+          "path": "header.content-type",
+          "kind": "header",
+          "reference": "\"application/json; charset=utf-8\"",
+          "candidate": "null"
+        },
+        {
+          "path": "$.error",
+          "kind": "error-envelope",
+          "reference": "error envelope",
+          "candidate": "no error envelope"
+        },
+        {
+          "path": "$",
+          "kind": "type",
+          "reference": "object {\"error\":{\"code\":\"missing_token\",\"message\":\"Missing access token\"}}",
+          "candidate": "null null"
+        }
+      ],
+      "notes": [],
+      "state": "FAIL",
+      "diffsTruncated": false
+    },
+    {
+      "scenario": "auth-sweep",
+      "name": "unauthenticated-icsListFeeds",
+      "op": "icsListFeeds",
+      "frameworkProbe": false,
+      "request": {
+        "method": "GET",
+        "path": "/me/ics-feeds"
+      },
+      "referenceStatus": 401,
+      "candidateStatus": 404,
+      "diffs": [
+        {
+          "path": "status",
+          "kind": "status",
+          "reference": "401",
+          "candidate": "404"
+        },
+        {
+          "path": "header.content-type",
+          "kind": "header",
+          "reference": "\"application/json; charset=utf-8\"",
+          "candidate": "null"
+        },
+        {
+          "path": "$.error",
+          "kind": "error-envelope",
+          "reference": "error envelope",
+          "candidate": "no error envelope"
+        },
+        {
+          "path": "$",
+          "kind": "type",
+          "reference": "object {\"error\":{\"code\":\"missing_token\",\"message\":\"Missing access token\"}}",
+          "candidate": "null null"
+        }
+      ],
+      "notes": [],
+      "state": "FAIL",
+      "diffsTruncated": false
+    },
+    {
+      "scenario": "auth-sweep",
+      "name": "unauthenticated-icsSyncFeed",
+      "op": "icsSyncFeed",
+      "frameworkProbe": false,
+      "request": {
+        "method": "POST",
+        "path": "/me/ics-feeds/6a78c437aa461ae1dc64ffff/sync"
+      },
+      "referenceStatus": 401,
+      "candidateStatus": 404,
+      "diffs": [
+        {
+          "path": "status",
+          "kind": "status",
+          "reference": "401",
+          "candidate": "404"
+        },
+        {
+          "path": "header.content-type",
+          "kind": "header",
+          "reference": "\"application/json; charset=utf-8\"",
+          "candidate": "null"
+        },
+        {
+          "path": "$.error",
+          "kind": "error-envelope",
+          "reference": "error envelope",
+          "candidate": "no error envelope"
+        },
+        {
+          "path": "$",
+          "kind": "type",
+          "reference": "object {\"error\":{\"code\":\"missing_token\",\"message\":\"Missing access token\"}}",
+          "candidate": "null null"
+        }
+      ],
+      "notes": [],
+      "state": "FAIL",
+      "diffsTruncated": false
+    },
+    {
+      "scenario": "auth-sweep",
+      "name": "unauthenticated-icsDeleteFeed",
+      "op": "icsDeleteFeed",
+      "frameworkProbe": false,
+      "request": {
+        "method": "DELETE",
+        "path": "/me/ics-feeds/6a78c437aa461ae1dc64ffff"
+      },
+      "referenceStatus": 401,
+      "candidateStatus": 404,
+      "diffs": [
+        {
+          "path": "status",
+          "kind": "status",
+          "reference": "401",
+          "candidate": "404"
+        },
+        {
+          "path": "header.content-type",
+          "kind": "header",
+          "reference": "\"application/json; charset=utf-8\"",
+          "candidate": "null"
+        },
+        {
+          "path": "$.error",
+          "kind": "error-envelope",
+          "reference": "error envelope",
+          "candidate": "no error envelope"
+        },
+        {
+          "path": "$",
+          "kind": "type",
+          "reference": "object {\"error\":{\"code\":\"missing_token\",\"message\":\"Missing access token\"}}",
+          "candidate": "null null"
+        }
+      ],
+      "notes": [],
+      "state": "FAIL",
+      "diffsTruncated": false
+    },
+    {
+      "scenario": "auth-sweep",
+      "name": "unauthenticated-googBeginAuthorize",
+      "op": "googBeginAuthorize",
+      "frameworkProbe": false,
+      "request": {
+        "method": "POST",
+        "path": "/integrations/google/authorize"
+      },
+      "referenceStatus": 401,
+      "candidateStatus": 404,
+      "diffs": [
+        {
+          "path": "status",
+          "kind": "status",
+          "reference": "401",
+          "candidate": "404"
+        },
+        {
+          "path": "header.content-type",
+          "kind": "header",
+          "reference": "\"application/json; charset=utf-8\"",
+          "candidate": "null"
+        },
+        {
+          "path": "$.error",
+          "kind": "error-envelope",
+          "reference": "error envelope",
+          "candidate": "no error envelope"
+        },
+        {
+          "path": "$",
+          "kind": "type",
+          "reference": "object {\"error\":{\"code\":\"missing_token\",\"message\":\"Missing access token\"}}",
+          "candidate": "null null"
+        }
+      ],
+      "notes": [],
+      "state": "FAIL",
+      "diffsTruncated": false
+    },
+    {
+      "scenario": "auth-sweep",
+      "name": "unauthenticated-googGetIntegration",
+      "op": "googGetIntegration",
+      "frameworkProbe": false,
+      "request": {
+        "method": "GET",
+        "path": "/integrations/google"
+      },
+      "referenceStatus": 401,
+      "candidateStatus": 404,
+      "diffs": [
+        {
+          "path": "status",
+          "kind": "status",
+          "reference": "401",
+          "candidate": "404"
+        },
+        {
+          "path": "header.content-type",
+          "kind": "header",
+          "reference": "\"application/json; charset=utf-8\"",
+          "candidate": "null"
+        },
+        {
+          "path": "$.error",
+          "kind": "error-envelope",
+          "reference": "error envelope",
+          "candidate": "no error envelope"
+        },
+        {
+          "path": "$",
+          "kind": "type",
+          "reference": "object {\"error\":{\"code\":\"missing_token\",\"message\":\"Missing access token\"}}",
+          "candidate": "null null"
+        }
+      ],
+      "notes": [],
+      "state": "FAIL",
+      "diffsTruncated": false
+    },
+    {
+      "scenario": "auth-sweep",
+      "name": "unauthenticated-googDisconnect",
+      "op": "googDisconnect",
+      "frameworkProbe": false,
+      "request": {
+        "method": "DELETE",
+        "path": "/integrations/google"
+      },
+      "referenceStatus": 401,
+      "candidateStatus": 404,
+      "diffs": [
+        {
+          "path": "status",
+          "kind": "status",
+          "reference": "401",
+          "candidate": "404"
+        },
+        {
+          "path": "header.content-type",
+          "kind": "header",
+          "reference": "\"application/json; charset=utf-8\"",
+          "candidate": "null"
+        },
+        {
+          "path": "$.error",
+          "kind": "error-envelope",
+          "reference": "error envelope",
+          "candidate": "no error envelope"
+        },
+        {
+          "path": "$",
+          "kind": "type",
+          "reference": "object {\"error\":{\"code\":\"missing_token\",\"message\":\"Missing access token\"}}",
+          "candidate": "null null"
+        }
+      ],
+      "notes": [],
+      "state": "FAIL",
+      "diffsTruncated": false
+    },
+    {
+      "scenario": "auth-sweep",
+      "name": "unauthenticated-googSyncNow",
+      "op": "googSyncNow",
+      "frameworkProbe": false,
+      "request": {
+        "method": "POST",
+        "path": "/integrations/google/sync"
+      },
+      "referenceStatus": 401,
+      "candidateStatus": 404,
+      "diffs": [
+        {
+          "path": "status",
+          "kind": "status",
+          "reference": "401",
+          "candidate": "404"
+        },
+        {
+          "path": "header.content-type",
+          "kind": "header",
+          "reference": "\"application/json; charset=utf-8\"",
+          "candidate": "null"
+        },
+        {
+          "path": "$.error",
+          "kind": "error-envelope",
+          "reference": "error envelope",
+          "candidate": "no error envelope"
+        },
+        {
+          "path": "$",
+          "kind": "type",
+          "reference": "object {\"error\":{\"code\":\"missing_token\",\"message\":\"Missing access token\"}}",
+          "candidate": "null null"
+        }
+      ],
+      "notes": [],
+      "state": "FAIL",
+      "diffsTruncated": false
+    },
+    {
+      "scenario": "auth-sweep",
+      "name": "unauthenticated-aiGetConversation",
+      "op": "aiGetConversation",
+      "frameworkProbe": false,
+      "request": {
+        "method": "GET",
+        "path": "/ai/conversation"
+      },
+      "referenceStatus": 401,
+      "candidateStatus": 404,
+      "diffs": [
+        {
+          "path": "status",
+          "kind": "status",
+          "reference": "401",
+          "candidate": "404"
+        },
+        {
+          "path": "header.content-type",
+          "kind": "header",
+          "reference": "\"application/json; charset=utf-8\"",
+          "candidate": "null"
+        },
+        {
+          "path": "$.error",
+          "kind": "error-envelope",
+          "reference": "error envelope",
+          "candidate": "no error envelope"
+        },
+        {
+          "path": "$",
+          "kind": "type",
+          "reference": "object {\"error\":{\"code\":\"missing_token\",\"message\":\"Missing access token\"}}",
+          "candidate": "null null"
+        }
+      ],
+      "notes": [],
+      "state": "FAIL",
+      "diffsTruncated": false
+    },
+    {
+      "scenario": "auth-sweep",
+      "name": "unauthenticated-aiResetConversation",
+      "op": "aiResetConversation",
+      "frameworkProbe": false,
+      "request": {
+        "method": "POST",
+        "path": "/ai/conversation/reset"
+      },
+      "referenceStatus": 401,
+      "candidateStatus": 404,
+      "diffs": [
+        {
+          "path": "status",
+          "kind": "status",
+          "reference": "401",
+          "candidate": "404"
+        },
+        {
+          "path": "header.content-type",
+          "kind": "header",
+          "reference": "\"application/json; charset=utf-8\"",
+          "candidate": "null"
+        },
+        {
+          "path": "$.error",
+          "kind": "error-envelope",
+          "reference": "error envelope",
+          "candidate": "no error envelope"
+        },
+        {
+          "path": "$",
+          "kind": "type",
+          "reference": "object {\"error\":{\"code\":\"missing_token\",\"message\":\"Missing access token\"}}",
+          "candidate": "null null"
+        }
+      ],
+      "notes": [],
+      "state": "FAIL",
+      "diffsTruncated": false
+    },
+    {
+      "scenario": "auth-sweep",
+      "name": "unauthenticated-aiGetQuota",
+      "op": "aiGetQuota",
+      "frameworkProbe": false,
+      "request": {
+        "method": "GET",
+        "path": "/ai/quota"
+      },
+      "referenceStatus": 401,
+      "candidateStatus": 404,
+      "diffs": [
+        {
+          "path": "status",
+          "kind": "status",
+          "reference": "401",
+          "candidate": "404"
+        },
+        {
+          "path": "header.content-type",
+          "kind": "header",
+          "reference": "\"application/json; charset=utf-8\"",
+          "candidate": "null"
+        },
+        {
+          "path": "$.error",
+          "kind": "error-envelope",
+          "reference": "error envelope",
+          "candidate": "no error envelope"
+        },
+        {
+          "path": "$",
+          "kind": "type",
+          "reference": "object {\"error\":{\"code\":\"missing_token\",\"message\":\"Missing access token\"}}",
+          "candidate": "null null"
+        }
+      ],
+      "notes": [],
+      "state": "FAIL",
+      "diffsTruncated": false
+    },
+    {
+      "scenario": "auth-sweep",
+      "name": "unauthenticated-aiAsk",
+      "op": "aiAsk",
+      "frameworkProbe": false,
+      "request": {
+        "method": "POST",
+        "path": "/ai/ask"
+      },
+      "referenceStatus": 401,
+      "candidateStatus": 404,
+      "diffs": [
+        {
+          "path": "status",
+          "kind": "status",
+          "reference": "401",
+          "candidate": "404"
+        },
+        {
+          "path": "header.content-type",
+          "kind": "header",
+          "reference": "\"application/json; charset=utf-8\"",
+          "candidate": "null"
+        },
+        {
+          "path": "$.error",
+          "kind": "error-envelope",
+          "reference": "error envelope",
+          "candidate": "no error envelope"
+        },
+        {
+          "path": "$",
+          "kind": "type",
+          "reference": "object {\"error\":{\"code\":\"missing_token\",\"message\":\"Missing access token\"}}",
+          "candidate": "null null"
+        }
+      ],
+      "notes": [],
+      "state": "FAIL",
+      "diffsTruncated": false
+    },
+    {
+      "scenario": "auth-sweep",
+      "name": "unauthenticated-aiConfirmTool",
+      "op": "aiConfirmTool",
+      "frameworkProbe": false,
+      "request": {
+        "method": "POST",
+        "path": "/ai/tools/confirm/6a78c437aa461ae1dc64ffff"
+      },
+      "referenceStatus": 401,
+      "candidateStatus": 404,
+      "diffs": [
+        {
+          "path": "status",
+          "kind": "status",
+          "reference": "401",
+          "candidate": "404"
+        },
+        {
+          "path": "header.content-type",
+          "kind": "header",
+          "reference": "\"application/json; charset=utf-8\"",
+          "candidate": "null"
+        },
+        {
+          "path": "$.error",
+          "kind": "error-envelope",
+          "reference": "error envelope",
+          "candidate": "no error envelope"
+        },
+        {
+          "path": "$",
+          "kind": "type",
+          "reference": "object {\"error\":{\"code\":\"missing_token\",\"message\":\"Missing access token\"}}",
+          "candidate": "null null"
+        }
+      ],
+      "notes": [],
+      "state": "FAIL",
+      "diffsTruncated": false
+    },
+    {
+      "scenario": "auth-sweep",
+      "name": "unauthenticated-aiTranscribeVoice",
+      "op": "aiTranscribeVoice",
+      "frameworkProbe": false,
+      "request": {
+        "method": "POST",
+        "path": "/ai/voice/transcribe"
+      },
+      "referenceStatus": 401,
+      "candidateStatus": 404,
+      "diffs": [
+        {
+          "path": "status",
+          "kind": "status",
+          "reference": "401",
+          "candidate": "404"
+        },
+        {
+          "path": "header.content-type",
+          "kind": "header",
+          "reference": "\"application/json; charset=utf-8\"",
+          "candidate": "null"
+        },
+        {
+          "path": "$.error",
+          "kind": "error-envelope",
+          "reference": "error envelope",
+          "candidate": "no error envelope"
+        },
+        {
+          "path": "$",
+          "kind": "type",
+          "reference": "object {\"error\":{\"code\":\"missing_token\",\"message\":\"Missing access token\"}}",
+          "candidate": "null null"
+        }
+      ],
+      "notes": [],
+      "state": "FAIL",
+      "diffsTruncated": false
+    },
+    {
+      "scenario": "auth-sweep",
+      "name": "unauthenticated-voiceUploadNote",
+      "op": "voiceUploadNote",
+      "frameworkProbe": false,
+      "request": {
+        "method": "POST",
+        "path": "/me/voice-notes"
+      },
+      "referenceStatus": 401,
+      "candidateStatus": 404,
+      "diffs": [
+        {
+          "path": "status",
+          "kind": "status",
+          "reference": "401",
+          "candidate": "404"
+        },
+        {
+          "path": "header.content-type",
+          "kind": "header",
+          "reference": "\"application/json; charset=utf-8\"",
+          "candidate": "null"
+        },
+        {
+          "path": "$.error",
+          "kind": "error-envelope",
+          "reference": "error envelope",
+          "candidate": "no error envelope"
+        },
+        {
+          "path": "$",
+          "kind": "type",
+          "reference": "object {\"error\":{\"code\":\"missing_token\",\"message\":\"Missing access token\"}}",
+          "candidate": "null null"
+        }
+      ],
+      "notes": [],
+      "state": "FAIL",
+      "diffsTruncated": false
+    },
+    {
+      "scenario": "auth-sweep",
+      "name": "unauthenticated-voiceListNotes",
+      "op": "voiceListNotes",
+      "frameworkProbe": false,
+      "request": {
+        "method": "GET",
+        "path": "/me/voice-notes"
+      },
+      "referenceStatus": 401,
+      "candidateStatus": 404,
+      "diffs": [
+        {
+          "path": "status",
+          "kind": "status",
+          "reference": "401",
+          "candidate": "404"
+        },
+        {
+          "path": "header.content-type",
+          "kind": "header",
+          "reference": "\"application/json; charset=utf-8\"",
+          "candidate": "null"
+        },
+        {
+          "path": "$.error",
+          "kind": "error-envelope",
+          "reference": "error envelope",
+          "candidate": "no error envelope"
+        },
+        {
+          "path": "$",
+          "kind": "type",
+          "reference": "object {\"error\":{\"code\":\"missing_token\",\"message\":\"Missing access token\"}}",
+          "candidate": "null null"
+        }
+      ],
+      "notes": [],
+      "state": "FAIL",
+      "diffsTruncated": false
+    },
+    {
+      "scenario": "auth-sweep",
+      "name": "unauthenticated-voiceGetNote",
+      "op": "voiceGetNote",
+      "frameworkProbe": false,
+      "request": {
+        "method": "GET",
+        "path": "/me/voice-notes/6a78c437aa461ae1dc64ffff"
+      },
+      "referenceStatus": 401,
+      "candidateStatus": 404,
+      "diffs": [
+        {
+          "path": "status",
+          "kind": "status",
+          "reference": "401",
+          "candidate": "404"
+        },
+        {
+          "path": "header.content-type",
+          "kind": "header",
+          "reference": "\"application/json; charset=utf-8\"",
+          "candidate": "null"
+        },
+        {
+          "path": "$.error",
+          "kind": "error-envelope",
+          "reference": "error envelope",
+          "candidate": "no error envelope"
+        },
+        {
+          "path": "$",
+          "kind": "type",
+          "reference": "object {\"error\":{\"code\":\"missing_token\",\"message\":\"Missing access token\"}}",
+          "candidate": "null null"
+        }
+      ],
+      "notes": [],
+      "state": "FAIL",
+      "diffsTruncated": false
+    },
+    {
+      "scenario": "auth-sweep",
+      "name": "unauthenticated-voiceExtractTasks",
+      "op": "voiceExtractTasks",
+      "frameworkProbe": false,
+      "request": {
+        "method": "POST",
+        "path": "/me/voice-notes/6a78c437aa461ae1dc64ffff/extract-tasks"
+      },
+      "referenceStatus": 401,
+      "candidateStatus": 404,
+      "diffs": [
+        {
+          "path": "status",
+          "kind": "status",
+          "reference": "401",
+          "candidate": "404"
+        },
+        {
+          "path": "header.content-type",
+          "kind": "header",
+          "reference": "\"application/json; charset=utf-8\"",
+          "candidate": "null"
+        },
+        {
+          "path": "$.error",
+          "kind": "error-envelope",
+          "reference": "error envelope",
+          "candidate": "no error envelope"
+        },
+        {
+          "path": "$",
+          "kind": "type",
+          "reference": "object {\"error\":{\"code\":\"missing_token\",\"message\":\"Missing access token\"}}",
+          "candidate": "null null"
+        }
+      ],
+      "notes": [],
+      "state": "FAIL",
+      "diffsTruncated": false
+    },
+    {
+      "scenario": "auth-sweep",
+      "name": "unauthenticated-voiceReviewNote",
+      "op": "voiceReviewNote",
+      "frameworkProbe": false,
+      "request": {
+        "method": "POST",
+        "path": "/me/voice-notes/6a78c437aa461ae1dc64ffff/review"
+      },
+      "referenceStatus": 401,
+      "candidateStatus": 404,
+      "diffs": [
+        {
+          "path": "status",
+          "kind": "status",
+          "reference": "401",
+          "candidate": "404"
+        },
+        {
+          "path": "header.content-type",
+          "kind": "header",
+          "reference": "\"application/json; charset=utf-8\"",
+          "candidate": "null"
+        },
+        {
+          "path": "$.error",
+          "kind": "error-envelope",
+          "reference": "error envelope",
+          "candidate": "no error envelope"
+        },
+        {
+          "path": "$",
+          "kind": "type",
+          "reference": "object {\"error\":{\"code\":\"missing_token\",\"message\":\"Missing access token\"}}",
+          "candidate": "null null"
+        }
+      ],
+      "notes": [],
+      "state": "FAIL",
+      "diffsTruncated": false
+    },
+    {
+      "scenario": "auth-lifecycle",
+      "name": "signup",
+      "op": "authSignup",
+      "frameworkProbe": false,
+      "request": {
+        "method": "POST",
+        "path": "/auth/signup"
+      },
+      "referenceStatus": 201,
+      "candidateStatus": 201,
+      "diffs": [],
+      "notes": [],
+      "state": "PASS",
+      "diffsTruncated": false
+    },
+    {
+      "scenario": "auth-lifecycle",
+      "name": "signup-duplicate-email",
+      "op": "authSignup",
+      "frameworkProbe": false,
+      "request": {
+        "method": "POST",
+        "path": "/auth/signup"
+      },
+      "referenceStatus": 409,
+      "candidateStatus": 409,
+      "diffs": [],
+      "notes": [],
+      "state": "PASS",
+      "diffsTruncated": false
+    },
+    {
+      "scenario": "auth-lifecycle",
+      "name": "signup-validation-error",
+      "op": "authSignup",
+      "frameworkProbe": false,
+      "request": {
+        "method": "POST",
+        "path": "/auth/signup"
+      },
+      "referenceStatus": 400,
+      "candidateStatus": 400,
+      "diffs": [],
+      "notes": [],
+      "state": "PASS",
+      "diffsTruncated": false
+    },
+    {
+      "scenario": "auth-lifecycle",
+      "name": "me",
+      "op": "authMe",
+      "frameworkProbe": false,
+      "request": {
+        "method": "GET",
+        "path": "/auth/me"
+      },
+      "referenceStatus": 200,
+      "candidateStatus": 200,
+      "diffs": [],
+      "notes": [],
+      "state": "PASS",
+      "diffsTruncated": false
+    },
+    {
+      "scenario": "auth-lifecycle",
+      "name": "sessions-list-one",
+      "op": "authSessionsList",
+      "frameworkProbe": false,
+      "request": {
+        "method": "POST",
+        "path": "/auth/sessions/list"
+      },
+      "referenceStatus": 200,
+      "candidateStatus": 200,
+      "diffs": [],
+      "notes": [],
+      "state": "PASS",
+      "diffsTruncated": false
+    },
+    {
+      "scenario": "auth-lifecycle",
+      "name": "refresh-rotates",
+      "op": "authRefresh",
+      "frameworkProbe": false,
+      "request": {
+        "method": "POST",
+        "path": "/auth/refresh"
+      },
+      "referenceStatus": 200,
+      "candidateStatus": 200,
+      "diffs": [],
+      "notes": [],
+      "state": "PASS",
+      "diffsTruncated": false
+    },
+    {
+      "scenario": "auth-lifecycle",
+      "name": "refresh-with-rotated-out-token",
+      "op": "authRefresh",
+      "frameworkProbe": false,
+      "request": {
+        "method": "POST",
+        "path": "/auth/refresh"
+      },
+      "referenceStatus": 401,
+      "candidateStatus": 401,
+      "diffs": [],
+      "notes": [],
+      "state": "PASS",
+      "diffsTruncated": false
+    },
+    {
+      "scenario": "auth-lifecycle",
+      "name": "signin-second-session",
+      "op": "authSignin",
+      "frameworkProbe": false,
+      "request": {
+        "method": "POST",
+        "path": "/auth/signin"
+      },
+      "referenceStatus": 200,
+      "candidateStatus": 200,
+      "diffs": [],
+      "notes": [],
+      "state": "PASS",
+      "diffsTruncated": false
+    },
+    {
+      "scenario": "auth-lifecycle",
+      "name": "sessions-list-two",
+      "op": "authSessionsList",
+      "frameworkProbe": false,
+      "request": {
+        "method": "POST",
+        "path": "/auth/sessions/list"
+      },
+      "referenceStatus": 200,
+      "candidateStatus": 200,
+      "diffs": [],
+      "notes": [],
+      "state": "PASS",
+      "diffsTruncated": false
+    },
+    {
+      "scenario": "auth-lifecycle",
+      "name": "revoke-others",
+      "op": "authSessionsRevokeOthers",
+      "frameworkProbe": false,
+      "request": {
+        "method": "POST",
+        "path": "/auth/sessions/revoke-others"
+      },
+      "referenceStatus": 204,
+      "candidateStatus": 204,
+      "diffs": [],
+      "notes": [],
+      "state": "PASS",
+      "diffsTruncated": false
+    },
+    {
+      "scenario": "auth-lifecycle",
+      "name": "sessions-list-after-revoke-others",
+      "op": "authSessionsList",
+      "frameworkProbe": false,
+      "request": {
+        "method": "POST",
+        "path": "/auth/sessions/list"
+      },
+      "referenceStatus": 200,
+      "candidateStatus": 200,
+      "diffs": [],
+      "notes": [],
+      "state": "PASS",
+      "diffsTruncated": false
+    },
+    {
+      "scenario": "auth-lifecycle",
+      "name": "revoke-current-session",
+      "op": "authSessionRevoke",
+      "frameworkProbe": false,
+      "request": {
+        "method": "DELETE",
+        "path": "/auth/sessions/{{sessionId}}"
+      },
+      "referenceStatus": 204,
+      "candidateStatus": 204,
+      "diffs": [],
+      "notes": [],
+      "state": "PASS",
+      "diffsTruncated": false
+    },
+    {
+      "scenario": "auth-lifecycle",
+      "name": "revoke-unknown-session",
+      "op": "authSessionRevoke",
+      "frameworkProbe": false,
+      "request": {
+        "method": "DELETE",
+        "path": "/auth/sessions/6a78c437aa461ae1dc64ffff"
+      },
+      "referenceStatus": 404,
+      "candidateStatus": 404,
+      "diffs": [],
+      "notes": [],
+      "state": "PASS",
+      "diffsTruncated": false
+    },
+    {
+      "scenario": "auth-lifecycle",
+      "name": "signout",
+      "op": "authSignout",
+      "frameworkProbe": false,
+      "request": {
+        "method": "POST",
+        "path": "/auth/signout"
+      },
+      "referenceStatus": 204,
+      "candidateStatus": 204,
+      "diffs": [],
+      "notes": [],
+      "state": "PASS",
+      "diffsTruncated": false
+    },
+    {
+      "scenario": "auth-lifecycle",
+      "name": "verify-email-invalid-token",
+      "op": "authVerifyEmailToken",
+      "frameworkProbe": false,
+      "request": {
+        "method": "POST",
+        "path": "/auth/verify-email"
+      },
+      "referenceStatus": 400,
+      "candidateStatus": 400,
+      "diffs": [],
+      "notes": [],
+      "state": "PASS",
+      "diffsTruncated": false
+    },
+    {
+      "scenario": "auth-lifecycle",
+      "name": "magic-consume-invalid-token",
+      "op": "authMagicConsume",
+      "frameworkProbe": false,
+      "request": {
+        "method": "POST",
+        "path": "/auth/magic-consume"
+      },
+      "referenceStatus": 400,
+      "candidateStatus": 400,
+      "diffs": [],
+      "notes": [],
+      "state": "PASS",
+      "diffsTruncated": false
+    },
+    {
+      "scenario": "profile",
+      "name": "patch-nested-key-merge",
+      "op": "authUpdateMe",
+      "frameworkProbe": false,
+      "request": {
+        "method": "PATCH",
+        "path": "/me"
+      },
+      "referenceStatus": 200,
+      "candidateStatus": 404,
+      "diffs": [
+        {
+          "path": "status",
+          "kind": "status",
+          "reference": "200",
+          "candidate": "404"
+        },
+        {
+          "path": "header.content-type",
+          "kind": "header",
+          "reference": "\"application/json; charset=utf-8\"",
+          "candidate": "null"
+        },
+        {
+          "path": "$",
+          "kind": "type",
+          "reference": "object {\"user\":{\"createdAt\":\"<TS>\",\"email\":\"<EMAIL:1>\",\"hasOnboarded\":false,\"hasPassword\":true,\"id\":\"<ID:1>\",\"imports\":{\"defaultTimeOfDay\":\"09:00\"},\"mic\":{\"quality\"...",
+          "candidate": "null null"
+        }
+      ],
+      "notes": [],
+      "state": "FAIL",
+      "diffsTruncated": false
+    },
+    {
+      "scenario": "profile",
+      "name": "patch-scalar-fields",
+      "op": "authUpdateMe",
+      "frameworkProbe": false,
+      "request": {
+        "method": "PATCH",
+        "path": "/me"
+      },
+      "referenceStatus": 200,
+      "candidateStatus": 404,
+      "diffs": [
+        {
+          "path": "status",
+          "kind": "status",
+          "reference": "200",
+          "candidate": "404"
+        },
+        {
+          "path": "header.content-type",
+          "kind": "header",
+          "reference": "\"application/json; charset=utf-8\"",
+          "candidate": "null"
+        },
+        {
+          "path": "$",
+          "kind": "type",
+          "reference": "object {\"user\":{\"createdAt\":\"<TS>\",\"displayName\":\"Parity Tester\",\"email\":\"<EMAIL:1>\",\"hasOnboarded\":true,\"hasPassword\":true,\"id\":\"<ID:1>\",\"imports\":{\"defaultTimeOfD...",
+          "candidate": "null null"
+        }
+      ],
+      "notes": [],
+      "state": "FAIL",
+      "diffsTruncated": false
+    },
+    {
+      "scenario": "profile",
+      "name": "patch-second-nested-key-still-merges",
+      "op": "authUpdateMe",
+      "frameworkProbe": false,
+      "request": {
+        "method": "PATCH",
+        "path": "/me"
+      },
+      "referenceStatus": 200,
+      "candidateStatus": 404,
+      "diffs": [
+        {
+          "path": "status",
+          "kind": "status",
+          "reference": "200",
+          "candidate": "404"
+        },
+        {
+          "path": "header.content-type",
+          "kind": "header",
+          "reference": "\"application/json; charset=utf-8\"",
+          "candidate": "null"
+        },
+        {
+          "path": "$",
+          "kind": "type",
+          "reference": "object {\"user\":{\"createdAt\":\"<TS>\",\"displayName\":\"Parity Tester\",\"email\":\"<EMAIL:1>\",\"hasOnboarded\":true,\"hasPassword\":true,\"id\":\"<ID:1>\",\"imports\":{\"defaultTimeOfD...",
+          "candidate": "null null"
+        }
+      ],
+      "notes": [],
+      "state": "FAIL",
+      "diffsTruncated": false
+    },
+    {
+      "scenario": "profile",
+      "name": "patch-empty-body-is-a-touch",
+      "op": "authUpdateMe",
+      "frameworkProbe": false,
+      "request": {
+        "method": "PATCH",
+        "path": "/me"
+      },
+      "referenceStatus": 200,
+      "candidateStatus": 404,
+      "diffs": [
+        {
+          "path": "status",
+          "kind": "status",
+          "reference": "200",
+          "candidate": "404"
+        },
+        {
+          "path": "header.content-type",
+          "kind": "header",
+          "reference": "\"application/json; charset=utf-8\"",
+          "candidate": "null"
+        },
+        {
+          "path": "$",
+          "kind": "type",
+          "reference": "object {\"user\":{\"createdAt\":\"<TS>\",\"displayName\":\"Parity Tester\",\"email\":\"<EMAIL:1>\",\"hasOnboarded\":true,\"hasPassword\":true,\"id\":\"<ID:1>\",\"imports\":{\"defaultTimeOfD...",
+          "candidate": "null null"
+        }
+      ],
+      "notes": [],
+      "state": "FAIL",
+      "diffsTruncated": false
+    },
+    {
+      "scenario": "profile",
+      "name": "patch-unknown-keys-are-stripped-not-rejected",
+      "op": "authUpdateMe",
+      "frameworkProbe": false,
+      "request": {
+        "method": "PATCH",
+        "path": "/me"
+      },
+      "referenceStatus": 200,
+      "candidateStatus": 404,
+      "diffs": [
+        {
+          "path": "status",
+          "kind": "status",
+          "reference": "200",
+          "candidate": "404"
+        },
+        {
+          "path": "header.content-type",
+          "kind": "header",
+          "reference": "\"application/json; charset=utf-8\"",
+          "candidate": "null"
+        },
+        {
+          "path": "$",
+          "kind": "type",
+          "reference": "object {\"user\":{\"createdAt\":\"<TS>\",\"displayName\":\"Parity Tester\",\"email\":\"<EMAIL:1>\",\"hasOnboarded\":true,\"hasPassword\":true,\"id\":\"<ID:1>\",\"imports\":{\"defaultTimeOfD...",
+          "candidate": "null null"
+        }
+      ],
+      "notes": [],
+      "state": "FAIL",
+      "diffsTruncated": false
+    },
+    {
+      "scenario": "profile",
+      "name": "patch-invalid-timezone",
+      "op": "authUpdateMe",
+      "frameworkProbe": false,
+      "request": {
+        "method": "PATCH",
+        "path": "/me"
+      },
+      "referenceStatus": 400,
+      "candidateStatus": 404,
+      "diffs": [
+        {
+          "path": "status",
+          "kind": "status",
+          "reference": "400",
+          "candidate": "404"
+        },
+        {
+          "path": "header.content-type",
+          "kind": "header",
+          "reference": "\"application/json; charset=utf-8\"",
+          "candidate": "null"
+        },
+        {
+          "path": "$.error",
+          "kind": "error-envelope",
+          "reference": "error envelope",
+          "candidate": "no error envelope"
+        },
+        {
+          "path": "$",
+          "kind": "type",
+          "reference": "object {\"error\":{\"code\":\"invalid_body\",\"details\":{\"fieldErrors\":{\"timezone\":[\"Not a recognised time zone.\"]},\"formErrors\":[]},\"message\":\"Some of those settings look...",
+          "candidate": "null null"
+        }
+      ],
+      "notes": [],
+      "state": "FAIL",
+      "diffsTruncated": false
+    },
+    {
+      "scenario": "profile",
+      "name": "malformed-json-is-500-not-400",
+      "op": "authUpdateMe",
+      "frameworkProbe": false,
+      "request": {
+        "method": "PATCH",
+        "path": "/me"
+      },
+      "referenceStatus": 500,
+      "candidateStatus": 404,
+      "diffs": [
+        {
+          "path": "status",
+          "kind": "status",
+          "reference": "500",
+          "candidate": "404"
+        },
+        {
+          "path": "header.content-type",
+          "kind": "header",
+          "reference": "\"application/json; charset=utf-8\"",
+          "candidate": "null"
+        },
+        {
+          "path": "$.error",
+          "kind": "error-envelope",
+          "reference": "error envelope",
+          "candidate": "no error envelope"
+        },
+        {
+          "path": "$",
+          "kind": "type",
+          "reference": "object {\"error\":{\"code\":\"internal_error\",\"message\":\"Internal server error\"}}",
+          "candidate": "null null"
+        }
+      ],
+      "notes": [],
+      "state": "FAIL",
+      "diffsTruncated": false
+    },
+    {
+      "scenario": "profile",
+      "name": "oversized-json-body-is-500-not-413",
+      "op": "authUpdateMe",
+      "frameworkProbe": false,
+      "request": {
+        "method": "PATCH",
+        "path": "/me"
+      },
+      "referenceStatus": 500,
+      "candidateStatus": 404,
+      "diffs": [
+        {
+          "path": "status",
+          "kind": "status",
+          "reference": "500",
+          "candidate": "404"
+        },
+        {
+          "path": "header.content-type",
+          "kind": "header",
+          "reference": "\"application/json; charset=utf-8\"",
+          "candidate": "null"
+        },
+        {
+          "path": "$.error",
+          "kind": "error-envelope",
+          "reference": "error envelope",
+          "candidate": "no error envelope"
+        },
+        {
+          "path": "$",
+          "kind": "type",
+          "reference": "object {\"error\":{\"code\":\"internal_error\",\"message\":\"Internal server error\"}}",
+          "candidate": "null null"
+        }
+      ],
+      "notes": [],
+      "state": "FAIL",
+      "diffsTruncated": false
+    },
+    {
+      "scenario": "profile",
+      "name": "export",
+      "op": "authExportMe",
+      "frameworkProbe": false,
+      "request": {
+        "method": "GET",
+        "path": "/me/export"
+      },
+      "referenceStatus": 200,
+      "candidateStatus": 404,
+      "diffs": [
+        {
+          "path": "status",
+          "kind": "status",
+          "reference": "200",
+          "candidate": "404"
+        },
+        {
+          "path": "header.content-type",
+          "kind": "header",
+          "reference": "\"application/json; charset=utf-8\"",
+          "candidate": "null"
+        },
+        {
+          "path": "$",
+          "kind": "type",
+          "reference": "object {\"aiUsage\":{\"count\":0,\"items\":[],\"truncated\":false},\"bulkOperations\":{\"count\":0,\"items\":[],\"truncated\":false},\"clarifications\":{\"count\":0,\"items\":[],\"truncat...",
+          "candidate": "null null"
+        }
+      ],
+      "notes": [
+        "response body whitespace differs: reference pretty-printed, candidate compact"
+      ],
+      "state": "FAIL",
+      "diffsTruncated": false
+    },
+    {
+      "scenario": "profile",
+      "name": "subscription",
+      "op": "authGetSubscription",
+      "frameworkProbe": false,
+      "request": {
+        "method": "GET",
+        "path": "/me/subscription"
+      },
+      "referenceStatus": 200,
+      "candidateStatus": 404,
+      "diffs": [
+        {
+          "path": "status",
+          "kind": "status",
+          "reference": "200",
+          "candidate": "404"
+        },
+        {
+          "path": "header.content-type",
+          "kind": "header",
+          "reference": "\"application/json; charset=utf-8\"",
+          "candidate": "null"
+        },
+        {
+          "path": "$",
+          "kind": "type",
+          "reference": "object {\"subscription\":{\"tier\":\"free\"}}",
+          "candidate": "null null"
+        }
+      ],
+      "notes": [],
+      "state": "FAIL",
+      "diffsTruncated": false
+    },
+    {
+      "scenario": "profile",
+      "name": "invoices",
+      "op": "authGetInvoices",
+      "frameworkProbe": false,
+      "request": {
+        "method": "GET",
+        "path": "/me/billing/invoices"
+      },
+      "referenceStatus": 200,
+      "candidateStatus": 404,
+      "diffs": [
+        {
+          "path": "status",
+          "kind": "status",
+          "reference": "200",
+          "candidate": "404"
+        },
+        {
+          "path": "header.content-type",
+          "kind": "header",
+          "reference": "\"application/json; charset=utf-8\"",
+          "candidate": "null"
+        },
+        {
+          "path": "$",
+          "kind": "type",
+          "reference": "object {\"invoices\":[]}",
+          "candidate": "null null"
+        }
+      ],
+      "notes": [],
+      "state": "FAIL",
+      "diffsTruncated": false
+    },
+    {
+      "scenario": "profile",
+      "name": "integrations",
+      "op": "authGetIntegrations",
+      "frameworkProbe": false,
+      "request": {
+        "method": "GET",
+        "path": "/me/integrations"
+      },
+      "referenceStatus": 200,
+      "candidateStatus": 404,
+      "diffs": [
+        {
+          "path": "status",
+          "kind": "status",
+          "reference": "200",
+          "candidate": "404"
+        },
+        {
+          "path": "header.content-type",
+          "kind": "header",
+          "reference": "\"application/json; charset=utf-8\"",
+          "candidate": "null"
+        },
+        {
+          "path": "$",
+          "kind": "type",
+          "reference": "object {\"integrations\":[]}",
+          "candidate": "null null"
+        }
+      ],
+      "notes": [],
+      "state": "FAIL",
+      "diffsTruncated": false
+    },
+    {
+      "scenario": "profile",
+      "name": "cancel-pending-email-change-when-none-pending",
+      "op": "authChangeEmailCancel",
+      "frameworkProbe": false,
+      "request": {
+        "method": "DELETE",
+        "path": "/auth/change-email"
+      },
+      "referenceStatus": 204,
+      "candidateStatus": 204,
+      "diffs": [],
+      "notes": [],
+      "state": "PASS",
+      "diffsTruncated": false
+    },
+    {
+      "scenario": "profile",
+      "name": "delete-me-without-password",
+      "op": "authDeleteMe",
+      "frameworkProbe": false,
+      "request": {
+        "method": "DELETE",
+        "path": "/me"
+      },
+      "referenceStatus": 400,
+      "candidateStatus": 404,
+      "diffs": [
+        {
+          "path": "status",
+          "kind": "status",
+          "reference": "400",
+          "candidate": "404"
+        },
+        {
+          "path": "header.content-type",
+          "kind": "header",
+          "reference": "\"application/json; charset=utf-8\"",
+          "candidate": "null"
+        },
+        {
+          "path": "$.error",
+          "kind": "error-envelope",
+          "reference": "error envelope",
+          "candidate": "no error envelope"
+        },
+        {
+          "path": "$",
+          "kind": "type",
+          "reference": "object {\"error\":{\"code\":\"password_required\",\"message\":\"Enter your password to delete your account.\"}}",
+          "candidate": "null null"
+        }
+      ],
+      "notes": [],
+      "state": "FAIL",
+      "diffsTruncated": false
+    },
+    {
+      "scenario": "profile",
+      "name": "delete-me-wrong-password",
+      "op": "authDeleteMe",
+      "frameworkProbe": false,
+      "request": {
+        "method": "DELETE",
+        "path": "/me"
+      },
+      "referenceStatus": 401,
+      "candidateStatus": 404,
+      "diffs": [
+        {
+          "path": "status",
+          "kind": "status",
+          "reference": "401",
+          "candidate": "404"
+        },
+        {
+          "path": "header.content-type",
+          "kind": "header",
+          "reference": "\"application/json; charset=utf-8\"",
+          "candidate": "null"
+        },
+        {
+          "path": "$.error",
+          "kind": "error-envelope",
+          "reference": "error envelope",
+          "candidate": "no error envelope"
+        },
+        {
+          "path": "$",
+          "kind": "type",
+          "reference": "object {\"error\":{\"code\":\"invalid_credentials\",\"message\":\"That password is incorrect.\"}}",
+          "candidate": "null null"
+        }
+      ],
+      "notes": [],
+      "state": "FAIL",
+      "diffsTruncated": false
+    },
+    {
+      "scenario": "profile",
+      "name": "delete-me",
+      "op": "authDeleteMe",
+      "frameworkProbe": false,
+      "request": {
+        "method": "DELETE",
+        "path": "/me"
+      },
+      "referenceStatus": 204,
+      "candidateStatus": 404,
+      "diffs": [
+        {
+          "path": "status",
+          "kind": "status",
+          "reference": "204",
+          "candidate": "404"
+        }
+      ],
+      "notes": [],
+      "state": "FAIL",
+      "diffsTruncated": false
+    },
+    {
+      "scenario": "profile",
+      "name": "me-after-delete",
+      "op": "authMe",
+      "frameworkProbe": false,
+      "request": {
+        "method": "GET",
+        "path": "/auth/me"
+      },
+      "referenceStatus": 404,
+      "candidateStatus": 200,
+      "diffs": [
+        {
+          "path": "status",
+          "kind": "status",
+          "reference": "404",
+          "candidate": "200"
+        },
+        {
+          "path": "$.error",
+          "kind": "error-envelope",
+          "reference": "error envelope",
+          "candidate": "no error envelope"
+        },
+        {
+          "path": "$.error",
+          "kind": "missing-key-on-candidate",
+          "reference": "{\"code\":\"user_not_found\",\"message\":\"Account no longer exists.\"}",
+          "candidate": "(absent)"
+        },
+        {
+          "path": "$.user",
+          "kind": "extra-key-on-candidate",
+          "reference": "(absent)",
+          "candidate": "{\"createdAt\":\"<TS>\",\"email\":\"<EMAIL:1>\",\"hasOnboarded\":false,\"hasPassword\":true,\"id\":\"<ID:1>\",\"imports\":{\"defaultTimeOfDay\":\"09:00\"},\"mic\":{\"quality\":\"standa..."
+        }
+      ],
+      "notes": [
+        "JSON key order differs (informational; object key order is not part of the contract)"
+      ],
+      "state": "FAIL",
+      "diffsTruncated": false
+    }
+  ]
+}
