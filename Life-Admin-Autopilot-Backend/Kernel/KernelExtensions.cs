@@ -61,6 +61,15 @@ public static class KernelExtensions
             .Bind(configuration.GetSection(KernelRateLimitOptions.SectionName));
         services.AddKernelRateLimiters();
 
+        // ---- Server-identity header -------------------------------------------
+        // Node runs `app.disable('x-powered-by')` and Express then sends no
+        // server-identity header at all. Kestrel's `Server: Kestrel` is the same
+        // class of version disclosure and has no counterpart on the reference, so
+        // turn it off. Done here rather than in Program.cs, which slices must not
+        // edit — Kestrel reads this through IOptions at startup.
+        services.Configure<Microsoft.AspNetCore.Server.Kestrel.Core.KestrelServerOptions>(
+            options => options.AddServerHeader = false);
+
         // ---- MVC / JSON ------------------------------------------------------
         services.Configure<JsonOptions>(options => CopyInto(options.JsonSerializerOptions));
         services.Configure<Microsoft.AspNetCore.Http.Json.JsonOptions>(
@@ -92,13 +101,19 @@ public static class KernelExtensions
         //    envelope. It is FIRST because it must also catch CORS/auth failures.
         app.UseMiddleware<KernelErrorMiddleware>();
 
-        // 2. Method-mismatch translation, OUTSIDE CORS so it observes the status after
+        // 2. helmet's twelve default headers, set on the way in so they are already
+        //    present when anything below throws — Express replaces the error BODY,
+        //    never the headers. Immediately inside error handling and ahead of CORS,
+        //    mirroring `app.use(helmet())` preceding `app.use(cors(...))`.
+        app.UseMiddleware<Security.HelmetHeadersMiddleware>();
+
+        // 3. Method-mismatch translation, OUTSIDE CORS so it observes the status after
         //    CORS's post-processing. Express has no 405 — a path that matches a route
         //    under a different method falls through to a 404. See the middleware's own
         //    docs for why it must sit here rather than inside NodeCorsMiddleware.
         app.UseMiddleware<MethodMismatchMiddleware>();
 
-        // 3. CORS before routing — a rejected preflight must never reach an endpoint,
+        // 4. CORS before routing — a rejected preflight must never reach an endpoint,
         //    and an accepted one must be answered even for a path that does not exist.
         app.UseMiddleware<NodeCorsMiddleware>();
 

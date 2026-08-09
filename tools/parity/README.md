@@ -52,9 +52,34 @@ that does not behave like production. Budget the rate limit instead
 
 ### Candidate (.NET) — port 5100
 
-Same shape: isolated database, no AI key, listening on `http://localhost:5100`.
-The harness runs fine before the .NET server exists — every row simply reports
-`UNREACHABLE`.
+Same shape: isolated database, no AI key. The harness runs fine before the .NET
+server exists — every row simply reports `UNREACHABLE`.
+
+```bash
+cd Life-Admin-Autopilot-Backend
+ASPNETCORE_ENVIRONMENT=Production \
+ASPNETCORE_URLS='http://[::]:5100' \
+MongoDbSettings__ConnectionString=mongodb://127.0.0.1:27018 \
+MongoDbSettings__DatabaseName=kitto_parity_dotnet \
+Database__Provider=Sqlite \
+dotnet run --no-build --no-launch-profile
+```
+
+**Bind `[::]`, and dial `localhost` on both sides.** Node's `server.listen(port)`
+binds `::` in dual-stack mode; `ASPNETCORE_URLS=http://127.0.0.1:5100` is an
+IPv4-**only** listener. With that bind the two servers disagree about the peer
+address — Node reports an IPv4 client as `::ffff:127.0.0.1`, an IPv4-only Kestrel
+reports a bare `127.0.0.1` — so every row echoing `req.ip` fails for an environment
+reason rather than a code one. Section 9.3 explains why `ip` is deliberately
+compared literally; this is the bind that makes that comparison honest instead of
+noisy.
+
+Keep the dial host the same on both sides as well. `localhost` and `127.0.0.1`
+resolve to `::1` and `::ffff:127.0.0.1` respectively — both correct, but mixing
+them across the two servers reintroduces the same false failure. `localhost` on
+both is the default the flags already use.
+
+Both `--reference` and `--candidate` should therefore be spelled `http://localhost:PORT`.
 
 ## 3. Run it
 
@@ -369,10 +394,14 @@ accused of being too lenient or too strict.
    JSON there still passes, with a `response body whitespace differs` note. If
    byte-identical export files matter, promote that note to a failure.
 3. **`ip` in session listings is compared literally** (mask off by default).
-   Node reports `::1` for loopback; a Kestrel host could report `127.0.0.1`,
+   Node reports `::1` for loopback; an IPv4-only Kestrel reports `127.0.0.1`,
    which would fail a row for an environment reason rather than a code reason.
-   `--mask-ip` turns it into `<IP>`. Left literal by default because silently
-   masking it would hide a port that stops recording client IPs at all.
+   **That is a bind problem, not a masking problem** — run the candidate on
+   `[::]` and dial `localhost` on both sides (section 2) and the two agree
+   exactly, on both `::1` and `::ffff:127.0.0.1`. `--mask-ip` turns it into
+   `<IP>` if you are stuck on a host that cannot do dual-stack. Left literal by
+   default because silently masking it would hide a port that stops recording
+   client IPs at all.
 4. **`<TS@midnightUTC>`.** A plain `<TS>` for every timestamp would hide a port
    whose quota `resetAt` is not a day boundary. Distinguishing exact UTC
    midnight keeps that property checkable without pinning the date.
