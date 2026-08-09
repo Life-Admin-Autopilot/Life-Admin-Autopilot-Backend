@@ -1,0 +1,3458 @@
+# =============================================================================
+# FROZEN CONTRACT FRAGMENT — Tasks / Clarifications / Digest / Notifications /
+# Reminders domain of the Express + Mongoose reference server.
+#
+# OpenAPI 3.1 fragment. Contains `paths:` and `components.schemas:` only.
+# Every schema name is prefixed `Task` or `Clar` so it cannot collide with the
+# sibling fragments (auth, voice, documents, ...).
+#
+# `security: [{ bearerAuth: [] }]` references a securityScheme that is DEFINED
+# IN THE SIBLING AUTH FRAGMENT (paths.auth.yaml). This file deliberately does
+# not declare components.securitySchemes.
+#
+# SOURCE OF TRUTH
+#   src/routes/me.tasks.ts             (25 operations)
+#   src/routes/me.clarifications.ts    (4 operations)
+#   src/routes/me.digest.ts            (1 operation)
+#   src/routes/me.notifications.ts     (2 operations)
+#   src/routes/me.reminders.ts         (1 operation)
+#   src/modules/tasks/{taskQuery,taskCounts,bulkService,matterLocale,
+#                      dailyDigest,translateQuota,semanticSearch,summarize,
+#                      estimateBacklog}.ts
+#   src/modules/tasks/categorize/{propose,apply,prompt}.ts
+#   src/modules/tasks/translateMatters/{run,prompt}.ts
+#   src/models/{Task,Clarification,Notification,TaskBulkOp,DailyDigest}.ts
+#   src/lib/errors.ts, src/middleware/{auth,errorHandler,rateLimit}.ts
+#
+# 33 operations across 28 path items.
+#
+# EVERY response body in this file was verified against a live reference server
+# (http://localhost:4100, local Mongo, NO Gemini key) unless a `description`
+# explicitly says otherwise.
+#
+# -----------------------------------------------------------------------------
+# GLOBAL INVARIANTS THE .NET PORT MUST REPRODUCE
+# -----------------------------------------------------------------------------
+#
+# 1. ERROR ENVELOPE. Every error is `{"error":{"code","message"}}` with an
+#    OPTIONAL `details` (present only when AppError.details !== undefined).
+#    Produced by src/middleware/errorHandler.ts. No other top-level keys.
+#
+# 2. TWO DIFFERENT 400 SHAPES.
+#    a) Routes that call `schema.safeParse()` throw AppError(400, <own code>,
+#       <own message>, zodError.flatten()) →
+#       details = {formErrors: string[], fieldErrors: {<field>: string[]}}
+#    b) POST /me/notifications/read calls `schema.parse()` — the raw ZodError
+#       escapes to errorHandler, which emits code `validation_error`, message
+#       `Request validation failed`, and
+#       details = [{path: "ids.0", message: "Expected string, received number"}]
+#       This is the ONLY endpoint in this domain with shape (b).
+#
+# 3. MONGOOSE CastError ON AN ObjectId → 404 {"code":"not_found",
+#    "message":"Not found"}. Most routes pre-validate the id with
+#    Types.ObjectId.isValid and emit their own domain 404 first, so this is a
+#    backstop, not the normal path.
+#
+# 4. Task toJSON TRANSFORM (src/models/Task.ts toTaskJSON):
+#      `_id`  -> `id`   (string, dropped from output)
+#      `__v`  -> deleted
+#      `priorityRank` -> ADDED, derived: urgent=3 high=2 normal=1 low=0
+#                        (unknown priority falls back to 1)
+#      `userId` IS included in the payload (as a hex string).
+#      Embedded subtasks get their OWN transform (toIdJSON): `_id`->`id`,
+#      `__v` dropped, and NO priorityRank.
+#      Absent optional fields are OMITTED, never emitted as null.
+#      Key order as emitted by the reference server:
+#        userId, title, domain, kind, status, priority, subtasks, tags,
+#        dueAt, notes, sourceLocale, i18n, estimate, completedAt, snoozedUntil,
+#        reminders, deletedAt, rescheduleCount, createdAt, updatedAt, id,
+#        priorityRank
+#      (JSON object key order is not contractual, but is recorded here because
+#       byte-for-byte diffing of the reference server is the stated goal.)
+#
+# 5. i18n OVERLAY. Only TWO endpoints run presentMatter/presentMatters:
+#      GET /me/tasks   and   GET /me/tasks/{id}
+#    On those two the `i18n` key is ALWAYS stripped from the output (even when
+#    no overlay applies), and when the reader's locale differs from
+#    `sourceLocale` and `i18n[locale]` exists, `title` and `notes` are replaced
+#    by the translated copies.
+#    EVERY OTHER endpoint that returns a task (POST /me/tasks, PATCH
+#    /me/tasks/{id}, the subtask routes, /restore, /trash, bulk `sample`,
+#    search `matches[].task`) returns the RAW toJSON — `i18n` IS PRESENT and no
+#    overlay is applied. Verified live.
+#    KNOWN BUG, PART OF THE FROZEN CONTRACT: subtask text is NEVER translated.
+#    presentMatter looks up `copy.subtasks[String(sub._id)]`, but toJSON has
+#    already renamed `_id` to `id`, so the key is the literal string
+#    "undefined" and the lookup always misses. Verified live: an Arabic subtask
+#    with a matching `i18n.en.subtasks[<subId>]` entry stayed Arabic while the
+#    title and notes were overlaid.
+#    Reader locale = `User.locale` resolved by primary subtag against
+#    ['en','ar'], defaulting to 'en' (src/modules/ai/userLocale.ts).
+#
+# 6. SOFT DELETE. Every read filters `deletedAt: {$exists: false}`. The only
+#    hard delete in the domain is DELETE /me/tasks/trash.
+#
+# 7. LITERAL ROUTE SEGMENTS ARE REGISTERED BEFORE `/me/tasks/:id`. In
+#    src/routes/me.tasks.ts the declaration order is:
+#      GET  /me/tasks/counts            (line 181)
+#      GET  /me/tasks/tags              (line 199)
+#      GET  /me/tasks/categorize/pending(line 473)
+#      GET  /me/tasks/trash             (line 515)
+#      DELETE /me/tasks/trash           (line 528)
+#      POST /me/tasks/:id/restore       (line 541)
+#      GET  /me/tasks/:id               (line 561)   <-- catch-all
+#      ...
+#      DELETE /me/tasks/:id             (line 769)   <-- catch-all
+#      GET  /me/tasks/translate/quota   (line 807)
+#    The router MUST match `counts`, `tags`, `trash` before `:id` for GET, and
+#    `trash` before `:id` for DELETE. `bulk`, `undo`, `search`, `summarize`,
+#    `estimate-backlog`, `categorize`, `translate` are POST-only, so a GET to
+#    them falls through to GET /me/tasks/{id} and, because they are not valid
+#    ObjectIds, returns 404 `task_not_found`. Verified live:
+#      GET /me/tasks/bulk    -> 404 {"code":"task_not_found"}
+#      GET /me/tasks/search  -> 404 {"code":"task_not_found"}
+#      DELETE /me/tasks/counts -> 404 {"code":"task_not_found"}
+#      GET /me/tasks/undo/xyz -> 404 Express HTML "Cannot GET ..." (no route)
+#    `/me/tasks/translate/quota` and `/me/tasks/categorize/pending` are two
+#    segments deep, so they never collide with `/me/tasks/:id`.
+#
+# 8. RATE LIMITERS (src/middleware/rateLimit.ts). Hand-rolled in-memory sliding
+#    window, keyed by `req.auth.sub` (the limiter runs AFTER requireAuth) and
+#    falling back to `req.ip`. Entirely SKIPPED when NODE_ENV === 'test'.
+#      taskSearchLimiter  — windowMs 60000, max 30. Used by /me/tasks/search.
+#      taskSummaryLimiter — windowMs 60000, max 10. ONE SHARED BUCKET across
+#        /me/tasks/summarize, /me/tasks/estimate-backlog, /me/tasks/categorize
+#        and /me/tasks/translate (same middleware instance). Verified live:
+#        10 calls to /summarize then /estimate-backlog, /categorize and
+#        /translate all returned 429.
+#      No other endpoint in this domain is rate limited.
+#    On rejection: `Retry-After` header (integer seconds, >= 1, computed as
+#    ceil((oldestHitInWindow + windowMs - now) / 1000)) and 429
+#    {"error":{"code":"rate_limited","message":"You are going a little fast —
+#    give it a moment and try again."}}  (note the U+2014 em dash).
+#
+# 9. `express.json({limit: '256kb'})`. A larger body produces a raw
+#    express/body-parser error (not the AppError envelope).
+#
+# -----------------------------------------------------------------------------
+# ERROR CODE INVENTORY FOR THIS DOMAIN (status · code · literal message)
+# -----------------------------------------------------------------------------
+# 400 invalid_query          "Invalid task list query."                        GET /me/tasks
+# 400 invalid_query          "Invalid counts query."                           GET /me/tasks/counts
+# 400 invalid_query          "Invalid digest query."                           GET /me/digest
+# 400 invalid_body           "Invalid task payload."                           POST /me/tasks
+# 400 invalid_body           "Invalid task update."                            PATCH /me/tasks/{id}
+# 400 invalid_body           "Invalid subtask payload."                        POST /me/tasks/{id}/subtasks
+# 400 invalid_body           "Invalid subtask update."                         PATCH /me/tasks/{id}/subtasks/{subId}
+# 400 invalid_body           "Invalid bulk request."                           POST /me/tasks/bulk, /bulk/preview
+# 400 invalid_body           "Invalid categorize request."                     POST /me/tasks/categorize
+# 400 invalid_body           "Invalid apply request."                          POST /me/tasks/categorize/{id}/apply
+# 400 invalid_body           "Invalid search request."                         POST /me/tasks/search
+# 400 invalid_body           "Invalid summary range."                          POST /me/tasks/summarize
+# 400 invalid_body           "Invalid backfill request."                       POST /me/tasks/estimate-backlog
+# 400 invalid_body           "Invalid translate request."                      POST /me/tasks/translate
+# 400 invalid_body           "Provide ids or a filter."                        bulkService.resolveTargets (unreachable via HTTP — the zod refine catches it first)
+# 400 invalid_answer         "Invalid answer payload."                         POST /me/clarifications/{id}/resolve
+# 400 invalid_option         "That answer is no longer available."             POST /me/clarifications/{id}/resolve
+# 400 subtask_limit          "This task already has 50 subtasks — remove some before adding more."   POST /me/tasks/{id}/subtasks
+# 400 bulk_too_large         "That matches more than 500 matters. Narrow the range and try again."   POST /me/tasks/bulk, DELETE /me/tasks/{id}
+# 400 no_targets             "Nothing to categorise."                          POST /me/tasks/categorize  (AI-gated; unreachable while unconfigured)
+# 400 categorize_too_many    "Categorising works on up to 80 matters at a time. Select fewer."       POST /me/tasks/categorize (AI-gated)
+# 400 validation_error       "Request validation failed"                       POST /me/notifications/read  (ZodError shape)
+# 401 missing_token          "Missing access token"                            every endpoint
+# 401 invalid_token          "Invalid or expired access token"                 every endpoint
+# 401 unauthorized           "Unauthorized"                                    defensive `if (!req.auth)` in every handler; unreachable behind requireAuth
+# 402 quota_exceeded         "You've hit today's limit of {limit} {kind}s."    AI endpoints (AI-gated; unreachable while unconfigured)
+# 402 translate_quota_exceeded "Your matters have already been translated into this language this month."  POST /me/tasks/translate (AI-gated)
+# 404 task_not_found         "Task no longer exists."                          GET/PATCH/DELETE /me/tasks/{id}, /restore, subtask routes
+# 404 subtask_not_found      "Subtask no longer exists."                       PATCH/DELETE /me/tasks/{id}/subtasks/{subId}
+# 404 undo_not_found         "That change is no longer undoable."              POST /me/tasks/undo/{token}  — malformed token
+# 404 undo_not_found         "That change is no longer undoable — undo is available for 30 days."     POST /me/tasks/undo/{token} — well-formed but unknown
+# 404 proposal_not_found     "That suggestion has expired."                    POST /me/tasks/categorize/{id}/apply, /discard
+# 404 clarification_not_found "That question is no longer here."               POST /me/clarifications/{id}/{resolve,defer,drop}
+# 404 not_found              "Not found"                                       errorHandler CastError backstop
+# 409 categorize_already_open "You already have suggestions waiting. Review those first."             POST /me/tasks/categorize (AI-gated)
+# 429 rate_limited           "You are going a little fast — give it a moment and try again."
+# 500 internal_error         "Internal server error"                           unhandled throw, incl. Mongoose ValidationError (see notes on POST /me/tasks and the subtask routes)
+# 503 ai_not_configured      "Search by description is unavailable."           POST /me/tasks/search
+# 503 ai_not_configured      "Summaries are unavailable right now."            POST /me/tasks/summarize
+# 503 ai_not_configured      "Estimates are unavailable right now."            POST /me/tasks/estimate-backlog
+# 503 ai_not_configured      "Categorising is unavailable right now."          POST /me/tasks/categorize
+# 503 ai_not_configured      "Translating is unavailable right now."           POST /me/tasks/translate
+# 503 ai_not_configured      "Typing your own answer needs AI configured. Pick one of the suggestions instead."
+#                                                                              POST /me/clarifications/{id}/resolve  ({type:'custom'} only)
+# =============================================================================
+
+openapi: 3.1.0
+
+paths:
+
+  # ===========================================================================
+  # /me/tasks
+  # ===========================================================================
+  /me/tasks:
+    get:
+      operationId: taskList
+      summary: List matters
+      tags: [tasks]
+      security:
+        - bearerAuth: []
+      description: |
+        The Matters list. No rate limiter.
+
+        QUERY SCHEMA IS `.strict()`.
+        `ListQuerySchema = TaskFilterSchema.extend({sort, limit, cursor}).strict()`
+        — 17 recognised parameters (14 filters + sort + limit + cursor). ANY other
+        query parameter is a 400 `invalid_query` with
+        `details.formErrors = ["Unrecognized key(s) in object: 'bogus'"]`.
+        Verified live: `GET /me/tasks?bogus=1` -> 400.
+
+        EMPTY-STRING BEHAVIOUR IS PER-PARAMETER (all verified live against
+        `?<param>=`):
+          q                 -> 400 "String must contain at least 1 character(s)"
+          status            -> 400 "must not be empty"
+          domain            -> 400 "must not be empty"
+          priority          -> 400 "must not be empty"
+          kind              -> 400 "must not be empty"
+          tag               -> 200 (empty string passes `z.string().max(400)`;
+                                    splits to zero usable tags, so NO tag filter
+                                    is applied)
+          dueBefore         -> 400 "Invalid datetime"
+          dueAfter          -> 400 "Invalid datetime"
+          createdBefore     -> 400 "Invalid datetime"
+          createdAfter      -> 400 "Invalid datetime"
+          completedBefore   -> 400 "Invalid datetime"
+          completedAfter    -> 400 "Invalid datetime"
+          overdue           -> 400 "Invalid input"
+          undated           -> 400 "Invalid input"
+          untagged          -> 400 "Invalid input"
+          sort              -> 400 "Invalid enum value. Expected 'due-asc' | 'due-desc' | 'created-desc' | 'created-asc' | 'priority-desc' | 'title-asc', received ''"
+                               (the `.default()` only fires when the key is ABSENT)
+          limit             -> 400 "Number must be greater than or equal to 1"
+                               (z.coerce.number() turns "" into 0)
+          cursor            -> 200 (empty string decodes to offset 0)
+
+        OTHER PARSE EDGE CASES (verified live):
+          `?status=open&status=done` (Express yields an array) -> 400
+            fieldErrors.status = ["Expected string, received array"]
+          `?q[a]=1` (Express yields an object) -> 400
+            fieldErrors.q = ["Expected string, received object"]
+          `?limit=abc` -> 400 "Expected number, received nan"
+          `?limit=2.5` -> 400 "Expected integer, received float"
+          `?limit=0`   -> 400 "Number must be greater than or equal to 1"
+          `?limit=201` -> 400 "Number must be less than or equal to 200"
+          `?q=<201 chars>` -> 400 "String must contain at most 200 character(s)"
+          `?cursor=<65 chars>` -> 400 "String must contain at most 64 character(s)"
+          `?status=open,bogus` -> 400
+            fieldErrors.status = ["expected one of open|done|snoozed, got \"bogus\""]
+
+        FILTER SEMANTICS (src/modules/tasks/taskQuery.ts buildTaskFilter):
+          - Base filter is always `{userId, deletedAt: {$exists: false}}`.
+          - `q` becomes a case-insensitive RegExp (input regex-escaped) applied
+            as `$or: [{title: rx}, {notes: rx}]`. Canonical text only — never
+            the i18n copies.
+          - status/domain/priority/kind are `$in` over the CSV members (values
+            are `.trim()`ed, empties dropped).
+          - `tag` is split on commas, each part run through normalizeTag
+            (trim, lowercase, whitespace->'-', strip non `[a-z0-9-]`, collapse
+            runs of '-', trim leading/trailing '-', truncate to 32 chars); the
+            surviving tags become `tags: {$in: [...]}` (OR). If nothing
+            survives, no tag clause is added.
+          - `untagged=true` sets `tags: {$size: 0}` and OVERWRITES any `tag`
+            clause (it is assigned after it).
+          - dueBefore -> `dueAt.$lte`; dueAfter -> `dueAt.$gte`.
+          - `overdue=true` sets `dueAt.$lt = min(dueBefore, now)` (and deletes
+            the `$lte`), and — ONLY when `status` was not supplied — forces
+            `status: {$in: ['open','snoozed']}`.
+          - `undated=true` sets `dueAt: {$exists: false}` and DISCARDS the whole
+            dueBefore/dueAfter/overdue clause.
+          - createdBefore/After -> `createdAt.$lte/$gte`;
+            completedBefore/After -> `completedAt.$lte/$gte`.
+
+        SORTING. Executed as an aggregation with
+        `collation({locale:'en', strength:2})` (case-insensitive, applies to
+        `title-asc`). Two synthetic fields are added then `$unset`:
+          `_dueSort` = `dueAt ?? sentinel` where sentinel is
+            8640000000000000ms (max Date) for every sort EXCEPT `due-desc`,
+            which uses -8640000000000000ms — so undated matters always sort LAST.
+          `_priSort` = 3/2/1/0 for urgent/high/normal/low (default 1).
+        The six sorts map to:
+          due-asc       (DEFAULT) -> {_dueSort: 1, createdAt: -1}
+          due-desc                -> {_dueSort: -1, createdAt: -1}
+          created-desc            -> {createdAt: -1}
+          created-asc             -> {createdAt: 1}
+          priority-desc           -> {_priSort: -1, _dueSort: 1}
+          title-asc               -> {title: 1}
+
+        PAGINATION. `cursor` is an OFFSET encoded as base64url of the decimal
+        offset with NO padding: `Buffer.from(String(offset)).toString('base64url')`.
+        Examples verified live: offset 2 -> "Mg", offset 4 -> "NA".
+        Decoding is forgiving: a value that does not decode to a finite integer
+        >= 0 yields offset 0 (verified live with `?cursor=%%%%` -> page 1, 200).
+        `total` is the count of ALL matching rows (single `$facet`, so header
+        and rows can never disagree). `nextCursor` is
+        `encodeCursor(offset + rows.length)` when `offset + rows.length < total`,
+        otherwise `null`.
+
+        RESPONSE POST-PROCESSING. Each row is `toJSON()`ed then passed through
+        `presentMatters(rows, userLocale)` — i18n overlay applied, `i18n` key
+        stripped. See global invariant 5.
+      parameters:
+        - { $ref: '#/components/parameters/TaskQ' }
+        - { $ref: '#/components/parameters/TaskStatusCsv' }
+        - { $ref: '#/components/parameters/TaskDomainCsv' }
+        - { $ref: '#/components/parameters/TaskPriorityCsv' }
+        - { $ref: '#/components/parameters/TaskKindCsv' }
+        - { $ref: '#/components/parameters/TaskTagCsv' }
+        - { $ref: '#/components/parameters/TaskDueBefore' }
+        - { $ref: '#/components/parameters/TaskDueAfter' }
+        - { $ref: '#/components/parameters/TaskCreatedBefore' }
+        - { $ref: '#/components/parameters/TaskCreatedAfter' }
+        - { $ref: '#/components/parameters/TaskCompletedBefore' }
+        - { $ref: '#/components/parameters/TaskCompletedAfter' }
+        - { $ref: '#/components/parameters/TaskOverdue' }
+        - { $ref: '#/components/parameters/TaskUndated' }
+        - { $ref: '#/components/parameters/TaskUntagged' }
+        - { $ref: '#/components/parameters/TaskSortParam' }
+        - { $ref: '#/components/parameters/TaskLimitParam' }
+        - { $ref: '#/components/parameters/TaskCursorParam' }
+      responses:
+        '200':
+          description: |
+            Verified live (empty account): `{"tasks":[],"total":0,"nextCursor":null}`
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TaskListResponse' }
+        '400':
+          description: '`invalid_query` — unknown parameter, or any field that failed the zod schema.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TaskErrorEnvelope' }
+              examples:
+                unknownKey:
+                  value:
+                    error:
+                      code: invalid_query
+                      message: Invalid task list query.
+                      details:
+                        formErrors: ["Unrecognized key(s) in object: 'bogus'"]
+                        fieldErrors: {}
+        '401': { $ref: '#/components/responses/TaskUnauthorized' }
+        '500': { $ref: '#/components/responses/TaskInternal' }
+
+    post:
+      operationId: taskCreate
+      summary: Create a matter
+      tags: [tasks]
+      security:
+        - bearerAuth: []
+      description: |
+        No rate limiter. Body schema is `.strict()` (`CreateTaskSchema`).
+
+        SERVER-SIDE DERIVATIONS applied at create:
+          - `kind` defaults to `'reminder'` when `dueAt` was supplied, else
+            `'list'`.
+          - `priority` defaults to `'normal'`.
+          - `tags` defaults to `[]`.
+          - `status` is always forced to `'open'` (not accepted from the client).
+          - `title` is `.trim()`ed by zod before storage.
+          - `tags` are normalized (see normalizeTag under GET /me/tasks),
+            de-duplicated in order, empties dropped, and truncated to the first
+            10 survivors. Input array may hold up to 20 entries (MAX_TAGS * 2),
+            each at most 64 chars; over that is a 400.
+            Verified live: `["Car Insurance","car insurance","  ","x!!y"]`
+            -> `["car-insurance","xy"]`.
+          - `estimate` is snapped onto the bucket ladder
+            [5,10,15,30,45,60,90,120,180,240] (nearest bucket; ties go to the
+            LARGER bucket; anything <= 5 becomes 5; anything above 240 becomes
+            240), min/max are re-sorted so max >= min, and `source` is stamped
+            `'user'`. Verified live: `{minMinutes:23,maxMinutes:7}` ->
+            `{minMinutes:5,maxMinutes:30,source:"user"}`.
+          - `sourceLocale` is NOT set by this route (absent in the response).
+
+        KNOWN 500, PART OF THE FROZEN CONTRACT: `{"kind":"reminder"}` with no
+        `dueAt` passes zod but fails the Mongoose `pre('validate')` reminder
+        invariant. The ValidationError is not mapped by errorHandler, so the
+        response is 500 `internal_error`. Verified live.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/TaskCreateRequest' }
+      responses:
+        '201':
+          description: |
+            Verified live:
+            {"task":{"userId":"6a78bb51aa461ae1dc64a031","title":"Renew passport",
+            "domain":"home","kind":"list","status":"open","priority":"normal",
+            "tags":[],"rescheduleCount":0,"subtasks":[],"reminders":[],
+            "createdAt":"2026-08-09T17:42:21.794Z","updatedAt":"2026-08-09T17:42:21.794Z",
+            "id":"6a78bbfdaa461ae1dc64a10e","priorityRank":1}}
+            RAW toJSON — no i18n overlay, `i18n` NOT stripped.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TaskEnvelope' }
+        '400':
+          description: '`invalid_body` / "Invalid task payload."'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TaskErrorEnvelope' }
+        '401': { $ref: '#/components/responses/TaskUnauthorized' }
+        '500':
+          description: |
+            `internal_error`. Reachable deterministically with
+            `{"title":"x","domain":"home","kind":"reminder"}` (reminder without
+            dueAt → Mongoose ValidationError). Verified live.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TaskErrorEnvelope' }
+
+  # ===========================================================================
+  /me/tasks/counts:
+    get:
+      operationId: taskCounts
+      summary: Bucket counts for the Matters header and dashboard
+      tags: [tasks]
+      security:
+        - bearerAuth: []
+      description: |
+        No rate limiter. Query schema `z.object({tz: z.string().max(64).optional()}).strict()`.
+        Unknown parameter -> 400 `invalid_query` / "Invalid counts query."
+        Verified live.
+
+        `tz` is an IANA zone used for local-day boundaries. It is NOT validated
+        here beyond its length; an unparsable zone makes `zoneOffsetMinutes`
+        fall back to offset 0 (UTC).
+
+        Boundary definitions (src/modules/tasks/taskQuery.dayBoundaries):
+          todayStart = local midnight, expressed as a UTC instant
+          tomorrowStart = todayStart + 1d
+          dayAfterTomorrowStart = todayStart + 2d
+          weekEnd = todayStart + 7d   ("this week" is the next 7 days, NOT the
+                                       calendar week)
+
+        Bucket definitions. `live` means
+        `{userId, deletedAt:{$exists:false}, status:{$in:['open','snoozed']}}`:
+          overdue        live && dueAt <  now
+          today          live && now <= dueAt < tomorrowStart   (NOTE: lower
+                         bound is `now`, not todayStart — earlier-today items
+                         are counted as `overdue`, not `today`)
+          tomorrow       live && tomorrowStart <= dueAt < dayAfterTomorrowStart
+          thisWeek       live && dayAfterTomorrowStart <= dueAt < weekEnd
+          later          live && dueAt >= weekEnd
+          undated        live && dueAt missing
+          open           {userId, not deleted, status:'open'}
+          done           {userId, not deleted, status:'done'}
+          trashed        {userId, deletedAt:{$exists:true}}  (separate query)
+          slipping       live && (rescheduleCount >= 3 || dueAt < todayStart-14d)
+          completedToday {userId, status:'done',
+                          todayStart <= completedAt < tomorrowStart}
+                         (the facet re-states userId but inherits the outer
+                          `$match: {userId, deletedAt:{$exists:false}}`, so
+                          soft-deleted rows are excluded here too)
+          needsInput     Clarification.countDocuments({userId, status:'open',
+                          $or:[{deferredUntil missing},{deferredUntil <= now}]})
+          scansAwaitingReview  ScannedDocument.countDocuments({userId,
+                          status:'ready_for_review', reviewedAt missing})
+          byDomain / byPriority  `$group` over `live`; keys with a falsy _id are
+                         dropped, and buckets with zero rows are ABSENT from
+                         the object (it is not pre-seeded with all six domains
+                         / four priorities).
+
+        Verified live:
+        {"counts":{"overdue":0,"today":0,"tomorrow":0,"thisWeek":0,"later":0,
+        "undated":2,"open":2,"done":0,"trashed":0,"slipping":0,
+        "completedToday":0,"needsInput":0,"scansAwaitingReview":0,
+        "byDomain":{"home":1,"car":1},"byPriority":{"urgent":1,"normal":1}}}
+      parameters:
+        - name: tz
+          in: query
+          required: false
+          schema: { type: string, maxLength: 64 }
+          description: IANA timezone, e.g. `Africa/Cairo`. Max 64 chars.
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TaskCountsResponse' }
+          description: Bucket counts.
+        '400':
+          description: '`invalid_query` / "Invalid counts query."'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TaskErrorEnvelope' }
+        '401': { $ref: '#/components/responses/TaskUnauthorized' }
+        '500': { $ref: '#/components/responses/TaskInternal' }
+
+  # ===========================================================================
+  /me/tasks/tags:
+    get:
+      operationId: taskTags
+      summary: Distinct tag vocabulary
+      tags: [tasks]
+      security:
+        - bearerAuth: []
+      description: |
+        No rate limiter, no query parameters (any supplied are IGNORED — there
+        is no schema on this route). `Task.distinct('tags', {userId, deletedAt:
+        {$exists:false}})` then `.sort()` — default JavaScript lexicographic
+        (UTF-16 code-unit) ordering, ASCENDING. Unbounded: every distinct tag
+        the user has on a live matter.
+        Verified live: `{"tags":["car-insurance","xy"]}`
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TaskTagsResponse' }
+          description: All distinct tags on live matters, lexicographically sorted.
+        '401': { $ref: '#/components/responses/TaskUnauthorized' }
+        '500': { $ref: '#/components/responses/TaskInternal' }
+
+  # ===========================================================================
+  /me/tasks/search:
+    post:
+      operationId: taskSearch
+      summary: Natural-language search over matters (AI-backed)
+      tags: [tasks, ai]
+      security:
+        - bearerAuth: []
+      description: |
+        RATE LIMITER: `taskSearchLimiter` — sliding window 60000 ms, max 30 per
+        user. Own bucket (not shared with the summary limiter).
+
+        ORDER OF CHECKS (matters for parity):
+          1. requireAuth
+          2. rate limiter
+          3. `SearchSchema.safeParse(req.body)` -> 400 `invalid_body`
+          4. `isAiConfigured()` -> 503 `ai_not_configured`
+          5. `admitWithinQuota({tier:'free', kind:'message'})` -> 402
+             `quota_exceeded`
+          6. `searchMatters(...)`; on throw the quota slot is refunded and the
+             error propagates.
+        Because validation runs BEFORE the AI gate, a malformed body returns 400
+        even on a server with no AI key. Verified live: `{"query":""}` -> 400.
+
+        CURRENT PARITY TARGET ON THIS SERVER: 503 `ai_not_configured` with
+        message "Search by description is unavailable." Verified live.
+
+        SUCCESS SHAPE (for the later AI-enabled milestone; NOT verifiable here):
+        `{answer, truncated, matches: [{task, reason}]}`. `matches[].task` is a
+        RAW `toJSON()` — no i18n overlay and `i18n` IS present. The candidate
+        pool is capped at 300 live matters (`SEARCH_POOL_CAP`); `truncated` is
+        true when more than 300 matched the pre-filter. If the model produces
+        no usable output the service falls back to a deterministic substring
+        search and still returns 200.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/TaskSearchRequest' }
+      responses:
+        '200':
+          description: AI-enabled only. Never returned by the current parity server.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TaskSearchResponse' }
+        '400':
+          description: '`invalid_body` / "Invalid search request."'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TaskErrorEnvelope' }
+        '401': { $ref: '#/components/responses/TaskUnauthorized' }
+        '402':
+          description: '`quota_exceeded` — daily AI message allowance spent. Unreachable while AI is unconfigured.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TaskErrorEnvelope' }
+        '429': { $ref: '#/components/responses/TaskRateLimited' }
+        '503':
+          description: |
+            CURRENT PARITY TARGET. Verified live:
+            {"error":{"code":"ai_not_configured","message":"Search by description is unavailable."}}
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TaskErrorEnvelope' }
+              example:
+                error:
+                  code: ai_not_configured
+                  message: Search by description is unavailable.
+        '500': { $ref: '#/components/responses/TaskInternal' }
+
+  # ===========================================================================
+  /me/tasks/summarize:
+    post:
+      operationId: taskSummarize
+      summary: Range summary (AI-backed)
+      tags: [tasks, ai]
+      security:
+        - bearerAuth: []
+      description: |
+        RATE LIMITER: `taskSummaryLimiter` — sliding window 60000 ms, max 10 per
+        user, SHARED with /me/tasks/estimate-backlog, /me/tasks/categorize and
+        /me/tasks/translate.
+
+        ORDER OF CHECKS — DIFFERENT FROM /search: the AI gate runs BEFORE body
+        validation here.
+          1. requireAuth  2. rate limiter  3. `isAiConfigured()` -> 503
+          4. `SummarizeSchema.safeParse` -> 400  5. quota  6. work
+        Consequence, verified live: `POST {"from":"bad"}` on this server returns
+        503, NOT 400.
+
+        Body schema is `.strict()` plus `.refine(v => v.to > v.from)` (message
+        "to must be after from"; a failing refine surfaces in
+        `details.formErrors`).
+
+        CURRENT PARITY TARGET: 503 `ai_not_configured` /
+        "Summaries are unavailable right now." Verified live.
+
+        SUCCESS SHAPE (AI-enabled only): `{summary: TaskSummary}` — every number
+        in it is computed in code; the model only writes `headline`, theme
+        labels and the optional `question`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/TaskSummarizeRequest' }
+      responses:
+        '200':
+          description: AI-enabled only.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TaskSummaryResponse' }
+        '400':
+          description: '`invalid_body` / "Invalid summary range." Unreachable while AI is unconfigured (503 fires first).'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TaskErrorEnvelope' }
+        '401': { $ref: '#/components/responses/TaskUnauthorized' }
+        '402':
+          description: '`quota_exceeded`. Unreachable while AI is unconfigured.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TaskErrorEnvelope' }
+        '429': { $ref: '#/components/responses/TaskRateLimited' }
+        '503':
+          description: |
+            CURRENT PARITY TARGET. Verified live:
+            {"error":{"code":"ai_not_configured","message":"Summaries are unavailable right now."}}
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TaskErrorEnvelope' }
+        '500': { $ref: '#/components/responses/TaskInternal' }
+
+  # ===========================================================================
+  /me/tasks/estimate-backlog:
+    post:
+      operationId: taskEstimateBacklog
+      summary: Backfill time estimates on un-estimated matters (AI-backed)
+      tags: [tasks, ai]
+      security:
+        - bearerAuth: []
+      description: |
+        RATE LIMITER: `taskSummaryLimiter` (60000 ms / 10, SHARED — see
+        /me/tasks/summarize).
+
+        The body is optional: the handler parses `req.body ?? {}`, so an absent
+        or empty body is valid. Schema is `.strict()`.
+
+        ORDER: validate (400) BEFORE the AI gate (503). Verified live:
+        `{"limit":99}` -> 400 "Number must be less than or equal to 40".
+
+        CURRENT PARITY TARGET: 503 `ai_not_configured` /
+        "Estimates are unavailable right now." Verified live.
+
+        SUCCESS SHAPE (AI-enabled only): `{estimated: <int>, remaining: <int>}`.
+        The service NEVER throws on a model failure — it returns
+        `estimated: 0` and the caller refunds the quota slot. Selection is
+        `{userId, status: {$ne: 'done'}, estimate: {$exists: false}, not
+        deleted}` sorted `{dueAt: 1, createdAt: -1}`, capped at
+        `limit` (clamped into 1..40, default 40).
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/TaskEstimateBacklogRequest' }
+      responses:
+        '200':
+          description: AI-enabled only.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TaskEstimateBacklogResponse' }
+        '400':
+          description: '`invalid_body` / "Invalid backfill request." Verified live with `{"limit":99}`.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TaskErrorEnvelope' }
+        '401': { $ref: '#/components/responses/TaskUnauthorized' }
+        '402':
+          description: '`quota_exceeded`. Unreachable while AI is unconfigured.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TaskErrorEnvelope' }
+        '429': { $ref: '#/components/responses/TaskRateLimited' }
+        '503':
+          description: |
+            CURRENT PARITY TARGET. Verified live:
+            {"error":{"code":"ai_not_configured","message":"Estimates are unavailable right now."}}
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TaskErrorEnvelope' }
+        '500': { $ref: '#/components/responses/TaskInternal' }
+
+  # ===========================================================================
+  /me/tasks/bulk/preview:
+    post:
+      operationId: taskBulkPreview
+      summary: Dry-run a bulk operation
+      tags: [tasks, bulk]
+      security:
+        - bearerAuth: []
+      description: |
+        No rate limiter. Body = `z.intersection(BulkTargetSchema, BulkActionSchema)`.
+        Neither half is `.strict()`, so UNKNOWN KEYS ARE ACCEPTED AND STRIPPED
+        (this is how `label` rides along on POST /me/tasks/bulk).
+
+        Target: exactly ONE of `ids` or `filter`
+        (`.refine(v => Boolean(v.ids) !== Boolean(v.filter))`; failing it
+        produces `details.formErrors = ["provide exactly one of ids or filter"]`).
+        Verified live for both "neither" and "both".
+
+        PREVIEW WRITES NOTHING and does NOT enforce the 500 cap — it is the
+        endpoint that TELLS you about it. `resolveTargets` for a filter runs
+        `.limit(501)`, so `count` saturates at 501 and
+        `warnings.truncated = count > 500`.
+        Verified live with 501 matching matters:
+        `{"count":501,"warnings":{"fromDocuments":0,"remindersFired":0,"truncated":true},"sample":[... 50 items ...]}`
+
+        `sample` is the FIRST 50 resolved tasks as RAW `toJSON()` — i18n present,
+        no overlay (verified live).
+
+        Warnings:
+          fromDocuments  = number of resolved tasks with a `sourceDocumentId`
+          remindersFired = number with at least one `reminders[].firedAt` set
+          truncated      = resolved.length > 500
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/TaskBulkRequest' }
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TaskBulkPreviewResponse' }
+          description: Resolved count, ripple warnings, and up to 50 sample matters.
+        '400':
+          description: '`invalid_body` / "Invalid bulk request."'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TaskErrorEnvelope' }
+              examples:
+                bothTargets:
+                  value:
+                    error:
+                      code: invalid_body
+                      message: Invalid bulk request.
+                      details:
+                        formErrors: ['provide exactly one of ids or filter']
+                        fieldErrors: {}
+                badAction:
+                  value:
+                    error:
+                      code: invalid_body
+                      message: Invalid bulk request.
+                      details:
+                        formErrors: []
+                        fieldErrors:
+                          action: ["Invalid discriminator value. Expected 'delete' | 'complete' | 'snooze' | 'setDomain' | 'addTags'"]
+        '401': { $ref: '#/components/responses/TaskUnauthorized' }
+        '500': { $ref: '#/components/responses/TaskInternal' }
+
+  # ===========================================================================
+  /me/tasks/bulk:
+    post:
+      operationId: taskBulkApply
+      summary: Apply a bulk operation
+      tags: [tasks, bulk]
+      security:
+        - bearerAuth: []
+      description: |
+        No rate limiter. Same body as /me/tasks/bulk/preview, PLUS an optional
+        top-level `label` read directly off `req.body` (NOT part of the zod
+        schema): `typeof req.body?.label === 'string' ? req.body.label.slice(0,240) : undefined`.
+        The label is stored on the TaskBulkOp and never returned by this route.
+
+        THE 500-TARGET CAP. `applyBulk` resolves targets (filter path
+        `.limit(501)`), computes warnings, and if `warnings.truncated` throws
+        400 `bulk_too_large` with the literal message
+        "That matches more than 500 matters. Narrow the range and try again."
+        Verified live against 501 matching matters.
+        An explicit `ids` array is additionally capped by zod at 500 entries
+        (`"Array must contain at most 500 element(s)"`) and requires at least 1
+        (`"Array must contain at least 1 element(s)"`). Both verified live.
+
+        PER-ACTION EFFECT and the recorded undo patch (`prior` -> `next`):
+          delete    prior {deletedAt: null}                    next {deletedAt: now}
+                    (`null` in `prior` means "$unset on undo")
+          complete  SKIPPED when status already 'done'.
+                    prior {status, completedAt: <old|null>}    next {status:'done', completedAt: now}
+          snooze    never skipped.
+                    prior {status, snoozedUntil: <old|null>}   next {status:'snoozed', snoozedUntil: new Date(until)}
+          setDomain SKIPPED when the domain already matches.
+                    prior {domain}                             next {domain}
+          addTags   tags normalized, unioned with existing, truncated to 10.
+                    SKIPPED when nothing new would be added.
+                    prior {tags: [...old]}                     next {tags: merged}
+
+        Skipped tasks are NOT recorded, so `affected` counts only real changes.
+        When `affected === 0` NO TaskBulkOp is written and `undoToken` is
+        `null`. Verified live: re-running `complete` over the same set returned
+        `{"affected":0,"undoToken":null,"warnings":{...}}`.
+
+        The TaskBulkOp is written BEFORE the `Task.bulkWrite`, so a partial
+        failure is still fully undoable. `undoToken` is the op's `_id` as a hex
+        string. TTL 30 days (`expiresAt`, Mongo TTL index).
+
+        SIDE EFFECT ON `delete`: `dropClarificationsForTasks` marks every OPEN
+        clarification whose `taskId` is in the affected set as `dropped` with a
+        `resolvedAt`. THIS IS NOT REVERSED BY UNDO — see POST /me/tasks/undo/{token}.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/TaskBulkApplyRequest' }
+      responses:
+        '200':
+          description: |
+            Verified live:
+            `{"affected":5,"undoToken":"6a78bc60aa461ae1dc64a205","warnings":{"fromDocuments":0,"remindersFired":0,"truncated":false}}`
+            and the no-op case
+            `{"affected":0,"undoToken":null,"warnings":{"fromDocuments":0,"remindersFired":0,"truncated":false}}`
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TaskBulkResult' }
+        '400':
+          description: '`invalid_body` / "Invalid bulk request." or `bulk_too_large`.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TaskErrorEnvelope' }
+              examples:
+                tooLarge:
+                  value:
+                    error:
+                      code: bulk_too_large
+                      message: That matches more than 500 matters. Narrow the range and try again.
+        '401': { $ref: '#/components/responses/TaskUnauthorized' }
+        '500': { $ref: '#/components/responses/TaskInternal' }
+
+  # ===========================================================================
+  /me/tasks/undo/{token}:
+    post:
+      operationId: taskUndo
+      summary: Reverse a bulk operation
+      tags: [tasks, bulk]
+      security:
+        - bearerAuth: []
+      description: |
+        No rate limiter, no request body (any body is ignored).
+
+        `token` is the TaskBulkOp `_id`. A token that is not a valid ObjectId
+        yields 404 `undo_not_found` with the SHORT message; a well-formed but
+        unknown/other-user token yields 404 `undo_not_found` with the LONG
+        message. Both verified live — the two messages are different strings and
+        must be reproduced exactly:
+          malformed : "That change is no longer undoable."
+          not found : "That change is no longer undoable — undo is available for 30 days."
+        (em dash U+2014; the "30" is `BULK_OP_TTL_DAYS`.)
+
+        IDEMPOTENT: if the op's status is not `applied` (already `undone`,
+        `proposed` or `discarded`), the response is `{"restored":0}` with 200 —
+        never an error. Verified live (second undo returned `{"restored":0}`).
+
+        On success `entries[].prior` is replayed through the same
+        `$set`/`$unset` split used to apply it (`null` -> `$unset`), the op is
+        flipped to `undone` with an `undoneAt`, and `restored` is
+        `op.entries.length` — the number of RECORDED entries, which may exceed
+        the number of documents actually modified if some were hard-deleted in
+        the meantime.
+
+        UNDO DOES NOT UN-DROP CLARIFICATIONS. Verified live end-to-end: created
+        a task with an open clarification, `DELETE /me/tasks/{id}` (the
+        clarification flipped to `dropped` with a `resolvedAt`), then
+        `POST /me/tasks/undo/{token}` -> `{"restored":1}`; the task came back
+        out of the trash but `GET /me/clarifications` still did not list it and
+        the row remained `status: "dropped"`.
+
+        This route also undoes an APPLIED categorize op (same record type).
+        Verified live.
+      parameters:
+        - name: token
+          in: path
+          required: true
+          schema: { type: string }
+          description: TaskBulkOp id (24-char hex). Anything else -> 404 with the short message.
+      responses:
+        '200':
+          description: '`{"restored": <int>}`. Verified live: 5, then 0 on a repeat.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TaskUndoResponse' }
+        '401': { $ref: '#/components/responses/TaskUnauthorized' }
+        '404':
+          description: '`undo_not_found` — two distinct messages, see the operation description.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TaskErrorEnvelope' }
+              examples:
+                malformedToken:
+                  value:
+                    error: { code: undo_not_found, message: That change is no longer undoable. }
+                unknownToken:
+                  value:
+                    error:
+                      code: undo_not_found
+                      message: "That change is no longer undoable — undo is available for 30 days."
+        '500': { $ref: '#/components/responses/TaskInternal' }
+
+  # ===========================================================================
+  /me/tasks/categorize:
+    post:
+      operationId: taskCategorizePropose
+      summary: Propose a refiling of matters (AI-backed, writes nothing)
+      tags: [tasks, ai, bulk]
+      security:
+        - bearerAuth: []
+      description: |
+        RATE LIMITER: `taskSummaryLimiter` (60000 ms / 10, SHARED).
+
+        Body is `BulkTargetSchema` ONLY (no `action`), parsed from
+        `req.body ?? {}` so an absent body is allowed but then fails the
+        exactly-one-of refine.
+
+        ORDER OF CHECKS:
+          1. requireAuth  2. rate limiter
+          3. `BulkTargetSchema.safeParse` -> 400 `invalid_body` /
+             "Invalid categorize request."  (verified live with `{}`)
+          4. `isAiConfigured()` -> 503 `ai_not_configured` /
+             "Categorising is unavailable right now."  (verified live)
+          5. `getPendingProposal` -> 409 `categorize_already_open` /
+             "You already have suggestions waiting. Review those first."
+             with `details: {opId: "<hex>"}`
+          6. quota -> 402  7. `proposeCategorization`
+
+        Because the 503 is step 4 and the 409 is step 5, THE 409 IS UNREACHABLE
+        ON THE CURRENT PARITY SERVER. Confirmed live: with a `proposed`
+        TaskBulkOp seeded in the database, the request still answered with the
+        AI gate (and, once the shared bucket was exhausted, 429).
+
+        SUCCESS SHAPE (AI-enabled only): `{opId, changes[], unchanged}`.
+        Selection cap is 80 (`MAX_CATEGORIZE_TARGETS`) — over it, 400
+        `categorize_too_many`; zero targets -> 400 `no_targets` /
+        "Nothing to categorise.". When the model proposes no change at all the
+        response is `{"opId":"","changes":[],"unchanged":<n>}` (empty-string
+        opId, no op record written, quota refunded).
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/TaskBulkTarget' }
+      responses:
+        '200':
+          description: AI-enabled only.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TaskProposalResult' }
+        '400':
+          description: '`invalid_body` / "Invalid categorize request.", or (AI-enabled) `no_targets` / `categorize_too_many`.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TaskErrorEnvelope' }
+        '401': { $ref: '#/components/responses/TaskUnauthorized' }
+        '402':
+          description: '`quota_exceeded`. Unreachable while AI is unconfigured.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TaskErrorEnvelope' }
+        '409':
+          description: |
+            `categorize_already_open` with `details.opId`. Unreachable while AI
+            is unconfigured (the 503 check precedes it).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TaskErrorEnvelope' }
+              example:
+                error:
+                  code: categorize_already_open
+                  message: You already have suggestions waiting. Review those first.
+                  details: { opId: 6a78bd99deffe32875b01e66 }
+        '429': { $ref: '#/components/responses/TaskRateLimited' }
+        '503':
+          description: |
+            CURRENT PARITY TARGET. Verified live:
+            {"error":{"code":"ai_not_configured","message":"Categorising is unavailable right now."}}
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TaskErrorEnvelope' }
+        '500': { $ref: '#/components/responses/TaskInternal' }
+
+  # ===========================================================================
+  /me/tasks/categorize/pending:
+    get:
+      operationId: taskCategorizePending
+      summary: The user's one open categorize proposal
+      tags: [tasks, bulk]
+      security:
+        - bearerAuth: []
+      description: |
+        No rate limiter, no AI gate, no query schema. Reads
+        `TaskBulkOp.findOne({userId, kind:'categorize', status:'proposed'})`.
+
+        `null` when there is none — verified live: `{"proposal":null}`.
+
+        When one exists, titles are joined back from the live Task collection
+        (entries whose task has since been deleted/trashed are DROPPED from
+        `changes`), `toDomain` falls back to the task's current domain when the
+        entry has no `next.domain`, `addedTags` is
+        `next.tags - task.tags`, `confidence` defaults to `'low'` and `reason`
+        defaults to `''`.
+        Verified live against a seeded proposal:
+        {"proposal":{"opId":"6a78bd99deffe32875b01e66","changes":[{"taskId":"...",
+        "title":"Renew passport","fromDomain":"family","toDomain":"finance",
+        "addedTags":["passport"],"confidence":"high","reason":"It is a travel document"}],
+        "createdAt":"2026-08-09T17:49:13.742Z"}}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TaskCategorizePendingResponse' }
+          description: The open proposal, or null.
+        '401': { $ref: '#/components/responses/TaskUnauthorized' }
+        '500': { $ref: '#/components/responses/TaskInternal' }
+
+  # ===========================================================================
+  /me/tasks/categorize/{id}/apply:
+    post:
+      operationId: taskCategorizeApply
+      summary: Commit the accepted subset of a proposal
+      tags: [tasks, bulk]
+      security:
+        - bearerAuth: []
+      description: |
+        No rate limiter, no AI gate — this route is fully usable on the parity
+        server. Body parsed from `req.body ?? {}`; schema is `.strict()`:
+        `{taskIds: string[]}` where every entry must be a valid ObjectId and the
+        array holds at most 80 entries. `taskIds` is REQUIRED (there is no
+        `.optional()`), but may be an empty array.
+        Verified live: 81 entries -> 400 `invalid_body` /
+        `fieldErrors.taskIds = ["Array must contain at most 80 element(s)"]`.
+
+        An `id` that is not a valid ObjectId, or an op that is not
+        `{userId, kind:'categorize', status:'proposed'}`, yields 404
+        `proposal_not_found` / "That suggestion has expired." Verified live for
+        both `zzz` and a well-formed-but-unknown id.
+
+        EMPTY ACCEPTED SET: the op is flipped to `discarded` and the response is
+        `{"applied":0,"undoToken":null}` with 200. Verified live.
+
+        NON-EMPTY: `entries` is NARROWED to the accepted ids (so undo can never
+        touch a rejected row), status becomes `applied`, `appliedAt` is stamped,
+        and the writes run with `{ordered: false}` re-asserting the not-deleted
+        filter. Response `{"applied":<kept>, "undoToken":"<opId>"}` — the undo
+        token IS the proposal id. Verified live: `{"applied":1,"undoToken":"6a78bdb08601b7b1a8a6eaf1"}`
+        followed by `POST /me/tasks/undo/<that id>` -> `{"restored":1}`.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+          description: The proposal (TaskBulkOp) id.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/TaskCategorizeApplyRequest' }
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TaskCategorizeApplyResponse' }
+          description: Number applied and the undo token (null when nothing was kept).
+        '400':
+          description: '`invalid_body` / "Invalid apply request."'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TaskErrorEnvelope' }
+        '401': { $ref: '#/components/responses/TaskUnauthorized' }
+        '404':
+          description: '`proposal_not_found` / "That suggestion has expired."'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TaskErrorEnvelope' }
+        '500': { $ref: '#/components/responses/TaskInternal' }
+
+  # ===========================================================================
+  /me/tasks/categorize/{id}/discard:
+    post:
+      operationId: taskCategorizeDiscard
+      summary: Throw away an open proposal
+      tags: [tasks, bulk]
+      security:
+        - bearerAuth: []
+      description: |
+        No rate limiter, no AI gate, no request body. Flips the op to
+        `discarded`. Responds `204 No Content` with an EMPTY body
+        (`res.status(204).end()`). Verified live.
+        Same 404 `proposal_not_found` rules as /apply.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '204':
+          description: Discarded. Empty body, no Content-Type. Verified live.
+        '401': { $ref: '#/components/responses/TaskUnauthorized' }
+        '404':
+          description: '`proposal_not_found` / "That suggestion has expired." Verified live.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TaskErrorEnvelope' }
+        '500': { $ref: '#/components/responses/TaskInternal' }
+
+  # ===========================================================================
+  /me/tasks/trash:
+    get:
+      operationId: taskTrashList
+      summary: Soft-deleted matters
+      tags: [tasks]
+      security:
+        - bearerAuth: []
+      description: |
+        No rate limiter, no query schema (parameters are ignored). Registered
+        BEFORE `GET /me/tasks/:id`, so the literal segment wins.
+        `Task.find({userId, deletedAt: {$exists: true}}).sort({deletedAt: -1}).limit(200)`
+        — newest-deleted first, hard cap 200, NO pagination and NO total.
+        Rows are RAW `toJSON()` (i18n present, no overlay) and DO carry
+        `deletedAt`. Verified live.
+      responses:
+        '200':
+          description: '`{"tasks":[...]}`. Verified live (empty: `{"tasks":[]}`).'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TaskTrashResponse' }
+        '401': { $ref: '#/components/responses/TaskUnauthorized' }
+        '500': { $ref: '#/components/responses/TaskInternal' }
+
+    delete:
+      operationId: taskTrashPurge
+      summary: Empty the trash (IRREVERSIBLE hard delete)
+      tags: [tasks]
+      security:
+        - bearerAuth: []
+      description: |
+        No rate limiter, no body, no confirmation parameter. Registered BEFORE
+        `DELETE /me/tasks/:id`.
+        `Task.deleteMany({userId, deletedAt: {$exists: true}})` — the only hard
+        delete in the domain. Related TaskBulkOp records and Clarifications are
+        NOT touched, so an undo token pointing at a purged task will report
+        `restored: n` while restoring nothing.
+        Response `{"purged": <deletedCount ?? 0>}`. Verified live: `{"purged":0}`.
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TaskPurgeResponse' }
+          description: Number of documents permanently removed.
+        '401': { $ref: '#/components/responses/TaskUnauthorized' }
+        '500': { $ref: '#/components/responses/TaskInternal' }
+
+  # ===========================================================================
+  /me/tasks/translate/quota:
+    get:
+      operationId: taskTranslateQuota
+      summary: Backlog-translation allowance and selection sizes
+      tags: [tasks, ai]
+      security:
+        - bearerAuth: []
+      description: |
+        No rate limiter, NO AI gate — this endpoint works on the parity server.
+
+        `locale` query parameter is NOT schema-validated. It is passed through
+        `resolveAiLocale`: the primary subtag is lowercased and matched against
+        ['en','ar']; anything else (including absent) becomes `'en'`. So there
+        is NO 400 from this route. Verified live: no parameter -> `locale:"en"`;
+        `?locale=ar` -> `locale:"ar"`.
+
+        `quota.limit` is always 1 (`TRANSLATE_RUNS_PER_MONTH`, all tiers).
+        `resetAt` is midnight UTC on the 1st of the following month, derived
+        from the `YYYY-MM` UTC bucket.
+
+        `counts` are `countTranslatable` for the three presets against the SAME
+        locale — live (`status in [open, snoozed]`, not deleted) matters whose
+        resolved source locale differs from the target and which have no
+        `i18n[target]` copy yet:
+          thisWeek  = dueAt <= now + 7 days
+          thisMonth = dueAt <= now + 1 month (UTC month arithmetic)
+          all       = no date bound
+        `max` is the constant 150 (`MAX_TRANSLATE_TARGETS`).
+
+        Verified live:
+        {"quota":{"locale":"ar","limit":1,"used":0,"remaining":1,
+        "resetAt":"2026-09-01T00:00:00.000Z"},
+        "counts":{"thisWeek":0,"thisMonth":0,"all":7},"max":150}
+      parameters:
+        - name: locale
+          in: query
+          required: false
+          schema: { type: string }
+          description: |
+            Target locale. Unvalidated; resolved to `en` or `ar`, defaulting to
+            `en`. Never produces a 400.
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TaskTranslateQuotaResponse' }
+          description: Quota status, per-preset counts, and the per-run cap.
+        '401': { $ref: '#/components/responses/TaskUnauthorized' }
+        '500': { $ref: '#/components/responses/TaskInternal' }
+
+  # ===========================================================================
+  /me/tasks/translate:
+    post:
+      operationId: taskTranslate
+      summary: One-off sweep translating the backlog (AI-backed)
+      tags: [tasks, ai]
+      security:
+        - bearerAuth: []
+      description: |
+        RATE LIMITER: `taskSummaryLimiter` (60000 ms / 10, SHARED).
+
+        Body parsed from `req.body ?? {}`. Schema is NOT `.strict()` — unknown
+        keys are accepted and stripped.
+          locale  REQUIRED, enum ['en','ar']
+          ids     optional, string[] (NOT validated as ObjectIds), max 150
+          preset  optional, enum ['thisWeek','thisMonth','all']
+        If both `ids` and `preset` are omitted the selection filter matches
+        every live matter with no date bound and no id bound.
+
+        ORDER: validate (400) BEFORE the AI gate (503) BEFORE
+        `admitTranslateRun` (402). Verified live: `{"locale":"fr"}` -> 400
+        `invalid_body` with
+        `fieldErrors.locale = ["Invalid enum value. Expected 'en' | 'ar', received 'fr'"]`.
+
+        CURRENT PARITY TARGET: 503 `ai_not_configured` /
+        "Translating is unavailable right now." Verified live.
+
+        QUOTA (AI-enabled only): one run per (user, target locale, UTC month).
+        The month is CLAIMED BEFORE the run. It is handed back ONLY when the run
+        threw, or when `translated === 0`. It is NEVER refunded on undo. When
+        already spent: 402 `translate_quota_exceeded` /
+        "Your matters have already been translated into this language this month."
+        with `details: {locale, limit: 1, used: 1, resetAt}`.
+
+        SUCCESS SHAPE (AI-enabled only):
+        `{translated: <int>, skipped: <int>, failed: <int>}`.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/TaskTranslateRequest' }
+      responses:
+        '200':
+          description: AI-enabled only.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TaskTranslateResponse' }
+        '400':
+          description: '`invalid_body` / "Invalid translate request." Verified live.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TaskErrorEnvelope' }
+        '401': { $ref: '#/components/responses/TaskUnauthorized' }
+        '402':
+          description: '`translate_quota_exceeded`. Unreachable while AI is unconfigured.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TaskErrorEnvelope' }
+        '429': { $ref: '#/components/responses/TaskRateLimited' }
+        '503':
+          description: |
+            CURRENT PARITY TARGET. Verified live:
+            {"error":{"code":"ai_not_configured","message":"Translating is unavailable right now."}}
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TaskErrorEnvelope' }
+        '500': { $ref: '#/components/responses/TaskInternal' }
+
+  # ===========================================================================
+  /me/tasks/{id}/restore:
+    post:
+      operationId: taskRestore
+      summary: Bring a matter back out of the trash
+      tags: [tasks]
+      security:
+        - bearerAuth: []
+      description: |
+        No rate limiter, no body. `findOneAndUpdate({_id, userId, deletedAt:
+        {$exists: true}}, {$unset: {deletedAt: 1}}, {new: true})`.
+        A malformed id, an id that is not in the trash, or another user's id all
+        yield 404 `task_not_found` / "Task no longer exists." Verified live
+        (restoring twice: second call 404).
+        Returns the RAW `toJSON()` of the restored task (i18n present, no
+        overlay). Verified live.
+        Does NOT touch the TaskBulkOp that recorded the delete, and does NOT
+        un-drop clarifications.
+      parameters:
+        - { $ref: '#/components/parameters/TaskIdPath' }
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TaskEnvelope' }
+          description: The restored matter, raw toJSON.
+        '401': { $ref: '#/components/responses/TaskUnauthorized' }
+        '404': { $ref: '#/components/responses/TaskNotFound' }
+        '500': { $ref: '#/components/responses/TaskInternal' }
+
+  # ===========================================================================
+  /me/tasks/{id}:
+    get:
+      operationId: taskGet
+      summary: One matter
+      tags: [tasks]
+      security:
+        - bearerAuth: []
+      description: |
+        No rate limiter. `Task.findOne({_id, userId, deletedAt:{$exists:false}})`.
+        Malformed id, unknown id, other user's id, or a soft-deleted task all
+        yield 404 `task_not_found` / "Task no longer exists." (verified live for
+        all four).
+        THIS IS ONE OF THE TWO ENDPOINTS THAT APPLY THE i18n OVERLAY
+        (`presentMatter`) and strip `i18n`. Verified live: an `ar`-source matter
+        with an `i18n.en` copy came back with the English title and notes, the
+        Arabic SUBTASK TEXT UNCHANGED (see global invariant 5), `sourceLocale`
+        still present, and no `i18n` key.
+      parameters:
+        - { $ref: '#/components/parameters/TaskIdPath' }
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TaskEnvelope' }
+          description: The matter, with the i18n overlay applied and `i18n` stripped.
+        '401': { $ref: '#/components/responses/TaskUnauthorized' }
+        '404': { $ref: '#/components/responses/TaskNotFound' }
+        '500': { $ref: '#/components/responses/TaskInternal' }
+
+    patch:
+      operationId: taskUpdate
+      summary: Partial update of a matter
+      tags: [tasks]
+      security:
+        - bearerAuth: []
+      description: |
+        No rate limiter. Body schema `UpdateTaskSchema` is `.strict()`; every
+        field is optional and SIX of them are explicitly nullable.
+
+        NULL-VS-OMITTED SEMANTICS (the core of this route, all verified live):
+          - A key present with `null` -> `$unset` (the field is CLEARED and
+            disappears from the response).
+              Nullable keys: `dueAt`, `notes`, `estimate`, `snoozedUntil`.
+          - A key present with a value -> `$set`.
+          - A key OMITTED -> untouched.
+          - `title`, `domain`, `status`, `priority`, `tags` are NOT nullable;
+            sending `null` is a 400.
+          - An EMPTY body `{}` is valid: it produces `findOneAndUpdate(filter,
+            {})`, which still bumps `updatedAt` and returns the task with 200.
+            Verified live.
+
+        COMPLETION STAMP: when `status === 'done'` the server sets
+        `completedAt = new Date()`. When `status` is present and is ANYTHING
+        ELSE ('open' or 'snoozed'), `completedAt` is `$unset`. When `status` is
+        omitted, `completedAt` is left alone. Verified live in both directions.
+
+        rescheduleCount: `$inc` by 1 ONLY when the parsed `dueAt` is a Date AND
+        the existing document already had a `dueAt` AND the new value is
+        STRICTLY LATER (`nextDue > existing.dueAt`). Verified live:
+          later    -> rescheduleCount 0 -> 1
+          earlier  -> unchanged
+          identical-> unchanged
+        Pulling a date onto a previously-undated task does NOT increment (there
+        is no `existing.dueAt`), and `dueAt: null` never increments.
+
+        Tag normalization is identical to POST /me/tasks (normalize, dedupe,
+        cap at 10). `estimate` is snapped to the bucket ladder and stamped
+        `source: 'user'`.
+
+        THE ROUTE USES `findOneAndUpdate`, SO MONGOOSE DOCUMENT VALIDATORS DO
+        NOT RUN. Consequence, verified live and part of the frozen contract:
+        `PATCH {"dueAt": null}` on a `kind: "reminder"` task SUCCEEDS and leaves
+        a reminder with no dueAt — a state the create path rejects with a 500.
+        Any later `save()`-based route on that document (the three subtask
+        routes) then fails with 500 `internal_error`. Verified live.
+
+        Response is the RAW `toJSON()` of the updated document (`{new: true}`):
+        i18n present, NO overlay. Verified live.
+
+        A malformed id or an unknown/deleted/other-user id -> 404
+        `task_not_found`.
+      parameters:
+        - { $ref: '#/components/parameters/TaskIdPath' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/TaskUpdateRequest' }
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TaskEnvelope' }
+          description: The updated matter, raw toJSON.
+        '400':
+          description: '`invalid_body` / "Invalid task update."'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TaskErrorEnvelope' }
+        '401': { $ref: '#/components/responses/TaskUnauthorized' }
+        '404': { $ref: '#/components/responses/TaskNotFound' }
+        '500': { $ref: '#/components/responses/TaskInternal' }
+
+    delete:
+      operationId: taskSoftDelete
+      summary: Soft-delete a matter (returns an undo token)
+      tags: [tasks]
+      security:
+        - bearerAuth: []
+      description: |
+        No rate limiter, no body. Routed through the SAME bulk service as a
+        range delete: `applyBulk(userId, {ids: [id]}, {action: 'delete'})`, so a
+        single swipe-delete produces exactly one TaskBulkOp and therefore the
+        same one-tap undo.
+
+        Response is ONLY `{"undoToken": "<opId>"}` — the deleted task is NOT
+        echoed. Verified live: `{"undoToken":"6a78bc71aa461ae1dc64a227"}`.
+
+        When `applyBulk` reports `affected === 0` (unknown id, already deleted,
+        other user) the route throws 404 `task_not_found` / "Task no longer
+        exists." — so a second DELETE of the same id is a 404, not a 200.
+        Verified live. A malformed id short-circuits to the same 404.
+
+        SIDE EFFECT: every OPEN clarification pointing at this task is flipped
+        to `dropped` with a `resolvedAt`. Verified live. This is NOT reversed by
+        `POST /me/tasks/undo/{token}`.
+
+        `bulk_too_large` cannot fire here (a single id), but the code path is
+        shared.
+      parameters:
+        - { $ref: '#/components/parameters/TaskIdPath' }
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TaskDeleteResponse' }
+          description: '`{"undoToken": "<TaskBulkOp id>"}` — nothing else.'
+        '401': { $ref: '#/components/responses/TaskUnauthorized' }
+        '404': { $ref: '#/components/responses/TaskNotFound' }
+        '500': { $ref: '#/components/responses/TaskInternal' }
+
+  # ===========================================================================
+  /me/tasks/{id}/subtasks:
+    post:
+      operationId: taskSubtaskAdd
+      summary: Add a subtask
+      tags: [tasks, subtasks]
+      security:
+        - bearerAuth: []
+      description: |
+        No rate limiter. Body `.strict()`: `{text: string}` — trimmed, min 1,
+        max 240 (`MAX_SUBTASK_TEXT`). Verified live that the trim is applied
+        before storage.
+
+        Cap: 50 subtasks (`MAX_SUBTASKS`). At the cap the response is 400
+        `subtask_limit` with the literal message
+        "This task already has 50 subtasks — remove some before adding more."
+        (em dash U+2014).
+
+        RETURNS THE WHOLE PARENT TASK, not the subtask: `{"task": {...}}` with
+        HTTP 201. RAW `toJSON()` — i18n present, no overlay. Each subtask in the
+        array carries `text`, `done`, `createdAt` and `id` (its own `_id`
+        renamed). Verified live.
+
+        Implemented with `doc.save()`, so the whole document is REVALIDATED.
+        A task in the invalid `kind: 'reminder'` + no-`dueAt` state (reachable
+        via `PATCH {"dueAt": null}`) makes this route return 500
+        `internal_error`. Verified live.
+      parameters:
+        - { $ref: '#/components/parameters/TaskIdPath' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/TaskSubtaskCreateRequest' }
+      responses:
+        '201':
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TaskEnvelope' }
+          description: The WHOLE parent task, raw toJSON. Verified live.
+        '400':
+          description: '`invalid_body` / "Invalid subtask payload." or `subtask_limit`.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TaskErrorEnvelope' }
+        '401': { $ref: '#/components/responses/TaskUnauthorized' }
+        '404': { $ref: '#/components/responses/TaskNotFound' }
+        '500':
+          description: '`internal_error` — includes the reminder-without-dueAt revalidation failure. Verified live.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TaskErrorEnvelope' }
+
+  # ===========================================================================
+  /me/tasks/{id}/subtasks/{subId}:
+    patch:
+      operationId: taskSubtaskUpdate
+      summary: Update a subtask
+      tags: [tasks, subtasks]
+      security:
+        - bearerAuth: []
+      description: |
+        No rate limiter. Body `.strict()` with
+        `.refine(v => v.text !== undefined || v.done !== undefined)` — an empty
+        `{}` is 400 `invalid_body` / "Invalid subtask update." with
+        `details.formErrors = ["must include text or done"]`. Verified live.
+
+        Either path parameter failing `Types.ObjectId.isValid` -> 404
+        `task_not_found` (NOT `subtask_not_found`). A valid `subId` that is not
+        in the array -> 404 `subtask_not_found` / "Subtask no longer exists."
+        Verified live.
+
+        RETURNS THE WHOLE PARENT TASK with HTTP 200, RAW `toJSON()`.
+        Uses `doc.save()` — same revalidation caveat as POST subtasks.
+      parameters:
+        - { $ref: '#/components/parameters/TaskIdPath' }
+        - { $ref: '#/components/parameters/TaskSubIdPath' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/TaskSubtaskUpdateRequest' }
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TaskEnvelope' }
+          description: The WHOLE parent task, raw toJSON.
+        '400':
+          description: '`invalid_body` / "Invalid subtask update."'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TaskErrorEnvelope' }
+        '401': { $ref: '#/components/responses/TaskUnauthorized' }
+        '404':
+          description: '`task_not_found` or `subtask_not_found`.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TaskErrorEnvelope' }
+        '500': { $ref: '#/components/responses/TaskInternal' }
+
+    delete:
+      operationId: taskSubtaskDelete
+      summary: Remove a subtask
+      tags: [tasks, subtasks]
+      security:
+        - bearerAuth: []
+      description: |
+        No rate limiter, no body. Filters the subtask out by id; if the array
+        length did not change -> 404 `subtask_not_found` / "Subtask no longer
+        exists." Verified live (deleting the same subtask twice).
+        RETURNS THE WHOLE PARENT TASK with HTTP 200, RAW `toJSON()`.
+        Uses `doc.save()` — same revalidation caveat as POST subtasks.
+      parameters:
+        - { $ref: '#/components/parameters/TaskIdPath' }
+        - { $ref: '#/components/parameters/TaskSubIdPath' }
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TaskEnvelope' }
+          description: The WHOLE parent task, raw toJSON.
+        '401': { $ref: '#/components/responses/TaskUnauthorized' }
+        '404':
+          description: '`task_not_found` or `subtask_not_found`.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TaskErrorEnvelope' }
+        '500': { $ref: '#/components/responses/TaskInternal' }
+
+  # ===========================================================================
+  # /me/clarifications
+  # ===========================================================================
+  /me/clarifications:
+    get:
+      operationId: clarList
+      summary: Open questions awaiting an answer
+      tags: [clarifications]
+      security:
+        - bearerAuth: []
+      description: |
+        No rate limiter. The ONLY query parameter read is `before`; there is NO
+        schema, so unknown parameters are silently ignored (no 400 possible).
+
+        `before` is `new Date(req.query.before)` when it is a string. An
+        unparsable value (NaN) is IGNORED and the first page is returned —
+        verified live with `?before=garbage` -> 200, full first page.
+        When usable it becomes `createdAt: {$lt: before}`.
+
+        Filter is `{userId, status: 'open', $or: [{deferredUntil missing},
+        {deferredUntil <= now}]}` (`visibleOpen()`), sorted `{createdAt: -1}`,
+        fetched with `limit(51)`.
+        `hasMore = docs.length > 50`; the page is the first 50;
+        `nextCursor = hasMore ? page[49].createdAt.toISOString() : null`.
+
+        Item shape is the Clarification `toJSON`: `_id` -> `id`, `__v` dropped,
+        and `sourceKey` DELETED (internal idempotency key, never sent).
+        Embedded `draft` and `options[]` have `_id: false`, so they carry no id.
+        Verified live against seeded rows.
+      parameters:
+        - name: before
+          in: query
+          required: false
+          schema: { type: string }
+          description: |
+            ISO-8601 createdAt of the last item seen. Unparsable values are
+            ignored rather than rejected.
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ClarListResponse' }
+          description: 'Verified live (empty): `{"clarifications":[],"hasMore":false,"nextCursor":null}`'
+        '401': { $ref: '#/components/responses/TaskUnauthorized' }
+        '500': { $ref: '#/components/responses/TaskInternal' }
+
+  /me/clarifications/{id}/resolve:
+    post:
+      operationId: clarResolve
+      summary: Answer a held question
+      tags: [clarifications, ai]
+      security:
+        - bearerAuth: []
+      description: |
+        No rate limiter. The `{type:'option'}` branch is FULLY DETERMINISTIC and
+        works on the parity server; the `{type:'custom'}` branch is AI-backed
+        and returns 503 there.
+
+        ORDER OF CHECKS (verified live):
+          1. requireAuth
+          2. `Types.ObjectId.isValid(id)` -> 404 `clarification_not_found` /
+             "That question is no longer here."
+          3. `findOne({_id, userId})` -> same 404 when missing
+          4. IDEMPOTENCY: if `doc.status !== 'open'`, respond 200 with
+             `{clarification: <current doc>, task: null}` WITHOUT parsing the
+             body. Verified live — resolving twice returns the resolved doc and
+             `task: null`.
+          5. `ResolveBodySchema.safeParse(req.body ?? {})` -> 400
+             `invalid_answer` / "Invalid answer payload."
+          6. Load the linked Task (`doc.taskId`, not deleted). IF IT IS GONE the
+             question is moot: the clarification is closed out as `dropped` with
+             a `resolvedAt` and the response is 200
+             `{clarification, task: null}`. Verified live.
+          7a. OPTION branch: `doc.options[index]`; a missing index -> 400
+             `invalid_option` / "That answer is no longer available." Verified
+             live. The option's `title`/`notes` and
+             `(option.dueAt ?? draft.dueAt).toISOString()` become the patch.
+          7b. CUSTOM branch: `isAiConfigured()` -> 503 `ai_not_configured` /
+             "Typing your own answer needs AI configured. Pick one of the
+             suggestions instead." Verified live. AI-enabled, it interprets the
+             free text into title/domain/priority/notes/dueAt.
+          8. The patch is applied through `runTool('updateTask')`; when the
+             patch carries a `dueAt` the task is ALSO forced to
+             `kind: 'reminder'` (a confirmed date turns a withheld reminder into
+             a real one). Verified live: the returned task came back with
+             `kind:"reminder"` and a generated `reminders[]` entry.
+          9. The clarification is closed out `{status:'resolved', answer:
+             <option.label | custom text>, resolvedAt}`.
+         10. For the custom branch only, one AI message is recorded against the
+             daily quota on a best-effort basis (never gated, never a 402).
+
+        RESPONSE ECHOES THE IN-MEMORY DOCUMENT. `closeOut` does an atomic
+        `updateOne` then `doc.set(patch)`, so the echoed `updatedAt` is the
+        PRE-UPDATE value. Verified live: `deferredUntil`/`answer`/`resolvedAt`
+        changed while `updatedAt` stayed at its original value.
+
+        The returned `task` is `runTool`'s result — a RAW task object, no i18n
+        overlay.
+      parameters:
+        - { $ref: '#/components/parameters/ClarIdPath' }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ClarResolveRequest' }
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ClarResolveResponse' }
+          description: |
+            `{clarification, task}`. `task` is null when the question was
+            already closed or its task had been deleted.
+        '400':
+          description: '`invalid_answer` / "Invalid answer payload." or `invalid_option` / "That answer is no longer available." Both verified live.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TaskErrorEnvelope' }
+        '401': { $ref: '#/components/responses/TaskUnauthorized' }
+        '404': { $ref: '#/components/responses/ClarNotFound' }
+        '503':
+          description: |
+            `{type:'custom'}` only. CURRENT PARITY TARGET. Verified live:
+            {"error":{"code":"ai_not_configured","message":"Typing your own answer needs AI configured. Pick one of the suggestions instead."}}
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TaskErrorEnvelope' }
+        '500': { $ref: '#/components/responses/TaskInternal' }
+
+  /me/clarifications/{id}/defer:
+    post:
+      operationId: clarDefer
+      summary: Skip a question for 7 days
+      tags: [clarifications]
+      security:
+        - bearerAuth: []
+      description: |
+        No rate limiter, no body. Sets `deferredUntil = now + 7 days`
+        (`DEFER_MS = 7 * 24 * 60 * 60 * 1000`) ONLY when the current status is
+        `open`; otherwise it is a pure read. Status is NOT changed — the row
+        stays `open` and simply drops out of `visibleOpen()` until the date
+        passes. Verified live.
+        Always 200 with `{clarification: <echoed in-memory doc>}` (stale
+        `updatedAt`, see /resolve).
+      parameters:
+        - { $ref: '#/components/parameters/ClarIdPath' }
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ClarEnvelope' }
+          description: The clarification with `deferredUntil` set.
+        '401': { $ref: '#/components/responses/TaskUnauthorized' }
+        '404': { $ref: '#/components/responses/ClarNotFound' }
+        '500': { $ref: '#/components/responses/TaskInternal' }
+
+  /me/clarifications/{id}/drop:
+    post:
+      operationId: clarDrop
+      summary: Discard a question without creating anything
+      tags: [clarifications]
+      security:
+        - bearerAuth: []
+      description: |
+        No rate limiter, no body. Sets `{status: 'dropped', resolvedAt: now}`
+        ONLY when the current status is `open`; otherwise a pure read.
+        Always 200 with `{clarification: ...}`. Verified live.
+      parameters:
+        - { $ref: '#/components/parameters/ClarIdPath' }
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ClarEnvelope' }
+          description: The dropped clarification.
+        '401': { $ref: '#/components/responses/TaskUnauthorized' }
+        '404': { $ref: '#/components/responses/ClarNotFound' }
+        '500': { $ref: '#/components/responses/TaskInternal' }
+
+  # ===========================================================================
+  # /me/digest
+  # ===========================================================================
+  /me/digest:
+    get:
+      operationId: taskDigest
+      summary: The dashboard's daily digest
+      tags: [digest]
+      security:
+        - bearerAuth: []
+      description: |
+        No rate limiter. Query schema
+        `z.object({tz: z.string().max(64).optional()}).strict()` — unknown
+        parameter -> 400 `invalid_query` / "Invalid digest query." Verified live.
+
+        WORKS WITHOUT AI. This endpoint is deliberately NOT gated on
+        `isAiConfigured()`. The counts are code-computed and the headline is
+        code-generated; the model, when configured, only upgrades the headline
+        and theme labels asynchronously AFTER the response has been sent.
+        Verified live on a server with no AI key: 200 with a complete payload
+        and a computed headline.
+
+        An INVALID `tz` does not fail the request: `safeTimezone` catches the
+        Intl error, logs a warning, and falls back to UTC. Verified live with
+        `?tz=Not/AZone` -> 200.
+
+        CACHING is transparent to the client. One row per (userId, localDate)
+        keyed by a sha256 fingerprint of
+        `localDate | locale | <tasks n:maxUpdatedAt> | <clarifications n:maxUpdatedAt> | <scans n:maxUpdatedAt>`.
+        A hit is served verbatim; a miss recomputes, returns immediately with
+        the NEUTRAL headline, and refreshes the prose in the background.
+        OBSERVABLE CONSEQUENCE: `generatedAt` is the instant the digest was
+        COMPUTED, not the instant of this request, and it can be older than
+        "now" on a cache hit. Verified live — three successive calls returned
+        the identical `generatedAt`.
+
+        NEUTRAL HEADLINE (exact algorithm, first match wins; `plural(n, one,
+        many)` renders `"<n> <one|many>"`):
+          dueToday > 0        -> "<n> matter[s] due today."
+          completedToday > 0  -> "Nothing due today. <n> matter[s] closed."
+          needsInput > 0      -> "Nothing due today. <n> question is|questions are waiting on you."
+          openTotal === 0     -> "Nothing on today."
+          otherwise           -> "Nothing due today."
+        Verified live: "Nothing due today." on an empty day and
+        "2 matters due today." with two matters due.
+
+        COUNTS (`live` = not deleted && status in [open, snoozed]):
+          dueToday       live && todayStart <= dueAt < tomorrowStart
+                         (NOTE: unlike /me/tasks/counts `today`, the lower bound
+                          here is todayStart, not `now`)
+          completedToday {userId, status:'done', todayStart <= completedAt < tomorrowStart}
+          openTotal      {userId, status:'open'} — the facet inherits the outer
+                         `$match: {userId, deletedAt:{$exists:false}}`, so
+                         trashed matters are excluded. NOTE this is every OPEN
+                         matter ever, not a today-scoped number, and it does NOT
+                         include `snoozed` ones.
+          slipping       live && (rescheduleCount >= 3 || dueAt < todayStart - 14d)
+          needsInput     visibleOpen clarifications, counted from the fingerprint
+          scansAwaitingReview  ScannedDocument {status:'ready_for_review'} —
+                         NOTE: unlike /me/tasks/counts this does NOT filter on
+                         `reviewedAt`, so the digest can report MORE than the
+                         counts endpoint
+
+        estimatedMinutesToday: summed over at most 200 rows due today
+        (`MAX_TODAY_ROWS`); a matter with no usable estimate contributes 0, and
+        `max` is clamped to `>= min` per row. Verified live: two 15-30 minute
+        matters -> `{"min":30,"max":60}`.
+
+        busiestDay: heaviest day in [todayStart, todayStart+7d) grouped by
+        `$dateToString` in the caller's zone (UTC when absent/invalid), sorted
+        `{n: -1, _id: 1}` so ties break on the earlier date, `$limit: 1`.
+        `null` when nothing is due in the window.
+
+        duplicates: pool is every live matter with `dueAt < weekEnd` (overdue
+        included), sorted `{dueAt: 1}`, capped at 120. Titles are binned on
+        `trim().toLowerCase().replace(/\s+/g,' ')`; bins of size > 1 are sorted
+        by size descending, the top 5 are kept, and each reports the FIRST
+        member's original title, the count and every task id.
+        Verified live with two "Call the vet" matters.
+
+        themes: ALWAYS `[]` on a server with no AI key — the labels are the only
+        model-written part and there is no carried-forward row to inherit from.
+        Verified live.
+      parameters:
+        - name: tz
+          in: query
+          required: false
+          schema: { type: string, maxLength: 64 }
+          description: IANA timezone. Invalid values fall back to UTC (no error).
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TaskDigestResponse' }
+          description: |
+            Verified live:
+            {"digest":{"localDate":"2026-08-09","generatedAt":"2026-08-09T17:49:57.451Z",
+            "headline":"2 matters due today.","counts":{"dueToday":2,"completedToday":0,
+            "openTotal":512,"slipping":0,"needsInput":2,"scansAwaitingReview":0},
+            "estimatedMinutesToday":{"min":30,"max":60},"themes":[],
+            "busiestDay":{"date":"2026-08-09","count":2},
+            "duplicates":[{"title":"Call the vet","count":2,"taskIds":["...","..."]}]}}
+        '400':
+          description: '`invalid_query` / "Invalid digest query." Verified live.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TaskErrorEnvelope' }
+        '401': { $ref: '#/components/responses/TaskUnauthorized' }
+        '500': { $ref: '#/components/responses/TaskInternal' }
+
+  # ===========================================================================
+  # /me/notifications
+  # ===========================================================================
+  /me/notifications:
+    get:
+      operationId: taskNotificationsList
+      summary: In-app notification feed and unread count
+      tags: [notifications]
+      security:
+        - bearerAuth: []
+      description: |
+        No rate limiter, no query schema (parameters ignored, no pagination).
+        `Notification.find({userId}).sort({createdAt: -1}).limit(50)` plus
+        `countDocuments({userId, readAt: null})`.
+        NOTE `readAt: null` matches documents where the field is absent OR
+        explicitly null (Mongo null-equality), which is what makes the unread
+        count work on rows that never set it.
+        Items are the Notification `toJSON`: `_id` -> `id`, `__v` dropped.
+        Verified live with a seeded row.
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TaskNotificationsResponse' }
+          description: |
+            Verified live:
+            {"notifications":[{"userId":"...","kind":"reminder","title":"Passport due",
+            "body":"tomorrow","taskId":"...","createdAt":"...","updatedAt":"...",
+            "id":"..."}],"unreadCount":1}
+        '401': { $ref: '#/components/responses/TaskUnauthorized' }
+        '500': { $ref: '#/components/responses/TaskInternal' }
+
+  /me/notifications/read:
+    post:
+      operationId: taskNotificationsMarkRead
+      summary: Mark notifications read
+      tags: [notifications]
+      security:
+        - bearerAuth: []
+      description: |
+        No rate limiter. Body parsed from `req.body ?? {}` with
+        `z.object({ids: z.array(z.string()).max(100).optional()})`.
+
+        THIS IS THE ONE ENDPOINT IN THE DOMAIN THAT USES `.parse()` INSTEAD OF
+        `.safeParse()`. A schema failure therefore escapes as a raw ZodError and
+        is rendered by errorHandler in the OTHER 400 shape:
+        `{"error":{"code":"validation_error","message":"Request validation
+        failed","details":[{"path":"ids.0","message":"Expected string, received
+        number"}]}}` — `details` is an ARRAY here, not the
+        formErrors/fieldErrors object. Verified live with `{"ids":[1,2]}`.
+
+        The schema is NOT `.strict()`: unknown keys are accepted and ignored
+        (verified live with `{"zz":1}` -> 200).
+
+        Behaviour: `{userId, readAt: null}` is the base filter; when `ids` is a
+        NON-EMPTY array it is narrowed by `_id: {$in: ids.filter(isValidObjectId)}`
+        (invalid ids are silently dropped, which can make the `$in` empty and
+        the update a no-op). An omitted or EMPTY `ids` array marks ALL unread
+        notifications read. Sets `readAt = new Date()`.
+        Response is `{"ok": true, "unreadCount": <recount>}`. Verified live.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/TaskNotificationsReadRequest' }
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TaskNotificationsReadResponse' }
+          description: '`{"ok":true,"unreadCount":0}`. Verified live.'
+        '400':
+          description: |
+            `validation_error` / "Request validation failed" — the ZodError
+            envelope, NOT the `invalid_body` envelope. Verified live.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TaskZodErrorEnvelope' }
+        '401': { $ref: '#/components/responses/TaskUnauthorized' }
+        '500': { $ref: '#/components/responses/TaskInternal' }
+
+  # ===========================================================================
+  # /me/reminders
+  # ===========================================================================
+  /me/reminders/upcoming:
+    get:
+      operationId: taskRemindersUpcoming
+      summary: Reminders the device should schedule locally
+      tags: [reminders]
+      security:
+        - bearerAuth: []
+      description: |
+        No rate limiter, no query schema (parameters ignored).
+
+        Horizon 30 days (`HORIZON_DAYS`), cap 60 entries (`MAX_REMINDERS`,
+        applied TWICE: as a `.limit(60)` on the task query and again as a
+        `.slice(0, 60)` on the flattened list).
+
+        Task filter: `{userId, not deleted, status: {$in: ['open','snoozed']},
+        reminders: {$elemMatch: {firedAt: null, at: {$gt: now, $lte: horizon}}}}`,
+        sorted `{dueAt: 1}`. The per-entry filter is re-applied after
+        flattening (`!r.firedAt && r.at > now && r.at <= horizon`), so a task
+        that qualified on one reminder does not leak its other reminders.
+
+        Final ordering is `a.at.localeCompare(b.at)` over the ISO strings —
+        i.e. ascending by time, ACROSS tasks, replacing the `dueAt` sort.
+
+        `id` is deterministic: `` `${taskId}:${reminder.at.getTime()}` `` (epoch
+        milliseconds), so a re-sync replaces the same OS notification instead of
+        stacking duplicates. `dueAt` is the PARENT TASK's dueAt, or `null`.
+        Verified live with two seeded reminders.
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TaskUpcomingRemindersResponse' }
+          description: |
+            Verified live:
+            {"reminders":[{"id":"6a78bbfdaa461ae1dc64a10e:1786556848864",
+            "taskId":"6a78bbfdaa461ae1dc64a10e","title":"Renew passport",
+            "at":"2026-08-12T17:47:28.864Z","kind":"lead",
+            "dueAt":"2026-09-14T09:00:00.000Z"}, ...]}
+        '401': { $ref: '#/components/responses/TaskUnauthorized' }
+        '500': { $ref: '#/components/responses/TaskInternal' }
+
+# =============================================================================
+components:
+
+  # ---------------------------------------------------------------------------
+  parameters:
+
+    TaskIdPath:
+      name: id
+      in: path
+      required: true
+      schema: { type: string }
+      description: |
+        Task id. Validated with `Types.ObjectId.isValid` before any query; a
+        malformed value yields 404 `task_not_found`, never a 400.
+
+    TaskSubIdPath:
+      name: subId
+      in: path
+      required: true
+      schema: { type: string }
+      description: |
+        Subtask id. A malformed value yields 404 `task_not_found` (not
+        `subtask_not_found`); a well-formed but absent one yields
+        `subtask_not_found`.
+
+    ClarIdPath:
+      name: id
+      in: path
+      required: true
+      schema: { type: string }
+      description: Clarification id. Malformed -> 404 `clarification_not_found`.
+
+    TaskQ:
+      name: q
+      in: query
+      required: false
+      schema: { type: string, minLength: 1, maxLength: 200 }
+      description: |
+        Free text over `title` and `notes` (case-insensitive, regex-escaped,
+        canonical text only). Trimmed by zod before the length check.
+        Empty string -> 400.
+
+    TaskStatusCsv:
+      name: status
+      in: query
+      required: false
+      schema:
+        type: string
+        pattern: '^(open|done|snoozed)(,(open|done|snoozed))*$'
+      description: |
+        Comma-separated subset of `open,done,snoozed`. Parts are trimmed and
+        empty parts dropped. An unknown member fails the WHOLE request with
+        `expected one of open|done|snoozed, got "<part>"`. Zero surviving parts
+        -> "must not be empty".
+
+    TaskDomainCsv:
+      name: domain
+      in: query
+      required: false
+      schema:
+        type: string
+        pattern: '^(health|home|car|finance|family|pets)(,(health|home|car|finance|family|pets))*$'
+      description: Comma-separated subset of `health,home,car,finance,family,pets`. Same CSV rules as `status`.
+
+    TaskPriorityCsv:
+      name: priority
+      in: query
+      required: false
+      schema:
+        type: string
+        pattern: '^(low|normal|high|urgent)(,(low|normal|high|urgent))*$'
+      description: Comma-separated subset of `low,normal,high,urgent`. Same CSV rules as `status`.
+
+    TaskKindCsv:
+      name: kind
+      in: query
+      required: false
+      schema:
+        type: string
+        pattern: '^(reminder|list)(,(reminder|list))*$'
+      description: Comma-separated subset of `reminder,list`. Same CSV rules as `status`.
+
+    TaskTagCsv:
+      name: tag
+      in: query
+      required: false
+      schema: { type: string, maxLength: 400 }
+      description: |
+        Comma-separated raw tags, OR-ed. Each part is normalized (lowercase,
+        whitespace->'-', strip non `[a-z0-9-]`, collapse '-', trim '-', cap 32
+        chars); parts that normalize to nothing are dropped. If NOTHING
+        survives, no tag filter is applied and the request still succeeds — an
+        empty string is a 200, not a 400.
+
+    TaskDueBefore:
+      name: dueBefore
+      in: query
+      required: false
+      schema: { type: string, format: date-time }
+      description: '`dueAt <= value`. Must satisfy zod `.datetime()` (ISO-8601 with a timezone); `2026-09-01` alone is a 400 "Invalid datetime".'
+
+    TaskDueAfter:
+      name: dueAfter
+      in: query
+      required: false
+      schema: { type: string, format: date-time }
+      description: '`dueAt >= value`. Same ISO-8601 requirement.'
+
+    TaskCreatedBefore:
+      name: createdBefore
+      in: query
+      required: false
+      schema: { type: string, format: date-time }
+      description: '`createdAt <= value`.'
+
+    TaskCreatedAfter:
+      name: createdAfter
+      in: query
+      required: false
+      schema: { type: string, format: date-time }
+      description: '`createdAt >= value`.'
+
+    TaskCompletedBefore:
+      name: completedBefore
+      in: query
+      required: false
+      schema: { type: string, format: date-time }
+      description: '`completedAt <= value`.'
+
+    TaskCompletedAfter:
+      name: completedAfter
+      in: query
+      required: false
+      schema: { type: string, format: date-time }
+      description: '`completedAt >= value`.'
+
+    TaskOverdue:
+      name: overdue
+      in: query
+      required: false
+      schema: { type: string, enum: ['true', 'false'] }
+      description: |
+        ONLY the literal strings `true` / `false` are accepted (a boolean JSON
+        value is also accepted by the schema but a query string can never carry
+        one). Anything else -> 400 "Invalid input". `false` is parsed and then
+        has no effect. `true` sets `dueAt < min(dueBefore, now)` and, when
+        `status` was not supplied, restricts to `open`/`snoozed`.
+
+    TaskUndated:
+      name: undated
+      in: query
+      required: false
+      schema: { type: string, enum: ['true', 'false'] }
+      description: '`true` sets `dueAt: {$exists: false}` and DISCARDS every other dueAt clause (including `overdue`).'
+
+    TaskUntagged:
+      name: untagged
+      in: query
+      required: false
+      schema: { type: string, enum: ['true', 'false'] }
+      description: '`true` sets `tags: {$size: 0}`, OVERWRITING any `tag` filter.'
+
+    TaskSortParam:
+      name: sort
+      in: query
+      required: false
+      schema:
+        $ref: '#/components/schemas/TaskSort'
+      description: 'Defaults to `due-asc` when ABSENT. An empty string is a 400 (the default does not apply to `""`).'
+
+    TaskLimitParam:
+      name: limit
+      in: query
+      required: false
+      schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
+      description: |
+        `z.coerce.number().int().min(1).max(200).default(50)`. Coercion happens
+        first: `""` -> 0 -> "greater than or equal to 1"; `abc` -> NaN ->
+        "Expected number, received nan"; `2.5` -> "Expected integer, received
+        float".
+
+    TaskCursorParam:
+      name: cursor
+      in: query
+      required: false
+      schema: { type: string, maxLength: 64 }
+      description: |
+        Opaque page token: base64url (NO padding) of the decimal offset.
+        `Buffer.from(String(offset),'utf8').toString('base64url')`.
+        Decoding is forgiving — anything that does not parse to a finite integer
+        >= 0 becomes offset 0. Over 64 chars -> 400.
+
+  # ---------------------------------------------------------------------------
+  responses:
+
+    TaskUnauthorized:
+      description: |
+        `missing_token` when the `Authorization` header is absent or does not
+        start with `Bearer `; `invalid_token` when the JWT fails verification
+        (including expiry). Both verified live.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/TaskErrorEnvelope' }
+          examples:
+            missing:
+              value: { error: { code: missing_token, message: Missing access token } }
+            invalid:
+              value: { error: { code: invalid_token, message: Invalid or expired access token } }
+
+    TaskNotFound:
+      description: '`task_not_found` / "Task no longer exists." Covers malformed ids, unknown ids, other users'' ids and soft-deleted rows.'
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/TaskErrorEnvelope' }
+          example:
+            error: { code: task_not_found, message: Task no longer exists. }
+
+    ClarNotFound:
+      description: '`clarification_not_found` / "That question is no longer here."'
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/TaskErrorEnvelope' }
+          example:
+            error: { code: clarification_not_found, message: That question is no longer here. }
+
+    TaskRateLimited:
+      description: |
+        `rate_limited`. Accompanied by a `Retry-After` header in whole seconds.
+        Verified live: `Retry-After: 60`.
+      headers:
+        Retry-After:
+          schema: { type: integer, minimum: 1 }
+          description: Seconds until the oldest hit leaves the sliding window.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/TaskErrorEnvelope' }
+          example:
+            error:
+              code: rate_limited
+              message: "You are going a little fast — give it a moment and try again."
+
+    TaskInternal:
+      description: |
+        `internal_error` / "Internal server error". Emitted for any unhandled
+        throw, INCLUDING Mongoose ValidationError (which errorHandler does not
+        special-case).
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/TaskErrorEnvelope' }
+          example:
+            error: { code: internal_error, message: Internal server error }
+
+  # ---------------------------------------------------------------------------
+  schemas:
+
+    # ---- Error envelopes ----------------------------------------------------
+
+    TaskErrorEnvelope:
+      type: object
+      additionalProperties: false
+      required: [error]
+      description: |
+        The universal envelope from src/middleware/errorHandler.ts.
+        `details` is present ONLY when the AppError carried one.
+      properties:
+        error:
+          type: object
+          additionalProperties: false
+          required: [code, message]
+          properties:
+            code: { type: string }
+            message: { type: string }
+            details:
+              description: |
+                For `safeParse` routes this is `zodError.flatten()`:
+                `{formErrors: string[], fieldErrors: object}`.
+                For `categorize_already_open` it is `{opId}`.
+                For `quota_exceeded` it is `{kind, tier, limit, used, resetAt}`.
+                For `translate_quota_exceeded` it is `{locale, limit, used, resetAt}`.
+
+    TaskZodFlatten:
+      type: object
+      additionalProperties: false
+      required: [formErrors, fieldErrors]
+      description: '`zodError.flatten()` — the `details` payload of every `invalid_query` / `invalid_body` / `invalid_answer` error in this domain.'
+      properties:
+        formErrors:
+          type: array
+          items: { type: string }
+          description: Errors not attributable to one field (unknown keys under `.strict()`, and `.refine()` failures).
+        fieldErrors:
+          type: object
+          additionalProperties:
+            type: array
+            items: { type: string }
+
+    TaskZodErrorEnvelope:
+      type: object
+      additionalProperties: false
+      required: [error]
+      description: |
+        The SECOND 400 shape, produced only when a raw ZodError escapes to the
+        error handler. In this domain that is POST /me/notifications/read alone.
+      properties:
+        error:
+          type: object
+          additionalProperties: false
+          required: [code, message, details]
+          properties:
+            code: { type: string, const: validation_error }
+            message: { type: string, const: Request validation failed }
+            details:
+              type: array
+              items:
+                type: object
+                additionalProperties: false
+                required: [path, message]
+                properties:
+                  path: { type: string, description: '`issue.path.join(".")`' }
+                  message: { type: string }
+
+    # ---- Enums --------------------------------------------------------------
+
+    TaskDomain:
+      type: string
+      enum: [health, home, car, finance, family, pets]
+      description: 'src/models/User.ts DOMAINS. Order is contractual — it appears verbatim in zod error messages.'
+
+    TaskKind:
+      type: string
+      enum: [reminder, list]
+      description: 'A `reminder` MUST carry a `dueAt` (enforced by a Mongoose pre-validate hook on create/save only). Schema default is `list`.'
+
+    TaskStatus:
+      type: string
+      enum: [open, done, snoozed]
+
+    TaskPriority:
+      type: string
+      enum: [low, normal, high, urgent]
+
+    TaskSort:
+      type: string
+      enum: [due-asc, due-desc, created-desc, created-asc, priority-desc, title-asc]
+      default: due-asc
+
+    TaskEstimateSource:
+      type: string
+      enum: [ai, user]
+      description: '`user` is authoritative forever; no AI pass may overwrite it.'
+
+    TaskConfidence:
+      type: string
+      enum: [high, medium, low]
+
+    TaskExternalSource:
+      type: string
+      enum: [google_calendar, google_tasks, apple_calendar, apple_reminders, ics_feed, email_forward]
+
+    TaskTimePrecision:
+      type: string
+      enum: [exact, dateOnly, floating]
+
+    TaskReminderKind:
+      type: string
+      enum: [lead, due, ai]
+      description: 'Schema default is `due`.'
+
+    TaskAiLocale:
+      type: string
+      enum: [en, ar]
+      description: 'Resolved from the primary subtag; unknown or absent -> `en`.'
+
+    TaskBulkActionName:
+      type: string
+      enum: [delete, complete, snooze, setDomain, addTags]
+
+    ClarStatus:
+      type: string
+      enum: [open, resolved, dropped]
+
+    ClarKind:
+      type: string
+      enum: [date, detail, choice]
+      description: 'Schema default is `date`.'
+
+    ClarCost:
+      type: string
+      enum: [low, high]
+      description: 'Schema default is `high`.'
+
+    TaskNotificationKind:
+      type: string
+      enum: [reminder, uncertainty, document_scan]
+
+    # ---- The Task as it appears on the wire ---------------------------------
+
+    TaskEstimate:
+      type: object
+      additionalProperties: false
+      required: [minMinutes, maxMinutes, source]
+      description: |
+        Always snapped onto the bucket ladder
+        [5,10,15,30,45,60,90,120,180,240]. Both bounds are members of that set
+        and `maxMinutes >= minMinutes`. `_id: false` — no id is emitted.
+      properties:
+        minMinutes: { type: integer, enum: [5, 10, 15, 30, 45, 60, 90, 120, 180, 240] }
+        maxMinutes: { type: integer, enum: [5, 10, 15, 30, 45, 60, 90, 120, 180, 240] }
+        source: { $ref: '#/components/schemas/TaskEstimateSource' }
+
+    TaskSubtask:
+      type: object
+      additionalProperties: false
+      required: [text, done, id]
+      description: |
+        Serialized with its own `toIdJSON` transform: `_id` -> `id`, `__v`
+        dropped. `createdAt` is stamped (`timestamps: {createdAt: true,
+        updatedAt: false}`) so there is NO `updatedAt`. No `priorityRank`.
+      properties:
+        text: { type: string, maxLength: 240 }
+        done: { type: boolean, default: false }
+        createdAt: { type: string, format: date-time }
+        id: { type: string, description: 24-char hex ObjectId. }
+
+    TaskReminderEntry:
+      type: object
+      additionalProperties: false
+      required: [at]
+      description: '`_id: false` — no id is emitted. `firedAt` is absent until the reminder fires.'
+      properties:
+        at: { type: string, format: date-time }
+        firedAt: { type: string, format: date-time }
+        kind: { $ref: '#/components/schemas/TaskReminderKind' }
+
+    TaskMatter:
+      type: object
+      additionalProperties: false
+      required: [userId, title, domain, kind, status, priority, subtasks, tags, reminders, rescheduleCount, createdAt, updatedAt, id, priorityRank]
+      description: |
+        A Task AFTER `toJSON()`. Absent optional fields are OMITTED (never
+        null). `_id` is gone (renamed `id`), `__v` is gone, `priorityRank` is
+        added. `i18n` is present on every endpoint EXCEPT GET /me/tasks and
+        GET /me/tasks/{id}, where it is always stripped.
+      properties:
+        id:
+          type: string
+          description: 24-char hex. Renamed from `_id`.
+        userId:
+          type: string
+          description: 24-char hex. Emitted — the reference server does not hide it.
+        title: { type: string, maxLength: 240 }
+        domain: { $ref: '#/components/schemas/TaskDomain' }
+        kind: { $ref: '#/components/schemas/TaskKind' }
+        status: { $ref: '#/components/schemas/TaskStatus' }
+        priority: { $ref: '#/components/schemas/TaskPriority' }
+        priorityRank:
+          type: integer
+          enum: [0, 1, 2, 3]
+          description: |
+            DERIVED, not stored. urgent=3, high=2, normal=1, low=0; an
+            unrecognised priority falls back to 1.
+        subtasks:
+          type: array
+          maxItems: 50
+          items: { $ref: '#/components/schemas/TaskSubtask' }
+        tags:
+          type: array
+          maxItems: 10
+          items: { type: string, maxLength: 32 }
+        dueAt: { type: string, format: date-time }
+        notes: { type: string, maxLength: 2000 }
+        sourceLocale:
+          type: string
+          description: |
+            BCP 47 tag the canonical text is written in. NOT set by REST
+            creation — absent on tasks created via POST /me/tasks.
+        i18n:
+          type: object
+          description: |
+            Read-only presentation copies keyed by locale:
+            `{<locale>: {title?, notes?, subtasks?: {<subtaskId>: string}, at?}}`.
+            STRIPPED on GET /me/tasks and GET /me/tasks/{id}; PRESENT everywhere
+            else.
+          additionalProperties:
+            type: object
+            properties:
+              title: { type: string }
+              notes: { type: string }
+              subtasks:
+                type: object
+                additionalProperties: { type: string }
+              at: { type: string, format: date-time }
+        estimate: { $ref: '#/components/schemas/TaskEstimate' }
+        completedAt: { type: string, format: date-time }
+        snoozedUntil: { type: string, format: date-time }
+        reminders:
+          type: array
+          items: { $ref: '#/components/schemas/TaskReminderEntry' }
+        deletedAt:
+          type: string
+          format: date-time
+          description: Present only on rows returned by GET /me/tasks/trash.
+        rescheduleCount: { type: integer, minimum: 0, default: 0 }
+        sourceVoiceNoteId: { type: string }
+        sourceDocumentId: { type: string }
+        sourceTaskKey: { type: string }
+        externalSource: { $ref: '#/components/schemas/TaskExternalSource' }
+        externalId: { type: string }
+        timePrecision: { $ref: '#/components/schemas/TaskTimePrecision' }
+        confidence: { $ref: '#/components/schemas/TaskConfidence' }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+
+    TaskEnvelope:
+      type: object
+      additionalProperties: false
+      required: [task]
+      properties:
+        task: { $ref: '#/components/schemas/TaskMatter' }
+
+    # ---- List ---------------------------------------------------------------
+
+    TaskListResponse:
+      type: object
+      additionalProperties: false
+      required: [tasks, total, nextCursor]
+      properties:
+        tasks:
+          type: array
+          items: { $ref: '#/components/schemas/TaskMatter' }
+          description: The page. i18n overlay applied, `i18n` stripped.
+        total:
+          type: integer
+          minimum: 0
+          description: Count of ALL matching rows, not just the page.
+        nextCursor:
+          type: [string, 'null']
+          maxLength: 64
+          description: base64url offset of the next page, or null when exhausted.
+
+    TaskCounts:
+      type: object
+      additionalProperties: false
+      required: [overdue, today, tomorrow, thisWeek, later, undated, open, done, trashed, slipping, completedToday, needsInput, scansAwaitingReview, byDomain, byPriority]
+      properties:
+        overdue: { type: integer, minimum: 0 }
+        today: { type: integer, minimum: 0 }
+        tomorrow: { type: integer, minimum: 0 }
+        thisWeek: { type: integer, minimum: 0 }
+        later: { type: integer, minimum: 0 }
+        undated: { type: integer, minimum: 0 }
+        open: { type: integer, minimum: 0 }
+        done: { type: integer, minimum: 0 }
+        trashed: { type: integer, minimum: 0 }
+        slipping: { type: integer, minimum: 0 }
+        completedToday: { type: integer, minimum: 0 }
+        needsInput: { type: integer, minimum: 0 }
+        scansAwaitingReview: { type: integer, minimum: 0 }
+        byDomain:
+          type: object
+          additionalProperties: { type: integer, minimum: 1 }
+          description: 'Sparse — a domain with zero live matters is ABSENT, not 0.'
+        byPriority:
+          type: object
+          additionalProperties: { type: integer, minimum: 1 }
+          description: 'Sparse — a priority with zero live matters is ABSENT, not 0.'
+
+    TaskCountsResponse:
+      type: object
+      additionalProperties: false
+      required: [counts]
+      properties:
+        counts: { $ref: '#/components/schemas/TaskCounts' }
+
+    TaskTagsResponse:
+      type: object
+      additionalProperties: false
+      required: [tags]
+      properties:
+        tags:
+          type: array
+          items: { type: string }
+          description: Lexicographically ascending (JS default sort).
+
+    TaskTrashResponse:
+      type: object
+      additionalProperties: false
+      required: [tasks]
+      properties:
+        tasks:
+          type: array
+          maxItems: 200
+          items: { $ref: '#/components/schemas/TaskMatter' }
+          description: 'Raw toJSON, `deletedAt` present, newest-deleted first.'
+
+    TaskPurgeResponse:
+      type: object
+      additionalProperties: false
+      required: [purged]
+      properties:
+        purged: { type: integer, minimum: 0 }
+
+    TaskDeleteResponse:
+      type: object
+      additionalProperties: false
+      required: [undoToken]
+      properties:
+        undoToken:
+          type: string
+          description: |
+            TaskBulkOp id. Never null on this route — `affected === 0` becomes a
+            404 instead.
+
+    TaskUndoResponse:
+      type: object
+      additionalProperties: false
+      required: [restored]
+      properties:
+        restored:
+          type: integer
+          minimum: 0
+          description: '`op.entries.length`, or 0 when the op was not in `applied` status.'
+
+    # ---- Requests -----------------------------------------------------------
+
+    TaskCreateRequest:
+      type: object
+      additionalProperties: false
+      required: [title, domain]
+      description: '`CreateTaskSchema`, `.strict()`. Any unknown key is a 400.'
+      properties:
+        title:
+          type: string
+          minLength: 1
+          maxLength: 240
+          description: Trimmed by zod BEFORE the min/max check.
+        domain: { $ref: '#/components/schemas/TaskDomain' }
+        kind:
+          $ref: '#/components/schemas/TaskKind'
+        priority:
+          $ref: '#/components/schemas/TaskPriority'
+        tags:
+          type: array
+          maxItems: 20
+          items: { type: string, maxLength: 64 }
+          description: |
+            Up to 20 raw strings (MAX_TAGS * 2). Normalized, de-duplicated in
+            order, empties dropped, then TRUNCATED to the first 10 survivors —
+            extras are dropped SILENTLY, not rejected.
+        dueAt:
+          type: string
+          format: date-time
+          description: 'Must satisfy zod `.datetime()`. Presence flips the default `kind` to `reminder`.'
+        notes: { type: string, maxLength: 2000 }
+        estimate:
+          type: object
+          additionalProperties: false
+          required: [minMinutes, maxMinutes]
+          description: |
+            `.strict()`. Both bounds are integers in 1..1440. They are then
+            snapped onto the bucket ladder, re-sorted so max >= min, and stamped
+            `source: 'user'`.
+          properties:
+            minMinutes: { type: integer, minimum: 1, maximum: 1440 }
+            maxMinutes: { type: integer, minimum: 1, maximum: 1440 }
+        sourceVoiceNoteId:
+          type: string
+          description: Must be a valid ObjectId (`invalid_object_id` otherwise).
+
+    TaskUpdateRequest:
+      type: object
+      additionalProperties: false
+      description: |
+        `UpdateTaskSchema`, `.strict()`. EVERY key is optional. An explicit
+        `null` on a NULLABLE key CLEARS the field (`$unset`); an omitted key
+        leaves it alone. `{}` is valid and touches only `updatedAt`.
+      properties:
+        title: { type: string, minLength: 1, maxLength: 240, description: 'NOT nullable.' }
+        domain: { $ref: '#/components/schemas/TaskDomain' }
+        status:
+          $ref: '#/components/schemas/TaskStatus'
+        priority:
+          $ref: '#/components/schemas/TaskPriority'
+        tags:
+          type: array
+          maxItems: 20
+          items: { type: string, maxLength: 64 }
+          description: 'NOT nullable. Same normalization/truncation as create.'
+        dueAt:
+          type: [string, 'null']
+          format: date-time
+          description: 'NULLABLE — `null` clears it. A strictly later value increments `rescheduleCount`.'
+        notes:
+          type: [string, 'null']
+          maxLength: 2000
+          description: 'NULLABLE — `null` clears it.'
+        estimate:
+          description: |
+            NULLABLE — `null` clears the estimate back to "unknown". Otherwise
+            the same strict object as on create.
+          oneOf:
+            - type: 'null'
+            - type: object
+              additionalProperties: false
+              required: [minMinutes, maxMinutes]
+              properties:
+                minMinutes: { type: integer, minimum: 1, maximum: 1440 }
+                maxMinutes: { type: integer, minimum: 1, maximum: 1440 }
+        snoozedUntil:
+          type: [string, 'null']
+          format: date-time
+          description: 'NULLABLE — `null` clears it.'
+
+    TaskSubtaskCreateRequest:
+      type: object
+      additionalProperties: false
+      required: [text]
+      description: '`.strict()`.'
+      properties:
+        text: { type: string, minLength: 1, maxLength: 240, description: Trimmed before validation and before storage. }
+
+    TaskSubtaskUpdateRequest:
+      type: object
+      additionalProperties: false
+      minProperties: 1
+      description: |
+        `.strict()` with `.refine(text !== undefined || done !== undefined)`.
+        `{}` -> 400 with `formErrors: ["must include text or done"]`.
+      properties:
+        text: { type: string, minLength: 1, maxLength: 240 }
+        done: { type: boolean }
+
+    # ---- Bulk ---------------------------------------------------------------
+
+    TaskFilterObject:
+      type: object
+      description: |
+        `TaskFilterSchema` as a JSON BODY (used inside bulk/categorize targets).
+        NOT `.strict()` here — unknown keys are stripped. Same 14 filters as the
+        list query, with the same coercions: dates must be ISO-8601 strings;
+        `status`/`domain`/`priority`/`kind` are COMMA-SEPARATED STRINGS (not
+        arrays) even in JSON; booleans accept a real `true`/`false` or the
+        strings `"true"`/`"false"`.
+      properties:
+        q: { type: string, minLength: 1, maxLength: 200 }
+        status: { type: string }
+        domain: { type: string }
+        priority: { type: string }
+        kind: { type: string }
+        tag: { type: string, maxLength: 400 }
+        dueBefore: { type: string, format: date-time }
+        dueAfter: { type: string, format: date-time }
+        createdBefore: { type: string, format: date-time }
+        createdAfter: { type: string, format: date-time }
+        completedBefore: { type: string, format: date-time }
+        completedAfter: { type: string, format: date-time }
+        overdue: { type: [boolean, string] }
+        undated: { type: [boolean, string] }
+        untagged: { type: [boolean, string] }
+
+    TaskBulkTarget:
+      type: object
+      description: |
+        `BulkTargetSchema`. Exactly ONE of `ids` / `filter`; violating that
+        yields `formErrors: ["provide exactly one of ids or filter"]`.
+        Not `.strict()`.
+      properties:
+        ids:
+          type: array
+          minItems: 1
+          maxItems: 500
+          items: { type: string, description: Must be a valid ObjectId. }
+        filter: { $ref: '#/components/schemas/TaskFilterObject' }
+
+    TaskBulkAction:
+      description: |
+        `BulkActionSchema` — a zod discriminated union on `action`. An unknown
+        action yields
+        `fieldErrors.action = ["Invalid discriminator value. Expected 'delete' | 'complete' | 'snooze' | 'setDomain' | 'addTags'"]`.
+      oneOf:
+        - type: object
+          required: [action]
+          properties:
+            action: { type: string, const: delete }
+        - type: object
+          required: [action]
+          properties:
+            action: { type: string, const: complete }
+        - type: object
+          required: [action, until]
+          properties:
+            action: { type: string, const: snooze }
+            until: { type: string, format: date-time, description: 'REQUIRED. zod `.datetime()`.' }
+        - type: object
+          required: [action, domain]
+          properties:
+            action: { type: string, const: setDomain }
+            domain: { $ref: '#/components/schemas/TaskDomain' }
+        - type: object
+          required: [action, tags]
+          properties:
+            action: { type: string, const: addTags }
+            tags:
+              type: array
+              minItems: 1
+              maxItems: 10
+              items: { type: string, maxLength: 64 }
+
+    TaskBulkRequest:
+      description: '`z.intersection(BulkTargetSchema, BulkActionSchema)` — target fields and action fields flattened into ONE object.'
+      allOf:
+        - { $ref: '#/components/schemas/TaskBulkTarget' }
+        - { $ref: '#/components/schemas/TaskBulkAction' }
+
+    TaskBulkApplyRequest:
+      description: |
+        Same as TaskBulkRequest plus an optional top-level `label` that is read
+        straight off `req.body` (outside zod) and truncated to 240 chars. It is
+        stored on the TaskBulkOp and never echoed.
+      allOf:
+        - { $ref: '#/components/schemas/TaskBulkRequest' }
+        - type: object
+          properties:
+            label: { type: string, description: 'Truncated with `.slice(0, 240)`. Non-string values are ignored.' }
+
+    TaskBulkWarnings:
+      type: object
+      additionalProperties: false
+      required: [fromDocuments, remindersFired, truncated]
+      properties:
+        fromDocuments:
+          type: integer
+          minimum: 0
+          description: Resolved tasks carrying a `sourceDocumentId`.
+        remindersFired:
+          type: integer
+          minimum: 0
+          description: Resolved tasks with at least one `reminders[].firedAt`.
+        truncated:
+          type: boolean
+          description: 'True when more than 500 matched (the resolver reads 501 to detect it).'
+
+    TaskBulkPreviewResponse:
+      type: object
+      additionalProperties: false
+      required: [count, warnings, sample]
+      properties:
+        count:
+          type: integer
+          minimum: 0
+          maximum: 501
+          description: 'Resolved target count. Saturates at 501 on the filter path.'
+        warnings: { $ref: '#/components/schemas/TaskBulkWarnings' }
+        sample:
+          type: array
+          maxItems: 50
+          items: { $ref: '#/components/schemas/TaskMatter' }
+          description: 'First 50 resolved tasks, RAW toJSON (i18n present, no overlay).'
+
+    TaskBulkResult:
+      type: object
+      additionalProperties: false
+      required: [affected, undoToken, warnings]
+      properties:
+        affected:
+          type: integer
+          minimum: 0
+          description: Number of tasks that produced a real change (no-ops are excluded).
+        undoToken:
+          type: [string, 'null']
+          description: 'TaskBulkOp id, or null when `affected === 0` (no record is written).'
+        warnings: { $ref: '#/components/schemas/TaskBulkWarnings' }
+
+    # ---- Categorize ---------------------------------------------------------
+
+    TaskProposedChange:
+      type: object
+      additionalProperties: false
+      required: [taskId, title, fromDomain, toDomain, addedTags, confidence, reason]
+      properties:
+        taskId: { type: string }
+        title: { type: string, description: 'Joined from the LIVE task at read time, not denormalised.' }
+        fromDomain: { $ref: '#/components/schemas/TaskDomain' }
+        toDomain: { $ref: '#/components/schemas/TaskDomain' }
+        addedTags:
+          type: array
+          items: { type: string }
+          description: 'Tags this would ADD. Existing tags are never removed.'
+        confidence: { $ref: '#/components/schemas/TaskConfidence' }
+        reason: { type: string, maxLength: 240, description: 'Empty string when the op entry carried none.' }
+
+    TaskPendingProposal:
+      type: object
+      additionalProperties: false
+      required: [opId, changes, createdAt]
+      properties:
+        opId: { type: string }
+        changes:
+          type: array
+          items: { $ref: '#/components/schemas/TaskProposedChange' }
+          description: 'Entries whose task has since been deleted or trashed are DROPPED.'
+        createdAt: { type: string, format: date-time }
+
+    TaskCategorizePendingResponse:
+      type: object
+      additionalProperties: false
+      required: [proposal]
+      properties:
+        proposal:
+          oneOf:
+            - { $ref: '#/components/schemas/TaskPendingProposal' }
+            - type: 'null'
+
+    TaskProposalResult:
+      type: object
+      additionalProperties: false
+      required: [opId, changes, unchanged]
+      description: 'POST /me/tasks/categorize success shape (AI-enabled only).'
+      properties:
+        opId:
+          type: string
+          description: 'EMPTY STRING when nothing was proposed — no op record is written in that case.'
+        changes:
+          type: array
+          items: { $ref: '#/components/schemas/TaskProposedChange' }
+        unchanged:
+          type: integer
+          minimum: 0
+          description: Matters looked at but left alone.
+
+    TaskCategorizeApplyRequest:
+      type: object
+      additionalProperties: false
+      required: [taskIds]
+      description: '`.strict()`. `taskIds` is required but may be empty (which DISCARDS the proposal).'
+      properties:
+        taskIds:
+          type: array
+          maxItems: 80
+          items: { type: string, description: Must be a valid ObjectId. }
+
+    TaskCategorizeApplyResponse:
+      type: object
+      additionalProperties: false
+      required: [applied, undoToken]
+      properties:
+        applied: { type: integer, minimum: 0 }
+        undoToken:
+          type: [string, 'null']
+          description: 'The proposal id itself, or null when nothing was kept.'
+
+    # ---- AI: search / summarize / estimate / translate ----------------------
+
+    TaskSearchRequest:
+      type: object
+      additionalProperties: false
+      required: [query]
+      description: '`.strict()`.'
+      properties:
+        query: { type: string, minLength: 1, maxLength: 400, description: Trimmed before validation. }
+        timezone: { type: string, maxLength: 64 }
+
+    TaskSearchMatch:
+      type: object
+      additionalProperties: false
+      required: [task, reason]
+      properties:
+        task:
+          allOf: [{ $ref: '#/components/schemas/TaskMatter' }]
+          description: 'RAW toJSON — `i18n` present, no overlay.'
+        reason: { type: string }
+
+    TaskSearchResponse:
+      type: object
+      additionalProperties: false
+      required: [answer, truncated, matches]
+      description: AI-enabled only. Never produced by the current parity server.
+      properties:
+        answer: { type: string, description: 'One sentence. `"You have no matters yet."` when the pool is empty.' }
+        truncated: { type: boolean, description: 'True when the candidate pool exceeded 300 matters.' }
+        matches:
+          type: array
+          items: { $ref: '#/components/schemas/TaskSearchMatch' }
+
+    TaskSummarizeRequest:
+      type: object
+      additionalProperties: false
+      required: [from, to]
+      description: '`.strict()` plus `.refine(to > from)` — "to must be after from" lands in `formErrors`.'
+      properties:
+        from: { type: string, format: date-time }
+        to: { type: string, format: date-time }
+        timezone: { type: string, maxLength: 64 }
+
+    TaskSummaryTheme:
+      type: object
+      additionalProperties: false
+      required: [label, count, taskIds, examples]
+      properties:
+        label: { type: string }
+        count: { type: integer, minimum: 0 }
+        taskIds: { type: array, items: { type: string } }
+        examples: { type: array, items: { type: string } }
+
+    TaskSummarySlip:
+      type: object
+      additionalProperties: false
+      required: [taskId, title, reason]
+      properties:
+        taskId: { type: string }
+        title: { type: string }
+        reason: { type: string }
+
+    TaskSummaryDuplicate:
+      type: object
+      additionalProperties: false
+      required: [title, count, taskIds]
+      properties:
+        title: { type: string }
+        count: { type: integer, minimum: 2 }
+        taskIds: { type: array, items: { type: string } }
+
+    TaskSummary:
+      type: object
+      additionalProperties: false
+      required: [range, counts, themes, slipping, duplicates, unplannedCompleted, busiestDay, headline, question]
+      description: AI-enabled only. Every number is computed in code.
+      properties:
+        range:
+          type: object
+          additionalProperties: false
+          required: [from, to]
+          properties:
+            from: { type: string, format: date-time }
+            to: { type: string, format: date-time }
+        counts:
+          type: object
+          additionalProperties: false
+          required: [dueInRange, completedInRange, createdInRange, completedPrevious, stillOpen, overdue]
+          properties:
+            dueInRange: { type: integer, minimum: 0 }
+            completedInRange: { type: integer, minimum: 0 }
+            createdInRange: { type: integer, minimum: 0 }
+            completedPrevious:
+              type: integer
+              minimum: 0
+              description: Same-length window immediately before the range.
+            stillOpen: { type: integer, minimum: 0 }
+            overdue: { type: integer, minimum: 0 }
+        themes:
+          type: array
+          items: { $ref: '#/components/schemas/TaskSummaryTheme' }
+        slipping:
+          type: array
+          items: { $ref: '#/components/schemas/TaskSummarySlip' }
+        duplicates:
+          type: array
+          items: { $ref: '#/components/schemas/TaskSummaryDuplicate' }
+        unplannedCompleted:
+          type: array
+          description: Completed in range with no due date.
+          items:
+            type: object
+            additionalProperties: false
+            required: [taskId, title]
+            properties:
+              taskId: { type: string }
+              title: { type: string }
+        busiestDay:
+          oneOf:
+            - type: object
+              additionalProperties: false
+              required: [date, count]
+              properties:
+                date: { type: string, description: '`YYYY-MM-DD` in the caller''s zone.' }
+                count: { type: integer, minimum: 1 }
+            - type: 'null'
+        headline: { type: string }
+        question:
+          oneOf:
+            - type: object
+              additionalProperties: false
+              required: [text, taskId]
+              properties:
+                text: { type: string }
+                taskId: { type: [string, 'null'] }
+            - type: 'null'
+
+    TaskSummaryResponse:
+      type: object
+      additionalProperties: false
+      required: [summary]
+      properties:
+        summary: { $ref: '#/components/schemas/TaskSummary' }
+
+    TaskEstimateBacklogRequest:
+      type: object
+      additionalProperties: false
+      description: '`.strict()`. Absent body is treated as `{}`.'
+      properties:
+        limit:
+          type: integer
+          minimum: 1
+          maximum: 40
+          description: '`MAX_BACKLOG_BATCH` is 40. Defaults (inside the service) to 40 and is clamped into 1..40.'
+
+    TaskEstimateBacklogResponse:
+      type: object
+      additionalProperties: false
+      required: [estimated, remaining]
+      description: 'AI-enabled only. The service never throws on model failure — it reports `estimated: 0`.'
+      properties:
+        estimated: { type: integer, minimum: 0 }
+        remaining:
+          type: integer
+          minimum: 0
+          description: Un-estimated live matters still outstanding after this batch.
+
+    TaskTranslateRequest:
+      type: object
+      required: [locale]
+      description: 'NOT `.strict()` — unknown keys are accepted and stripped. Absent body is treated as `{}` (which then fails on the required `locale`).'
+      properties:
+        locale: { $ref: '#/components/schemas/TaskAiLocale' }
+        ids:
+          type: array
+          maxItems: 150
+          items: { type: string }
+          description: 'Plain strings — NOT validated as ObjectIds.'
+        preset:
+          type: string
+          enum: [thisWeek, thisMonth, all]
+
+    TaskTranslateResponse:
+      type: object
+      additionalProperties: false
+      required: [translated, skipped, failed]
+      description: AI-enabled only.
+      properties:
+        translated: { type: integer, minimum: 0 }
+        skipped: { type: integer, minimum: 0, description: In the selection but already readable in the target language. }
+        failed: { type: integer, minimum: 0, description: Sent to the model and lost to a failed or unusable batch. }
+
+    TaskTranslateQuota:
+      type: object
+      additionalProperties: false
+      required: [locale, limit, used, remaining, resetAt]
+      properties:
+        locale: { $ref: '#/components/schemas/TaskAiLocale' }
+        limit: { type: integer, const: 1, description: '`TRANSLATE_RUNS_PER_MONTH` — 1 for every tier.' }
+        used: { type: integer, minimum: 0 }
+        remaining: { type: integer, minimum: 0, description: '`max(0, limit - used)`.' }
+        resetAt: { type: string, format: date-time, description: Midnight UTC on the 1st of the following month. }
+
+    TaskTranslateQuotaResponse:
+      type: object
+      additionalProperties: false
+      required: [quota, counts, max]
+      properties:
+        quota: { $ref: '#/components/schemas/TaskTranslateQuota' }
+        counts:
+          type: object
+          additionalProperties: false
+          required: [thisWeek, thisMonth, all]
+          properties:
+            thisWeek: { type: integer, minimum: 0 }
+            thisMonth: { type: integer, minimum: 0 }
+            all: { type: integer, minimum: 0 }
+        max: { type: integer, const: 150, description: '`MAX_TRANSLATE_TARGETS`.' }
+
+    # ---- Digest -------------------------------------------------------------
+
+    TaskDigestCounts:
+      type: object
+      additionalProperties: false
+      required: [dueToday, completedToday, openTotal, slipping, needsInput, scansAwaitingReview]
+      properties:
+        dueToday: { type: integer, minimum: 0 }
+        completedToday: { type: integer, minimum: 0 }
+        openTotal:
+          type: integer
+          minimum: 0
+          description: 'Every live matter with status `open` (snoozed excluded), not a today-scoped figure.'
+        slipping: { type: integer, minimum: 0 }
+        needsInput: { type: integer, minimum: 0 }
+        scansAwaitingReview:
+          type: integer
+          minimum: 0
+          description: 'Counts every `ready_for_review` scan — unlike /me/tasks/counts it does NOT require `reviewedAt` to be absent.'
+
+    TaskDigestTheme:
+      type: object
+      additionalProperties: false
+      required: [label, count, taskIds]
+      properties:
+        label: { type: string }
+        count: { type: integer, minimum: 1 }
+        taskIds: { type: array, items: { type: string } }
+
+    TaskDigestDuplicate:
+      type: object
+      additionalProperties: false
+      required: [title, count, taskIds]
+      properties:
+        title: { type: string }
+        count: { type: integer, minimum: 2 }
+        taskIds: { type: array, items: { type: string } }
+
+    TaskDigest:
+      type: object
+      additionalProperties: false
+      required: [localDate, generatedAt, headline, counts, estimatedMinutesToday, themes, busiestDay, duplicates]
+      properties:
+        localDate: { type: string, pattern: '^\d{4}-\d{2}-\d{2}$', description: '`en-CA` formatted local date.' }
+        generatedAt:
+          type: string
+          format: date-time
+          description: 'When the digest was COMPUTED. On a cache hit this is older than the request.'
+        headline: { type: string, description: 'Code-generated on this server. See the operation description for the exact algorithm.' }
+        counts: { $ref: '#/components/schemas/TaskDigestCounts' }
+        estimatedMinutesToday:
+          type: object
+          additionalProperties: false
+          required: [min, max]
+          properties:
+            min: { type: integer, minimum: 0 }
+            max: { type: integer, minimum: 0 }
+        themes:
+          type: array
+          items: { $ref: '#/components/schemas/TaskDigestTheme' }
+          description: 'ALWAYS `[]` while AI is unconfigured.'
+        busiestDay:
+          oneOf:
+            - type: object
+              additionalProperties: false
+              required: [date, count]
+              properties:
+                date: { type: string, pattern: '^\d{4}-\d{2}-\d{2}$' }
+                count: { type: integer, minimum: 1 }
+            - type: 'null'
+        duplicates:
+          type: array
+          maxItems: 5
+          items: { $ref: '#/components/schemas/TaskDigestDuplicate' }
+
+    TaskDigestResponse:
+      type: object
+      additionalProperties: false
+      required: [digest]
+      properties:
+        digest: { $ref: '#/components/schemas/TaskDigest' }
+
+    # ---- Notifications ------------------------------------------------------
+
+    TaskNotification:
+      type: object
+      additionalProperties: false
+      required: [userId, kind, title, createdAt, updatedAt, id]
+      description: 'Notification `toJSON`: `_id` -> `id`, `__v` dropped. Absent optionals are omitted.'
+      properties:
+        id: { type: string }
+        userId: { type: string }
+        kind: { $ref: '#/components/schemas/TaskNotificationKind' }
+        title: { type: string }
+        body: { type: string }
+        taskId: { type: string }
+        clarificationId: { type: string }
+        documentId: { type: string }
+        readAt: { type: string, format: date-time }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+
+    TaskNotificationsResponse:
+      type: object
+      additionalProperties: false
+      required: [notifications, unreadCount]
+      properties:
+        notifications:
+          type: array
+          maxItems: 50
+          items: { $ref: '#/components/schemas/TaskNotification' }
+          description: Newest first. Hard cap 50, no pagination.
+        unreadCount: { type: integer, minimum: 0 }
+
+    TaskNotificationsReadRequest:
+      type: object
+      description: 'NOT `.strict()`. Parsed with `.parse()`, so a failure produces the `validation_error` envelope.'
+      properties:
+        ids:
+          type: array
+          maxItems: 100
+          items: { type: string }
+          description: |
+            Omitted or EMPTY marks all unread read. Entries that are not valid
+            ObjectIds are silently filtered out.
+
+    TaskNotificationsReadResponse:
+      type: object
+      additionalProperties: false
+      required: [ok, unreadCount]
+      properties:
+        ok: { type: boolean, const: true }
+        unreadCount: { type: integer, minimum: 0 }
+
+    # ---- Reminders ----------------------------------------------------------
+
+    TaskUpcomingReminder:
+      type: object
+      additionalProperties: false
+      required: [id, taskId, title, at, kind, dueAt]
+      properties:
+        id: { type: string, description: '`<taskId>:<epochMillisOfReminder>` — deterministic, so a re-sync replaces rather than stacks.' }
+        taskId: { type: string }
+        title: { type: string, description: 'The task''s CANONICAL title — no i18n overlay.' }
+        at: { type: string, format: date-time }
+        kind: { $ref: '#/components/schemas/TaskReminderKind' }
+        dueAt: { type: [string, 'null'], format: date-time, description: 'The parent task''s dueAt, or null.' }
+
+    TaskUpcomingRemindersResponse:
+      type: object
+      additionalProperties: false
+      required: [reminders]
+      properties:
+        reminders:
+          type: array
+          maxItems: 60
+          items: { $ref: '#/components/schemas/TaskUpcomingReminder' }
+          description: Ascending by `at` across all tasks.
+
+    # ---- Clarifications -----------------------------------------------------
+
+    ClarOption:
+      type: object
+      additionalProperties: false
+      required: [label]
+      description: '`_id: false` — no id is emitted. Absent optionals are omitted.'
+      properties:
+        label: { type: string }
+        dueAt: { type: string, format: date-time }
+        title: { type: string }
+        notes: { type: string }
+
+    ClarDraft:
+      type: object
+      additionalProperties: false
+      required: [title, domain, priority, tags]
+      description: 'The provisional task. `_id: false`.'
+      properties:
+        title: { type: string }
+        domain: { $ref: '#/components/schemas/TaskDomain' }
+        priority: { $ref: '#/components/schemas/TaskPriority' }
+        notes: { type: string }
+        tags: { type: array, items: { type: string } }
+        dueAt: { type: string, format: date-time }
+
+    ClarItem:
+      type: object
+      additionalProperties: false
+      required: [userId, taskId, status, draft, question, kind, costOfWrong, options, createdAt, updatedAt, id]
+      description: |
+        Clarification `toJSON`: `_id` -> `id`, `__v` dropped, and `sourceKey`
+        DELETED (internal idempotency key, never sent to the client).
+        NOTE: on /resolve, /defer and /drop the echoed document is the
+        IN-MEMORY copy after `doc.set(patch)`, so `updatedAt` is the
+        pre-update value while the patched fields are current.
+      properties:
+        id: { type: string }
+        userId: { type: string }
+        taskId: { type: string, description: 'The REAL Task this question is about. Required on the model.' }
+        status: { $ref: '#/components/schemas/ClarStatus' }
+        draft: { $ref: '#/components/schemas/ClarDraft' }
+        question: { type: string }
+        kind: { $ref: '#/components/schemas/ClarKind' }
+        costOfWrong: { $ref: '#/components/schemas/ClarCost' }
+        options:
+          type: array
+          items: { $ref: '#/components/schemas/ClarOption' }
+        sourceText: { type: string, description: 'What the user actually said, verbatim. Display only.' }
+        deferredUntil: { type: string, format: date-time }
+        answer: { type: string, description: 'The option label, or the custom text.' }
+        resolvedAt: { type: string, format: date-time }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+
+    ClarListResponse:
+      type: object
+      additionalProperties: false
+      required: [clarifications, hasMore, nextCursor]
+      properties:
+        clarifications:
+          type: array
+          maxItems: 50
+          items: { $ref: '#/components/schemas/ClarItem' }
+        hasMore: { type: boolean }
+        nextCursor:
+          type: [string, 'null']
+          format: date-time
+          description: '`createdAt` of the last item on this page, or null.'
+
+    ClarEnvelope:
+      type: object
+      additionalProperties: false
+      required: [clarification]
+      properties:
+        clarification: { $ref: '#/components/schemas/ClarItem' }
+
+    ClarResolveRequest:
+      type: object
+      additionalProperties: false
+      required: [answer]
+      description: |
+        NOT `.strict()` at the top level. `answer` is a discriminated union on
+        `type`. Parsed from `req.body ?? {}`, and ONLY after the
+        already-closed short-circuit.
+      properties:
+        answer:
+          oneOf:
+            - type: object
+              required: [type, index]
+              properties:
+                type: { type: string, const: option }
+                index:
+                  type: integer
+                  minimum: 0
+                  maximum: 3
+                  description: |
+                    Index into `options`. 0..3 by SCHEMA; an index inside that
+                    range but past the end of the array is a 400
+                    `invalid_option`, while 4+ is a 400 `invalid_answer`.
+            - type: object
+              required: [type, text]
+              properties:
+                type: { type: string, const: custom }
+                text:
+                  type: string
+                  minLength: 1
+                  maxLength: 500
+                  description: 'Trimmed. THIS BRANCH IS AI-BACKED — 503 on the parity server.'
+        timezone: { type: string, minLength: 1, maxLength: 64 }
+
+    ClarResolveResponse:
+      type: object
+      additionalProperties: false
+      required: [clarification, task]
+      properties:
+        clarification: { $ref: '#/components/schemas/ClarItem' }
+        task:
+          oneOf:
+            - { $ref: '#/components/schemas/TaskMatter' }
+            - type: 'null'
+          description: |
+            The updated task from `runTool('updateTask')` — RAW, no i18n
+            overlay. NULL when the question was already closed, or when its
+            task had been deleted (in which case the question is closed out as
+            `dropped`).

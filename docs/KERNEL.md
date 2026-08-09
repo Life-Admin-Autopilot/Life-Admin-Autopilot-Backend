@@ -1,0 +1,620 @@
+# KERNEL.md — the shared kernel contract
+
+**Read this before writing a line of slice code.** The kernel is frozen. Seven
+slices are being built on it in parallel, so anything you change here breaks
+somebody else. If you believe the kernel is wrong, say so — do not patch around it.
+
+The target is **byte-level response compatibility with the Node server running
+without `GEMINI_API_KEY`**: same status codes, same JSON field names and nesting,
+same literal error messages. Every rule below exists because the obvious .NET
+default diverges from Node. The frozen spec is `docs/contract/*.yaml` (87
+operations); the source of truth for behaviour is `Steward/server/src`, and a live
+reference runs on `http://localhost:4100` — curl it to settle any question.
+
+---
+
+## 0. Where things live
+
+| Layer | Project | Kernel folder |
+| --- | --- | --- |
+| PL | `Life-Admin-Autopilot-Backend/` | `Kernel/` — middleware, binders, auth, rate limits, modules, hosting |
+| BLL | `Life-Admin-Autopilot.BLL/` | `Kernel/` — DTOs, mappers, task query, bulk service, reminders, imports |
+| DAL | `Life-Admin-Autopilot.DAL/` | `Kernel/` — errors, Mongo documents, repository base, quota, erasers |
+| Tests | `Life-Admin-Autopilot.Tests/` | `Kernel/` — `KernelWebApplicationFactory`, probe module, parity tests |
+
+`Program.cs` calls exactly two kernel methods: `builder.Services.AddKernel(config)`
+and `app.UseKernel()`.
+
+**Do not edit `Program.cs`.** See §9.
+
+---
+
+## 1. Errors — one envelope, one exception type
+
+Throw `AppException` (`DAL/Kernel/Errors/AppException.cs`) for every expected,
+client-visible failure. The middleware renders it as:
+
+```json
+{"error":{"code":"…","message":"…","details":…}}
+```
+
+`details` is **omitted entirely** when null — never `"details": null`.
+
+```csharp
+throw AppException.BadRequest("invalid_body", "Invalid task payload.", details);
+throw AppException.NotFound("task_not_found", "Task no longer exists.");
+throw AppException.Conflict("email_taken", "An account with this email already exists.");
+throw AppException.PaymentRequired("quota_exceeded", $"You've hit today's limit of {limit} messages.", payload);
+```
+
+**Message strings are part of the contract.** Copy them verbatim from the Node
+route you are mirroring — punctuation, casing, em dashes and all. Do not improve
+the wording.
+
+### Branch order in `KernelErrorMiddleware`
+
+Mirrors `middleware/errorHandler.ts`. An earlier branch shadows a later one.
+
+1. `ObjectIdCastException` → **404** `not_found` "Not found"
+2. `ValidationException` → **400** `validation_error` "Request validation failed"
+3. `AppException` → its own status/code/message
+4. anything else → **500** `internal_error` "Internal server error"
+
+---
+
+## 2. The five cross-cutting edge cases
+
+These are all verified live. A "correct" implementation breaks parity.
+
+### 2.1 Malformed JSON and oversize bodies are 500, not 400/413
+
+`express.json({ limit: '256kb' })` throws a `SyntaxError` / `PayloadTooLargeError`
+that Node's error handler does not recognise, so both fall through to the generic
+500. ASP.NET would answer 400 and 413.
+
+Handled for you by `KernelBody` (§4). Do not add your own body reading, and do not
+add an `[ApiController]` attribute — its automatic 400 emits `ProblemDetails`,
+which Node never produces (`SuppressModelStateInvalidFilter` is already on).
+
+### 2.2 Unknown route / wrong method returns the default 404, not the envelope
+
+**Do not add a catch-all route or a fallback endpoint.** Node's Express falls
+through to its own HTML 404. The one accepted delta: Express's body is an HTML page
+(`Cannot GET /nope`), ASP.NET's 404 has an empty body. Status and "not JSON" are
+preserved, which is what clients branch on.
+
+### 2.3 Three `details` shapes, explicitly selected
+
+`ValidationDetails` in `DAL/Kernel/Errors/ValidationDetails.cs` exposes all three.
+There is no generic one. Pick by looking at the Node route.
+
+| Node source | Code | `details` shape | Mapper |
+| --- | --- | --- | --- |
+| throwing `Schema.parse(req.body)` | `validation_error` | **array** of `{path,message}`, dot-joined path | `AsPathMessageArray` — or just `throw new ValidationException(issues)` |
+| `safeParse()` + `error.flatten()` | route's own (`invalid_body`, `invalid_query`, `invalid_code`, `invalid_metadata`, `invalid_review`, `invalid_answer`) | `{formErrors, fieldErrors}` | `AsFlattened` |
+| `me.icsFeeds` only | `invalid_feed` | **raw issues array** with `code/expected/received/path(array)/message` | `AsRawIssues` |
+
+`AsFlattened` keys nested issues under the **top-level field name**. An issue at
+`mic.quality` appears under `"mic"`, because zod's `flatten()` uses `issue.path[0]`.
+Verified live.
+
+Node routes using the throwing `.parse()` lane (everything else uses `safeParse`):
+`auth.password`, `auth.email`, `auth.session`, `auth.magic`, `me.notifications`.
+
+Use `ZodMessages` (`DAL/Kernel/Errors/ZodMessages.cs`) for the message text —
+`"Invalid email"`, `"String must contain at least 8 character(s)"`,
+`"Unrecognized key(s) in object: 'bogus'"`, `"must not be empty"`, and so on. Add a
+constant only after seeing the real output on port 4100.
+
+### 2.4 Validation order is observable
+
+Use `NodeFieldRules` (`DAL/Kernel/Validation/NodeFieldRules.cs`). Do not hand-roll.
+
+| Rule | zod chain | Consequence |
+| --- | --- | --- |
+| `NormalizeEmail` | `.email().toLowerCase().trim()` | check runs **before** trim → `"  a@b.com  "` is **rejected**; `"A@B.com"` → `"a@b.com"` |
+| `NormalizeSixDigitCode` | `.trim().regex(/^\d{6}$/)` | trim runs **before** the regex → `" 424242 "` is **accepted** |
+| `TryNormalizeDisplayName` | `.min(1).max(80).trim()` | length runs **before** trim → `"   "` passes and stores as `""` |
+
+### 2.5 Rate limiters key on the raw socket IP
+
+`trust proxy` is OFF in Node, so `req.ip` is the socket address and
+`X-Forwarded-For` is ignored. The kernel does the same. Reading the forwarded
+header would let any client spoof past every limiter. State is in-process; there is
+no shared store.
+
+---
+
+## 3. CORS
+
+Configured from `Kernel:Cors:Origins`, falling back to the `CORS_ORIGINS`
+environment variable (comma-separated, same as Node). `NodeCorsMiddleware` is a
+hand-written port of the `cors` package as `app.ts` configures it; the built-in
+ASP.NET middleware cannot reproduce it. Three cases:
+
+| Origin | Behaviour |
+| --- | --- |
+| **absent** (native app, curl, server-to-server) | **Allowed.** `Vary: Origin` + `Access-Control-Allow-Credentials: true`, but no `Access-Control-Allow-Origin`. A bare `OPTIONS` still short-circuits with 204. |
+| **allowlisted** | `Access-Control-Allow-Origin` echoes the origin (never `*`), plus `Vary` and credentials. Preflight → 204 with the methods list and an echo of `Access-Control-Request-Headers`. |
+| **anything else** | **No CORS headers at all**, not even `Vary`. The request is processed normally; a preflight falls through to a 200 with `Allow`. Not an error — the browser refuses the response. |
+
+You do not touch CORS. It is already correct.
+
+---
+
+## 4. Request binding
+
+### JSON bodies — `KernelBody.ReadAsync<T>(ctx, options)`
+
+```csharp
+var body = await KernelBody.ReadAsync<CreateTaskBody>(
+    ctx, KernelBodyOptions.Strict_("Invalid task payload."));
+```
+
+**Lenient is the default, and that is the parity-correct default.** A plain zod
+object STRIPS unknown keys and succeeds — `POST /auth/signup` with an extra field
+returns **201** on the live Node server. Only a schema marked `.strict()` rejects
+them.
+
+Use `KernelBodyOptions.Strict_` **only** where the Node schema carries `.strict()`.
+In the Node source that is: the `me.tasks` body schemas, and the `me.tasks` /
+`me.digest` query schemas. Nothing else — `auth.*`, `PATCH /me`,
+`me.notifications`, `ai`, `clarifications`, `me.voiceNotes`, `me.documentScans`,
+`me.icsFeeds` are all lenient.
+
+Behaviour: an empty body deserializes as `{}` (express sets `req.body = {}`, and the
+route's own schema then decides); malformed JSON and >256kb are 500 (§2.1); a strict
+violation is `400 {code}` with `formErrors: ["Unrecognized key(s) in object: 'x'"]`.
+
+### Query strings — `QueryReader`
+
+Unknown parameters are a 400, never silently ignored — the frontend depends on the
+rejection. Empty-string values are rejected too (`?status=`, `?q=`).
+
+```csharp
+var q = new QueryReader(ctx.Request.Query, "sort", "limit", "cursor", "status", "q");
+var status = q.CsvEnum("status", TaskVocabulary.Statuses);
+var text   = q.String("q", minLength: 1, maxLength: 200);
+var limit  = q.Int("limit", min: 1, max: 200, fallback: 50);
+q.ThrowIfInvalid("invalid_query", "Invalid task list query.");
+```
+
+Accumulate every issue, then call `ThrowIfInvalid` **once** — zod reports them all
+in one response.
+
+### Raw uploads — `RawBodyReader`
+
+The frontend posts **raw bytes with `x-*` metadata headers**, not multipart.
+
+```csharp
+var upload = await RawBodyReader.ReadAsync(
+    ctx, maxBytes: MaxVoiceBytes,
+    emptyMessage: "No audio payload received.",
+    tooLargeMessage: $"Voice note exceeds {maxMb}MB.");
+
+var h = RawBodyReader.Headers(ctx);
+var durationMs = h.Int("x-voice-note-duration-ms", "durationMs", min: 0, max: 600_000);
+var capturedAt = h.IsoDate("x-voice-note-captured-at", "capturedAt");
+h.ThrowIfInvalid("invalid_metadata", "Missing or invalid x-voice-note-* headers.");
+```
+
+The two-ceiling trick is ported: the transport limit is `2 × maxBytes` so a normally
+oversize upload gets a friendly `400 payload_too_large` instead of a terse 413. Only
+a body over twice the limit becomes a 500.
+
+The header-reader field names are the **schema** names (`durationMs`), not the
+header names — that is what Node's `fieldErrors` keys are.
+
+---
+
+## 5. Auth
+
+Scheme `KernelBearer`, and it is the default. Just use `[Authorize]` /
+`.RequireAuthorization()`.
+
+| Condition | Response |
+| --- | --- |
+| header absent, or not starting with `"Bearer "` (including `Basic …`) | `401 missing_token` "Missing access token" |
+| bad signature / expired / wrong alg / missing `sub` or `email` | `401 invalid_token` "Invalid or expired access token" |
+
+Tokens are Node-shaped: HS256, `{ sub, email }`, **no issuer, no audience**, zero
+clock skew. Secret comes from `Kernel:Jwt:AccessSecret`, then `JWT_ACCESS_SECRET`,
+then `Jwt:Key`.
+
+### The claim shape — read it this way, always
+
+```csharp
+var user = ctx.RequireUser();   // throws 401 missing_token if absent
+user.Id;        // ObjectId — what every Mongo `userId` reference stores
+user.IdString;  // 24-hex — what the API exposes and the JWT `sub` carries
+user.Email;
+```
+
+Never dig through `User.Claims` yourself. Both `sub`/`email` and
+`ClaimTypes.NameIdentifier`/`ClaimTypes.Email` are populated, but
+`RequireUser()` is the only supported reader.
+
+**Two user ids, and the distinction is load-bearing.** `UserProfileDocument.Id` is
+the ObjectId the API exposes and every foreign key stores.
+`UserProfileDocument.IdentityUserId` is the SQL ASP.NET Identity key, used only to
+reach credentials. Never leak the Guid to a client; never put it in a Mongo
+reference.
+
+---
+
+## 6. Response DTOs — never serialize an entity
+
+Mongoose applies a per-schema `toJSON` transform on the way out. A direct
+serialization leaks `passwordHash` / `storageKey` and omits derived fields.
+`BLL/Kernel/Mappers/KernelMappers.cs` makes every transform explicit:
+
+```csharp
+return Results.Ok(new { tasks = docs.Select(d => d.ToDto()) });
+```
+
+| Document | Drops | Derives |
+| --- | --- | --- |
+| `TaskDocument` | `_id`→`id`, `__v` | `priorityRank` |
+| `SubtaskDocument` | `_id`→`id` (its **own** transform — Mongoose does not recurse) | — |
+| `UserProfileDocument` | `passwordHash`, `_id`→`id`, `__v` | `hasPassword` |
+| `ClarificationDocument` | `sourceKey`, `_id`→`id`, `__v` | — |
+| `NotificationDocument`, `TaskBulkOpDocument` | `_id`→`id`, `__v` | — |
+
+Rules for a mapper you write:
+
+- Read the `toJSON` block of the matching `server/src/models/*.ts` first. **The
+  deletions are the whole point.**
+- Nullable members carry `[JsonIgnore(WhenWritingNull)]` — Mongoose never stores an
+  unset optional, so it never appears in the JSON.
+- Declare properties in Mongoose schema order, with `id` and derived fields last.
+- Timestamps use `JsIsoDateTimeConverter` (registered globally): always three
+  fractional digits and a `Z`, matching `Date#toISOString()`. STJ's default trims
+  `.600` to `.6`, which is a parity break.
+
+### Two mappers you must write, spelled out
+
+The documents/voice slices own these models, so the kernel does not define them —
+but the transforms are non-obvious, so here they are verbatim:
+
+`ScannedDocument`: `_id`→`id`, drop `__v`, then
+`canRetry = status == "failed" && manualRetries < MAX_MANUAL_SCAN_RETRIES`, then
+**drop** `storageKey`, `rawExtractedText`, `attempts`, `maxAttempts`,
+`manualRetries`, `lockedUntil`, `nextRunAt`, `lastError`, `notifiedAt`.
+
+`VoiceNote`: `_id`→`id`, drop `__v`, then **drop** `storageKey`, `attempts`,
+`maxAttempts`, `lockedUntil`, `nextRunAt`, `lastError`, `notifiedAt`, `clarifyItems`
+(the last is an internal staging lane; it surfaces to clients as Clarifications).
+
+---
+
+## 7. Data access
+
+### Repository base — `MongoRepositoryBase<TDocument>`
+
+Its reason to exist is two predicates that Node spreads across 40+ call sites, and
+that a slice must never hand-write:
+
+```csharp
+NotDeleted()          // { deletedAt: { $exists: false } }  — NOT { deletedAt: null }
+VisibleOpen(now)      // { status: 'open', $or: [ {deferredUntil:{$exists:false}}, {deferredUntil:{$lte:now}} ] }
+UserScoped(userId)
+LiveForUser(userId)   // UserScoped AND NotDeleted
+ParseObjectId(value)  // throws ObjectIdCastException → 404 not_found
+```
+
+Every Task read composes `NotDeleted()`. Every clarification count or list composes
+`VisibleOpen()` — the dashboard and the digest once disagreed for exactly this
+reason.
+
+### Documents and collection names
+
+`DAL/Kernel/Documents/` holds `TaskDocument`, `UserProfileDocument`,
+`ClarificationDocument`, `NotificationDocument`, `TaskBulkOpDocument`, plus the
+vocabularies (`TaskVocabulary`, `UserVocabulary`, …) with the closed enum lists,
+`PRIORITY_RANK` and `NormalizeTag`.
+
+`MongoCollections` holds the Mongoose-pluralised names. **Add your slice's
+collection constant in your own file**, not to that class — it is a merge-conflict
+magnet.
+
+### Indexes — `IMongoIndexProvider`
+
+Mongoose creates indexes from the schema; the .NET driver creates nothing. Some are
+a **correctness** requirement, not an optimisation: the quota primitive's
+duplicate-key retry only works because a unique index exists to produce the error.
+
+```csharp
+services.AddMongoIndexProvider<MySliceIndexes>();
+```
+
+`KernelIndexProvider` already covers the three usage counters, `users`, `tasks`,
+`clarifications`, `notifications` and `taskbulkops`. Creation runs in the background
+at boot (never blocking) and is idempotent.
+
+---
+
+## 8. Shared services
+
+### 8.1 `TaskQuery` — the day-boundary authority
+
+`BLL/Kernel/Tasks/TaskQuery.cs` + `TaskQuery.Time.cs`. Seven modules depend on it;
+if the UI can express a filter the agent cannot, "show me what you just showed me"
+stops working.
+
+```csharp
+TaskQuery.BuildFilter(userId, filter, now)     // user-scoped, always NotDeleted
+TaskQuery.ListAsync(collection, userId, filter, sort, limit, cursor)  // $facet: page + total in one trip
+TaskQuery.EncodeCursor(offset) / DecodeCursor(cursor)                 // base64url offset, lenient decode
+TaskQuery.GetDayBoundaries(now, timezone)                             // today/tomorrow/dayAfter/weekEnd
+TaskQuery.StartOfLocalDay(at, timezone)
+```
+
+Notes that bite: `undated` overrides an explicit due range; `untagged` overwrites a
+tag filter; `overdue` narrows status to `open|snoozed` unless one was given; free
+text is regex-escaped over title **and** notes; `weekEnd` is the next **7 days**, not
+the calendar week; an unrecognised timezone **throws** (a 500), matching Node's
+uncaught `Intl` RangeError — do not add a silent UTC fallback.
+
+### 8.2 `BulkService` — the only journaled Task write path
+
+`BLL/Kernel/Tasks/BulkService.cs`. Route **every** multi-task mutation through it. A
+hand-rolled `UpdateMany` silently removes undo.
+
+- Writes the `TaskBulkOp` journal **before** the bulk write.
+- Deletion is always **soft**. The chat agent calls this same service, so it is
+  structurally incapable of an irreversible bulk delete.
+- Delete cascades `ClarificationCascade.DropForTasksAsync`.
+- **Undo restores the tasks but does NOT un-drop the clarifications.** That asymmetry
+  is ported deliberately — a dropped question is a settled conversation. Do not
+  "fix" it.
+- No-op actions are skipped, not journaled, so undo cannot restore a change that
+  never happened.
+- `ToMongoOps` is public and shared: in a `prior` patch, BSON **null** means "the
+  field was absent, `$unset` it on undo"; a missing key means "not touched". The
+  categorize flow must reuse this function, not reimplement it.
+
+### 8.3 One quota primitive — `IUsageQuotaStore`
+
+Node clones this three times. There is one implementation.
+
+```csharp
+var bucket = new UsageQuotaBucket(
+    MongoCollections.AiUsageCounters, userId,
+    new Dictionary<string,string> { ["date"] = UsageQuotaBuckets.UtcDate(), ["kind"] = "message" },
+    limit);
+
+var admission = await quota.TryAdmitAsync(bucket);
+if (!admission.Admitted)
+    throw AppException.PaymentRequired("quota_exceeded",
+        $"You've hit today's limit of {admission.Limit} messages.",
+        new { kind = "message", tier, limit = admission.Limit, used = admission.Used,
+              resetAt = UsageQuotaBuckets.NextUtcMidnightIso() });
+```
+
+**The 402 payload is per-caller** — scans send `{tier,limit,used}`, AI sends
+`{kind,tier,limit,used,resetAt}`, translate sends `{locale,limit,used,resetAt}` — so
+the store returns an admission, never an exception.
+
+**Reserve/release contract:** the slot is consumed *before* the expensive work. If
+the work fails before producing a result, call `ReleaseAsync` exactly once. **Never
+release on undo** — that makes do → undo → do an unlimited loop around the cap.
+`RecordAsync` is the ungated increment (Node's `recordUsage`).
+
+If you add a counter collection, register its unique index (§7).
+
+### 8.4 `ImportedTimeResolver` — the date-only policy
+
+`BLL/Kernel/Integrations/ImportedTimeResolver.cs`. **We never invent a time.**
+`ResolveDateOnly` (source's date + the user's stated default time, `high`
+confidence), `ResolveFloating` (`low` confidence, `needsConfirmation: true`),
+`ResolveExact`. Missing/invalid timezone **throws** `TimezoneRequiredException`
+rather than defaulting to UTC — an import runs with no device present, and guessing
+UTC for a user in Cairo moves every reminder two hours invisibly.
+
+### 8.5 `ReminderPlanner` + `ReminderLeadTime`
+
+`SetRulesRemindersAsync` writes the deterministic lead-time schedule and never
+throws. **Call it only when `dueAt` or `kind` changes** — it overwrites `reminders`
+fresh, clearing `firedAt`. `SetSnoozeReminderAsync` fires once, at the snooze moment.
+
+AI refinement goes through `IReminderRefiner`. The kernel registers
+`NullReminderRefiner` (not configured), which is the no-`GEMINI_API_KEY` parity
+target. The AI slice **replaces** that registration — use `services.Replace(...)`,
+not `TryAdd`.
+
+### 8.6 Account deletion — `IUserDataEraser`
+
+Node keeps one hand-maintained 12-collection list. Register your own instead:
+
+```csharp
+internal sealed class VoiceNoteEraser(IMongoDatabase db) : IUserDataEraser
+{
+    public string Name => "voice-notes";
+    public Task EraseAsync(UserErasureContext ctx, CancellationToken ct) => …;
+}
+
+services.AddUserDataEraser<VoiceNoteEraser>();
+```
+
+Order: `Storage` (100) → `Sessions` (200) → `Dependents` (300, the default) →
+`Account` (1000, **kernel-only**). Blob cleanup must be at `Storage` order, before
+the rows holding the storage keys vanish. Be idempotent; the cascade is re-runnable.
+Non-account erasers that throw are logged and the cascade continues.
+
+---
+
+## 9. Registration conventions — how seven agents avoid each other
+
+**Nobody edits `Program.cs`.** Three mechanisms:
+
+### `IEndpointModule` (assembly-scanned)
+
+```csharp
+public sealed class TasksModule : IEndpointModule
+{
+    public void AddServices(IServiceCollection s, IConfiguration c) => s.AddTasksFeature(c);
+    public void MapEndpoints(IEndpointRouteBuilder e) => e.MapTasksEndpoints();
+}
+```
+
+One per slice, in that slice's folder, named `XxxModule`, public parameterless
+constructor. The scanner walks every loaded assembly whose name starts with
+`Life-Admin-Autopilot`. A controller-only slice implements `AddServices` and leaves
+`MapEndpoints` as the default no-op — MVC discovers controllers separately.
+
+`Life-Admin-Autopilot.Tests/Kernel/KernelProbeModule.cs` is a worked example.
+
+### `AddXxxFeature()` DI extension
+
+Every slice owns exactly one:
+
+```csharp
+public static class TasksFeature
+{
+    public static IServiceCollection AddTasksFeature(this IServiceCollection services, IConfiguration configuration)
+    {
+        services.AddScoped<ITaskRepository, TaskRepository>();
+        services.AddUserDataEraser<TaskEraser>();
+        services.AddMongoIndexProvider<TaskIndexes>();
+        services.AddKernelWorker<ReminderWorker>();
+        return services;
+    }
+}
+```
+
+`AddServices` should do nothing but call it, so the DI surface stays greppable. Use
+`TryAdd*` for anything another slice might also want; use `Replace` only when
+deliberately overriding a kernel default (`IReminderRefiner` is the one expected
+case).
+
+### Additive registries
+
+`IUserDataEraser`, `IMongoIndexProvider` and `IKernelRateLimiter` are all
+`IEnumerable<T>` collections. Adding to them never touches another slice's file.
+
+---
+
+## 10. Rate limiting
+
+Eight limiters, names from `KernelRateLimiters`. **Use the constant, never a
+literal** — three are shared buckets and a typo silently creates a private one.
+
+| Constant | Window / max | Key | Kind |
+| --- | --- | --- | --- |
+| `Auth` | 15 min / 20 | socket IP | fixed window |
+| `StrictAuth` | 60 min / 5 | socket IP | fixed window |
+| `AiAsk` | 1 min / 30 | user → IP | sliding |
+| `TaskSearch` | 1 min / 30 | user → IP | sliding |
+| `TaskSummary` | 1 min / 10 | user → IP | sliding — **SHARED** across summary routes |
+| `AiConfirm` | 1 min / 30 | user → IP | sliding |
+| `AiVoice` | 1 min / 12 | user → IP | sliding — **SHARED** (voice upload + chat transcribe) |
+| `DocumentScan` | 1 min / 6 | user → IP | sliding — **SHARED** across scan routes |
+
+```csharp
+[Authorize]
+[RateLimit(KernelRateLimiters.AiVoice)]          // controllers
+endpoints.MapPost(...).RateLimited(KernelRateLimiters.AiAsk);   // minimal APIs
+```
+
+Apply **after** authentication so the sliding limiters key on the user id — MVC
+filters and endpoint filters both already run after the auth middleware.
+
+Response shapes: the fixed-window limiters emit `RateLimit-Policy`,
+`RateLimit-Limit`, `RateLimit-Remaining` and `RateLimit-Reset` on **every** response
+and add `Retry-After` + `X-Content-Type-Options: nosniff` on the 429, with their own
+message. The sliding limiters set only `Retry-After` and always say
+`"You are going a little fast — give it a moment and try again."`
+
+Disabled when `Kernel:RateLimit:Enabled=false` — the test fixture does this, matching
+Node's `NODE_ENV=test` skip.
+
+---
+
+## 11. Background workers
+
+```csharp
+internal sealed class ReminderWorker(IServiceProvider sp, ILogger<ReminderWorker> log)
+    : KernelPollingWorker(sp, log)
+{
+    protected override TimeSpan Interval => TimeSpan.FromSeconds(30);
+    protected override string WorkerName => "reminder";
+    protected override async Task RunOnceAsync(CancellationToken ct) { … }
+}
+
+services.AddKernelWorker<ReminderWorker>();
+```
+
+The base class reproduces Node's `setInterval` + overlap guard: a slow tick delays
+the next one instead of racing it. Rules — `RunOnceAsync` must not throw; **claim
+work atomically** (a conditional update stamping a lock or `firedAt`) before doing
+it, because the double-send guard belongs in the claim, not the scheduler; resolve
+scoped services from `Services` inside the tick.
+
+Workers are skipped entirely when `Kernel:Workers:Enabled=false` (the test fixture
+sets this).
+
+---
+
+## 12. Testing your slice
+
+```csharp
+public sealed class TaskEndpointTests : IClassFixture<KernelWebApplicationFactory>
+{
+    private readonly KernelWebApplicationFactory _factory;
+    public TaskEndpointTests(KernelWebApplicationFactory f) => _factory = f;
+
+    [Fact]
+    public async Task rejects_an_unknown_query_parameter()
+    {
+        var response = await _factory.CreateApiClient().GetAsync("/me/tasks?bogus=1");
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+    }
+}
+```
+
+The fixture points Mongo at `mongodb://127.0.0.1:27018` / `kitto_parity_dotnet`,
+disables rate limiters and workers, and pins a CORS allowlist and JWT secret.
+`CreateApiClient()` does not follow redirects — a 3xx is a parity failure.
+
+For an authenticated call, mint a Node-shaped token with
+`KernelPipelineTests.NodeShapedToken(sub, email)`.
+
+**Never point a test at the Atlas cluster in `server/.env`.** That is production
+data.
+
+Mongo-backed tests should skip (return early) when the parity instance is
+unreachable — see `UsageQuotaTests.TryCreateStore` — so the suite stays green on a
+machine without it.
+
+---
+
+## 13. Configuration keys the kernel reads
+
+| Key | Env fallback | Default | Meaning |
+| --- | --- | --- | --- |
+| `Kernel:Cors:Origins` | `CORS_ORIGINS` | empty | comma-separated allowlist |
+| `Kernel:Jwt:AccessSecret` | `JWT_ACCESS_SECRET`, then `Jwt:Key` | — | HS256 secret |
+| `Kernel:Jwt:ValidIssuer` / `ValidAudience` | — | off | Node signs neither |
+| `Kernel:RateLimit:Enabled` | — | `true` | |
+| `Kernel:Workers:Enabled` | — | `true` | |
+| `Kernel:Mongo:EnsureIndexes` | — | `true` | |
+| `Kernel:UseHttpsRedirection` | — | `false` | a 307 to https breaks every parity check |
+| `MongoDbSettings:ConnectionString` / `DatabaseName` | — | — | pre-existing |
+
+---
+
+## 14. Checklist before you call a slice done
+
+- [ ] No edits to `Program.cs`, `KernelExtensions.cs`, or anything under a `Kernel/` folder.
+- [ ] Every response goes through an explicit mapper — no entity is serialized directly.
+- [ ] Every Task read composes `NotDeleted()`; every clarification list composes `VisibleOpen()`.
+- [ ] Multi-task mutations go through `BulkService`.
+- [ ] Error codes and messages copied verbatim from the Node route.
+- [ ] The right one of the three `details` mappers.
+- [ ] Body strictness matches the Node schema (lenient unless it says `.strict()`).
+- [ ] Query binding rejects unknown and empty parameters.
+- [ ] An `IUserDataEraser` registered for every collection the slice owns.
+- [ ] An `IMongoIndexProvider` registered for every uniqueness invariant.
+- [ ] Rate limiters applied by constant, after `[Authorize]`.
+- [ ] `dotnet build` clean, `dotnet test` green.
+- [ ] Spot-checked against `http://localhost:4100` with curl.

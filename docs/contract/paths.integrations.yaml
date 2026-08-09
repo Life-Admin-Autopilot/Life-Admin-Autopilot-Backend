@@ -1,0 +1,3095 @@
+# =============================================================================
+# FROZEN CONTRACT FRAGMENT — Integrations domain
+#
+# Source of truth: the Express + Mongoose reference server
+#   server/src/routes/me.documentScans.ts
+#   server/src/routes/me.icsFeeds.ts
+#   server/src/routes/integrations.google.ts
+#   server/src/routes/me.voiceNotes.ts
+#   server/src/modules/ai/routes.ts
+#
+# Every status code, error `code`, and literal `message` below was read from
+# that source AND (except where explicitly marked UNVERIFIED) observed against
+# a live reference server at http://localhost:4100 running with:
+#   * no GEMINI_API_KEY          -> isAiConfigured() === false
+#   * no GOOGLE_CLIENT_ID/SECRET/REDIRECT_URI and no INTEGRATION_ENCRYPTION_KEY
+#                                -> Google `ready()` === false
+#   * NODE_ENV !== 'test'        -> rate limiters ACTIVE
+#
+# 28 operations across 21 paths. The .NET reimplementation must match these
+# byte-for-byte, including message punctuation (note the U+2014 em dashes and
+# the U+2019 apostrophe in "You've").
+#
+# ---------------------------------------------------------------------------
+# GLOBAL BEHAVIOUR THAT APPLIES TO EVERY OPERATION IN THIS FILE
+# ---------------------------------------------------------------------------
+# app.ts wiring, in order:
+#   app.disable('x-powered-by')
+#   helmet()                       -> default helmet header set on every response
+#   cors({ credentials: true, origin: allowlist from CORS_ORIGINS })
+#                                  -> requests with NO Origin header are allowed
+#   express.json({ limit: '256kb' })
+#   pino-http
+#   ...routers...
+#   errorHandler
+#
+# errorHandler (src/middleware/errorHandler.ts) maps, in this order:
+#   1. mongoose CastError with kind 'ObjectId'
+#        -> 404 {"error":{"code":"not_found","message":"Not found"}}
+#        Triggered by any malformed `:id` path param that reaches a query.
+#   2. ZodError that escapes a handler (none of the handlers in this file let
+#      one escape; they all use safeParse)
+#        -> 400 {"error":{"code":"validation_error",
+#                "message":"Request validation failed",
+#                "details":[{"path":"a.b","message":"..."}]}}
+#   3. AppError -> its own status/code/message, `details` present only when the
+#      AppError carried one.
+#   4. ANYTHING ELSE -> 500 {"error":{"code":"internal_error",
+#                             "message":"Internal server error"}}
+#      >>> This is how body-parser's own 413 "request entity too large" surfaces:
+#      >>> as a 500 internal_error, NOT as a 413. Verified live for both
+#      >>> POST /me/document-scans (32 MB body) and POST /me/voice-notes (11 MB).
+#
+# Auth: `requireAuth` (src/middleware/auth.ts). Requires header
+#   Authorization: Bearer <accessToken>
+#   * header missing or not starting with exactly "Bearer "
+#       -> 401 {"error":{"code":"missing_token","message":"Missing access token"}}
+#   * token present but jwt verify throws
+#       -> 401 {"error":{"code":"invalid_token",
+#               "message":"Invalid or expired access token"}}
+#   Note the space-sensitive prefix test: `header.startsWith('Bearer ')`.
+#
+# Rate limiting (src/middleware/rateLimit.ts): a HAND-ROLLED in-process sliding
+# window, NOT express-rate-limit. Key = `req.auth?.sub ?? req.ip ?? 'unknown'`.
+# It stores each hit's timestamp and counts only hits newer than `now-windowMs`.
+# Entirely SKIPPED when `process.env.NODE_ENV === 'test'`.
+# On refusal it sets `Retry-After: <seconds>` (integer, >= 1, computed as
+# ceil((oldestHitInWindow + windowMs - now)/1000)) and produces
+#   429 {"error":{"code":"rate_limited",
+#        "message":"You are going a little fast — give it a moment and try again."}}
+# Named instances used by this fragment (each instance = ONE shared bucket):
+#   documentScanLimiter  60000 ms / 6   -> POST /me/document-scans
+#                                          POST /me/document-scans/{id}/reprocess
+#   aiVoiceLimiter       60000 ms / 12  -> POST /me/voice-notes
+#                                          POST /ai/voice/transcribe
+#   aiAskLimiter         60000 ms / 30  -> POST /ai/ask
+#   aiConfirmLimiter     60000 ms / 30  -> POST /ai/tools/confirm/{callId}
+# Because the limiter instance is shared, the two endpoints listed under
+# documentScanLimiter draw down the SAME per-user counter, and likewise for the
+# two under aiVoiceLimiter.
+#
+# Error envelope for EVERY JSON error in this fragment:
+#   {"error":{"code":"<snake_case>","message":"<literal>","details":<any>?}}
+# `details` is omitted entirely (not null) when the AppError had none.
+# =============================================================================
+
+openapi: 3.1.0
+
+paths:
+
+  # ===========================================================================
+  # DOCUMENT SCANS
+  # ===========================================================================
+
+  /me/document-scans:
+    post:
+      operationId: scanUploadDocument
+      summary: Upload a document scan (RAW BINARY body — NOT multipart)
+      description: |
+        Accepts the document bytes as the RAW request body. There is no
+        multipart form, no field name, and no `multipart/form-data` handling
+        anywhere in the stack. Metadata travels on `x-document-scan-*` headers
+        precisely so the request stays a single raw binary body.
+
+        Middleware chain, in exact order:
+          1. `requireAuth`
+          2. `documentScanLimiter`  (60 s / 6, shared with `/reprocess`)
+          3. `express.raw({ type: ALLOWED_MIME, limit: DOCUMENT_SCAN_MAX_BYTES * 2 })`
+          4. handler
+
+        ALLOWED_MIME (this exact list drives BOTH the raw() parser type filter
+        and the handler's own content-type check):
+          application/pdf, image/jpeg, image/png, image/heic, image/webp
+
+        TWO SIZE CEILINGS, deliberately different:
+          * FRIENDLY CAP = `DOCUMENT_SCAN_MAX_BYTES` (env, default 15728640 =
+            15 MiB). Enforced by the handler -> 400 `payload_too_large` with the
+            message "Document exceeds 15MB." (the number is
+            `Math.round(maxBytes / 1048576)`).
+          * BODY-PARSER CEILING = `DOCUMENT_SCAN_MAX_BYTES * 2` (default 30 MiB).
+            Deliberately set ABOVE the friendly cap so a normal oversize reaches
+            the friendly 400 instead of body-parser's terse error. A body above
+            the DOUBLED ceiling never reaches the handler: body-parser throws
+            its own 413-flavoured error, which errorHandler does NOT recognise,
+            so the client sees
+              500 {"error":{"code":"internal_error","message":"Internal server error"}}
+            VERIFIED LIVE with a 32 MB body.
+
+        HANDLER ORDER (short-circuits at the first failure — a request that
+        violates several rules gets the FIRST error in this list):
+          a. body missing / not a Buffer / zero length -> 400 `empty_body`
+          b. body length > friendly cap                -> 400 `payload_too_large`
+          c. content-type (before `;`) not in ALLOWED_MIME
+                                                       -> 400 `unsupported_media_type`
+             *** In practice UNREACHABLE: raw() only populates `req.body` with a
+             Buffer for the ALLOWED_MIME types, so any other content-type leaves
+             `req.body` non-Buffer and step (a) fires first. VERIFIED LIVE:
+             `Content-Type: text/plain` with a non-empty body returns
+             `empty_body`, not `unsupported_media_type`. Reimplement the branch
+             anyway for byte-parity if the body ever arrives another way. ***
+          d. `x-document-scan-*` header zod parse      -> 400 `invalid_metadata`
+          e. PDF page count (only when content-type is application/pdf;
+             non-PDF is hard-coded to pageCount 1)
+               - pdf-lib load throws -> 400 `invalid_pdf`
+               - pages > `DOCUMENT_SCAN_MAX_PAGES` (env, default 20)
+                                     -> 400 `document_too_many_pages`
+          f. monthly quota admission (atomic $inc guarded by count < limit)
+                                     -> 402 `document_scan_quota_exceeded`
+          g. storage write + Mongo create + `enqueueDocumentScan(id)` (fire and
+             forget, `setImmediate`) -> 202
+
+        Quota slot accounting: the slot is RESERVED at (f). If anything after it
+        throws, `releaseDocumentScanSlot` decrements it back and the original
+        error propagates. The tier used for admission is HARD-CODED to `free`
+        in the route (`const tier = 'free' as const`) regardless of the user's
+        actual `subscription.tier` — unlike `GET /me/document-scans/quota`,
+        which reads the real tier. Reproduce this asymmetry exactly.
+      security:
+        - scanBearerAuth: []
+      parameters:
+        - name: x-document-scan-captured-at
+          in: header
+          required: true
+          description: |
+            REQUIRED. Must satisfy zod `z.string().datetime()` (RFC 3339 / ISO
+            8601 with a `Z` or offset, e.g. `2026-08-09T10:00:00.000Z`). Stored
+            as `clientCapturedAt`. Absent -> `invalid_metadata` with
+            `details.fieldErrors.capturedAt = ["Required"]`.
+          schema:
+            type: string
+            format: date-time
+        - name: x-document-scan-source
+          in: header
+          required: false
+          description: |
+            Optional. One of `camera`, `pdf`, `gallery`. Defaults to `pdf` when
+            the header is absent. An unrecognised value is a hard
+            `invalid_metadata` failure (zod enum), NOT a silent fallback.
+          schema:
+            type: string
+            enum: [camera, pdf, gallery]
+            default: pdf
+        - name: x-document-scan-timezone
+          in: header
+          required: false
+          description: |
+            Optional IANA timezone, 1..64 chars, validated by attempting
+            `new Intl.DateTimeFormat('en-US', { timeZone: tz })`. Invalid ->
+            `invalid_metadata` with message "must be a valid IANA timezone".
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 64
+      requestBody:
+        required: true
+        description: Raw document bytes. The Content-Type header selects the format.
+        content:
+          application/pdf:
+            schema: { type: string, format: binary }
+          image/jpeg:
+            schema: { type: string, format: binary }
+          image/png:
+            schema: { type: string, format: binary }
+          image/heic:
+            schema: { type: string, format: binary }
+          image/webp:
+            schema: { type: string, format: binary }
+      responses:
+        '202':
+          description: |
+            Accepted. The record exists in status `pending` and the worker has
+            been kicked via `setImmediate`. Extraction has NOT run yet.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ScanSingleResponse' }
+              examples:
+                observed:
+                  summary: Live reference-server response
+                  value:
+                    scannedDocument:
+                      userId: "6a78bbbeaa461ae1dc64a0bf"
+                      mimeType: "application/pdf"
+                      sourceType: "pdf"
+                      pageCount: 1
+                      byteSize: 574
+                      status: "pending"
+                      clientCapturedAt: "2026-08-09T10:00:00.000Z"
+                      timezone: "Africa/Cairo"
+                      candidates: []
+                      createdAt: "2026-08-09T17:44:34.393Z"
+                      updatedAt: "2026-08-09T17:44:34.393Z"
+                      id: "6a78bc82aa461ae1dc64a251"
+                      canRetry: false
+        '400':
+          description: |
+            `empty_body` | `payload_too_large` | `unsupported_media_type`
+            | `invalid_metadata` | `invalid_pdf` | `document_too_many_pages`
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ScanErrorEnvelope' }
+              examples:
+                empty_body:
+                  value:
+                    error: { code: empty_body, message: "No document payload received." }
+                payload_too_large:
+                  value:
+                    error: { code: payload_too_large, message: "Document exceeds 15MB." }
+                unsupported_media_type:
+                  value:
+                    error:
+                      code: unsupported_media_type
+                      message: "Only PDF, JPEG, PNG, HEIC, or WebP are supported."
+                invalid_metadata:
+                  value:
+                    error:
+                      code: invalid_metadata
+                      message: "Missing or invalid x-document-scan-* headers."
+                      details:
+                        formErrors: []
+                        fieldErrors:
+                          capturedAt: ["Required"]
+                invalid_pdf:
+                  value:
+                    error:
+                      code: invalid_pdf
+                      message: "Could not read that PDF — it may be corrupt or password-protected."
+                document_too_many_pages:
+                  value:
+                    error:
+                      code: document_too_many_pages
+                      message: "PDF has 21 pages, exceeding the 20-page limit."
+        '401': { $ref: '#/components/responses/ScanUnauthorized' }
+        '402':
+          description: |
+            Monthly document-scan quota exhausted. Thrown by
+            `admitDocumentScan` in src/lib/documentScanQuota.ts. The bucket is a
+            `YYYY-MM` UTC month; the counter row is
+            `DocumentScanUsageCounter{userId, month, count}`.
+            `details.used` is read back from the row after the guarded $inc
+            failed, falling back to `limit` if the row is missing.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ScanQuotaExceededError' }
+              examples:
+                observed:
+                  summary: Live reference-server response (free tier, limit 20)
+                  value:
+                    error:
+                      code: document_scan_quota_exceeded
+                      message: "You've hit this month's limit of 20 document scans."
+                      details: { tier: free, limit: 20, used: 20 }
+        '429': { $ref: '#/components/responses/ScanRateLimited' }
+        '500': { $ref: '#/components/responses/ScanInternalOrBodyTooLarge' }
+
+    get:
+      operationId: scanListDocuments
+      summary: List the caller's document scans
+      description: |
+        `ScannedDocument.find({ userId }).sort({ createdAt: -1 }).limit(50)`.
+        HARD-CODED limit of 50 — there are no query parameters, no pagination,
+        no filtering, and no total count. Always 200 with a (possibly empty)
+        array. No rate limiter.
+      security:
+        - scanBearerAuth: []
+      responses:
+        '200':
+          description: Up to 50 scans, newest first.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ScanListResponse' }
+              examples:
+                empty:
+                  value: { scannedDocuments: [] }
+        '401': { $ref: '#/components/responses/ScanUnauthorized' }
+
+  /me/document-scans/quota:
+    get:
+      operationId: scanReadQuota
+      summary: Read the monthly document-scan quota meter
+      description: |
+        MUST be routed BEFORE `/me/document-scans/{id}` — Express matches in
+        registration order and the parameterised route would otherwise swallow
+        the literal segment "quota" as an id.
+
+        Unlike the upload route (which hard-codes `free`), this reads the
+        caller's REAL tier: `user.subscription?.tier ?? 'free'`.
+        `resetAt` is midnight UTC on the first of the following month, derived
+        from the `YYYY-MM` bucket. No rate limiter.
+      security:
+        - scanBearerAuth: []
+      responses:
+        '200':
+          description: Current month's meter.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ScanQuotaResponse' }
+              examples:
+                observed:
+                  value:
+                    tier: free
+                    quota:
+                      kind: document_scan
+                      limit: 20
+                      used: 0
+                      remaining: 20
+                      resetAt: "2026-09-01T00:00:00.000Z"
+        '401': { $ref: '#/components/responses/ScanUnauthorized' }
+        '404':
+          description: The authenticated user id no longer resolves to a User row.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ScanErrorEnvelope' }
+              examples:
+                user_not_found:
+                  value:
+                    error: { code: user_not_found, message: "Account no longer exists." }
+
+  /me/document-scans/{id}:
+    parameters:
+      - $ref: '#/components/parameters/ScanIdParam'
+    get:
+      operationId: scanGetDocument
+      summary: Fetch one document scan
+      description: |
+        Scoped to the caller (`findOne({_id, userId})`), so another user's id is
+        indistinguishable from a missing one. No rate limiter.
+      security:
+        - scanBearerAuth: []
+      responses:
+        '200':
+          description: The scan.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ScanSingleResponse' }
+              examples:
+                failed_with_retry_available:
+                  summary: Live response after the worker failed (no AI key configured)
+                  value:
+                    scannedDocument:
+                      userId: "6a78bbbeaa461ae1dc64a0bf"
+                      mimeType: "application/pdf"
+                      sourceType: "pdf"
+                      pageCount: 1
+                      byteSize: 574
+                      status: "failed"
+                      clientCapturedAt: "2026-08-09T10:00:00.000Z"
+                      timezone: "Africa/Cairo"
+                      candidates: []
+                      createdAt: "2026-08-09T17:44:34.393Z"
+                      updatedAt: "2026-08-09T17:44:54.065Z"
+                      failureReason: "AI is not configured. Set GEMINI_API_KEY in server/.env to enable."
+                      id: "6a78bc82aa461ae1dc64a251"
+                      canRetry: true
+        '401': { $ref: '#/components/responses/ScanUnauthorized' }
+        '404': { $ref: '#/components/responses/ScanDocumentNotFound' }
+
+    delete:
+      operationId: scanDeleteDocument
+      summary: Permanently delete a document scan
+      description: |
+        IDEMPOTENT BY DESIGN. A scan that does not exist (already deleted, or
+        belonging to someone else) returns 204, NOT 404 — a double-tap must not
+        surface an error. VERIFIED LIVE.
+
+        Order of effects (deliberate):
+          1. `doc.deleteOne()`                       (record first)
+          2. `Notification.deleteMany({userId, documentId})`
+          3. `storage.remove(storageKey)` wrapped in try/catch — a failure here
+             is logged (`documentScan:delete-storage-failed`) and SWALLOWED; the
+             response is still 204.
+        Tasks already filed from this document are deliberately NOT deleted.
+        The monthly quota slot is deliberately NOT refunded.
+
+        A malformed (non-ObjectId) `{id}` still produces the global CastError
+        404 `not_found`, because the CastError is thrown by the `findOne`
+        before the idempotent branch is reached. VERIFIED LIVE.
+        No rate limiter.
+      security:
+        - scanBearerAuth: []
+      responses:
+        '204':
+          description: Deleted, or already absent. Empty body, no Content-Type.
+        '401': { $ref: '#/components/responses/ScanUnauthorized' }
+        '404':
+          description: |
+            ONLY from the global CastError mapping when `{id}` is not a valid
+            24-hex ObjectId. A well-formed but unknown id returns 204.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ScanErrorEnvelope' }
+              examples:
+                cast_error:
+                  value:
+                    error: { code: not_found, message: "Not found" }
+
+  /me/document-scans/{id}/file:
+    parameters:
+      - $ref: '#/components/parameters/ScanIdParam'
+    get:
+      operationId: scanGetDocumentFile
+      summary: Stream the original scanned bytes (BINARY response)
+      description: |
+        The ONLY place `storageKey` is ever read back out; `toJSON()` strips it
+        from every other response on purpose.
+
+        SUCCESS is a raw binary body with these headers set explicitly by the
+        handler (VERIFIED LIVE):
+          Content-Type: <the stored `mimeType`, e.g. application/pdf>
+          Content-Disposition: inline          (no filename parameter)
+          Cache-Control: private, max-age=86400
+        Express additionally emits `Content-Length` and a weak `ETag`
+        (`res.send(Buffer)`), plus the standard helmet/CORS headers.
+
+        ERRORS ARE STILL JSON. A 401 or 404 on this route returns the ordinary
+        `{"error":{...}}` envelope with `Content-Type: application/json`, NOT a
+        binary body. VERIFIED LIVE.
+
+        If the underlying file is missing from storage, `readFile` rejects and
+        the request becomes 500 `internal_error` (the storage error is not an
+        AppError). No rate limiter.
+      security:
+        - scanBearerAuth: []
+      responses:
+        '200':
+          description: The original bytes, inline.
+          headers:
+            Content-Disposition:
+              description: Always the literal string `inline`, with no parameters.
+              schema: { type: string, const: inline }
+            Cache-Control:
+              description: Always the literal `private, max-age=86400`.
+              schema: { type: string, const: "private, max-age=86400" }
+          content:
+            application/pdf:  { schema: { type: string, format: binary } }
+            image/jpeg:       { schema: { type: string, format: binary } }
+            image/png:        { schema: { type: string, format: binary } }
+            image/heic:       { schema: { type: string, format: binary } }
+            image/webp:       { schema: { type: string, format: binary } }
+        '401': { $ref: '#/components/responses/ScanUnauthorized' }
+        '404': { $ref: '#/components/responses/ScanDocumentNotFound' }
+        '500':
+          description: Storage read failed (file missing on disk, unreadable key).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ScanErrorEnvelope' }
+              examples:
+                internal:
+                  value:
+                    error: { code: internal_error, message: "Internal server error" }
+
+  /me/document-scans/{id}/reprocess:
+    parameters:
+      - $ref: '#/components/parameters/ScanIdParam'
+    post:
+      operationId: scanReprocessDocument
+      summary: Re-run extraction on a failed document scan
+      description: |
+        Rate limiter: `documentScanLimiter` (60 s / 6) — the SAME instance and
+        therefore the SAME per-user bucket as `POST /me/document-scans`.
+
+        No request body is read. Behaviour by current status:
+          * status !== 'failed'  -> 200 with the unchanged document. IDEMPOTENT
+            ON PURPOSE: the client polls every 4 s, so a retry tapped after the
+            worker already recovered must read as success, not 409.
+          * status === 'failed' and `manualRetries >= 3` (MAX_MANUAL_SCAN_RETRIES)
+                                 -> 400 `document_scan_retry_exhausted`
+          * status === 'failed' and retries remain -> mutate and 202:
+              manualRetries += 1
+              attempts       = 0        (fresh backoff ladder)
+              status         = 'pending'
+              nextRunAt      = now
+              lockedUntil    = null
+              lastError      = undefined
+              failureReason  = undefined     <- disappears from the response
+            then `enqueueDocumentScan(doc.id)`.
+
+        The monthly quota is NOT charged again — the slot belongs to the
+        document, not to an extraction attempt. VERIFIED LIVE (`used` unchanged
+        across a reprocess).
+
+        Note the status-code split: 200 for the no-op path, 202 for the path
+        that actually re-enqueues.
+      security:
+        - scanBearerAuth: []
+      responses:
+        '200':
+          description: No-op — the document was not in status `failed`. Body unchanged.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ScanSingleResponse' }
+        '202':
+          description: |
+            Re-enqueued. `status` is `pending`, `canRetry` is now false (status
+            is no longer `failed`), and `failureReason` is gone. VERIFIED LIVE.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ScanSingleResponse' }
+              examples:
+                observed:
+                  value:
+                    scannedDocument:
+                      userId: "6a78bbbeaa461ae1dc64a0bf"
+                      mimeType: "application/pdf"
+                      sourceType: "pdf"
+                      pageCount: 1
+                      byteSize: 574
+                      status: "pending"
+                      clientCapturedAt: "2026-08-09T10:00:00.000Z"
+                      timezone: "Africa/Cairo"
+                      candidates: []
+                      createdAt: "2026-08-09T17:44:34.393Z"
+                      updatedAt: "2026-08-09T17:46:39.885Z"
+                      id: "6a78bc82aa461ae1dc64a251"
+                      canRetry: false
+        '400':
+          description: Manual retry budget exhausted (`manualRetries >= 3`).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ScanErrorEnvelope' }
+              examples:
+                document_scan_retry_exhausted:
+                  value:
+                    error:
+                      code: document_scan_retry_exhausted
+                      message: "This document has failed too many times to keep retrying. Try scanning it again."
+        '401': { $ref: '#/components/responses/ScanUnauthorized' }
+        '404': { $ref: '#/components/responses/ScanDocumentNotFound' }
+        '429': { $ref: '#/components/responses/ScanRateLimited' }
+
+  /me/document-scans/{id}/review:
+    parameters:
+      - $ref: '#/components/parameters/ScanIdParam'
+    post:
+      operationId: scanReviewDocument
+      summary: Commit a review pass — accept or discard extracted candidates
+      description: |
+        Requires `status === 'ready_for_review'`; anything else is
+        400 `scan_not_ready` (VERIFIED LIVE against a `failed` document).
+        The status check happens BEFORE body validation, so a malformed body on
+        a not-ready document reports `scan_not_ready`, not `invalid_review`.
+
+        Body is parsed from `req.body ?? {}`, so an entirely absent body is
+        valid and means "accept nothing, discard nothing".
+
+        Accept semantics:
+          * `accepts[].key` must match a key currently in `doc.candidates`.
+            An unknown key is SILENTLY IGNORED (stale/already-handled), not an
+            error.
+          * `title`, `domain`, `priority`, `dueAt`, `notes` override the held
+            candidate's values when present; otherwise the held value carries.
+          * `confidence`, `estimate` and `sourcePage` are ALWAYS carried from
+            the held candidate — they can never be supplied by the caller.
+        Discard semantics: `discards` is a bare array of keys; unknown keys are
+        harmless.
+
+        After persistence the document's `candidates` array is rebuilt as
+        `[...candidates not in (accepted ∪ discarded), ...acceptedRecords]`
+        where each accepted record gains a `taskId`. When no candidate is left
+        without a `taskId`, `reviewedAt` is stamped.
+        No rate limiter.
+      security:
+        - scanBearerAuth: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ScanReviewRequest' }
+      responses:
+        '200':
+          description: |
+            The Tasks created from the accepted candidates, plus the updated
+            document.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ScanReviewResponse' }
+        '400':
+          description: '`scan_not_ready` | `invalid_review`'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ScanErrorEnvelope' }
+              examples:
+                scan_not_ready:
+                  value:
+                    error:
+                      code: scan_not_ready
+                      message: "This scan is not ready for review yet."
+                invalid_review:
+                  value:
+                    error:
+                      code: invalid_review
+                      message: "Invalid review payload."
+                      details:
+                        formErrors: []
+                        fieldErrors:
+                          accepts: ["String must contain at least 1 character(s)"]
+        '401': { $ref: '#/components/responses/ScanUnauthorized' }
+        '404': { $ref: '#/components/responses/ScanDocumentNotFound' }
+
+  # ===========================================================================
+  # ICS CALENDAR FEEDS
+  # ===========================================================================
+
+  /me/ics-feeds:
+    post:
+      operationId: icsSubscribeFeed
+      summary: Subscribe to an ICS calendar feed (syncs SYNCHRONOUSLY first)
+      description: |
+        THIS ENDPOINT PERFORMS THE FIRST SYNC INLINE, BEFORE RESPONDING. It
+        makes an outbound HTTPS request to the user-supplied URL (15 s timeout,
+        up to 3 manually-followed redirects, 5 MiB body cap) and reconciles the
+        parsed events into Tasks. The response therefore blocks for the whole
+        network round trip and its `sync` object reports what actually landed.
+        A background poller exists too, but the subscribe call does not wait
+        for it — a subscription that showed nothing for an hour would read as
+        broken.
+
+        HANDLER ORDER (note that the timezone check precedes URL vetting):
+          1. `requireAuth`
+          2. zod body parse -> 400 `invalid_feed`
+             `details` is the RAW zod issues ARRAY (`parsed.error.issues`), NOT
+             the `.flatten()` object used elsewhere in this fragment.
+          3. `loadImportContext` -> 400 `timezone_required` when the User row
+             has no `timezone` set.
+          4. `prepareFeedUrl` (normalise + SSRF vet) -> 400 `unsafe_feed_url`
+          5. upsert-by-(userId, url); if it already existed, `label` and
+             `domain` are overwritten in place
+          6. `syncFeed(feed, context)` — network + Mongo writes
+          7. respond 201 when the row was newly created, 200 when it already
+             existed. VERIFIED LIVE for both.
+
+        SSRF VETTING (`prepareFeedUrl`, src/modules/integrations/ics/feedUrl.ts):
+          * `webcal://` is rewritten to `https://` on the raw STRING first.
+          * Only `http:` and `https:` survive.
+          * Userinfo (`user:pass@`) is refused outright.
+          * The hostname is DNS-resolved with `lookup(host, {all:true})` and
+            EVERY returned address must be public. Private/reserved ranges
+            refused: 0/8, 10/8, 127/8, 169.254/16 (cloud metadata), 172.16-31,
+            192.168/16, 192.0/16, 100.64-127 (CGNAT), 198.18-19, >=224
+            (multicast/reserved); IPv6 `::`, `::1`, `fc00::/7`, `fe80::/10`,
+            and IPv4-mapped `::ffff:a.b.c.d` unwrapped to the v4 rules.
+          * The failure message is the `UnsafeFeedUrlError.message` verbatim;
+            a non-UnsafeFeedUrlError throw falls back to
+            "That address cannot be used."
+      security:
+        - icsBearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/IcsSubscribeRequest' }
+      responses:
+        '201':
+          description: A new subscription row was created. Body includes the first sync result.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/IcsFeedSyncResponse' }
+              examples:
+                observed_gone:
+                  summary: Live response for a URL whose feed 404s
+                  value:
+                    feed:
+                      userId: "6a78bbbeaa461ae1dc64a0bf"
+                      url: "https://example.com/nonexistent.ics"
+                      label: "Term dates"
+                      domain: "family"
+                      status: "gone"
+                      failureCount: 1
+                      createdAt: "2026-08-09T17:43:35.156Z"
+                      updatedAt: "2026-08-09T17:43:35.349Z"
+                      lastFetchedAt: "2026-08-09T17:43:35.156Z"
+                      lastError: "That feed no longer exists."
+                      id: "6a78bc47aa461ae1dc64a1bd"
+                    sync:
+                      status: "gone"
+                      created: 0
+                      updated: 0
+                      needingConfirmation: 0
+                      reason: "That feed no longer exists."
+        '200':
+          description: |
+            A subscription for this (userId, normalised url) already existed; its
+            `label` and `domain` were updated in place and it was re-synced.
+            VERIFIED LIVE.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/IcsFeedSyncResponse' }
+        '400':
+          description: '`invalid_feed` | `timezone_required` | `unsafe_feed_url`'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ScanErrorEnvelope' }
+              examples:
+                timezone_required:
+                  value:
+                    error:
+                      code: timezone_required
+                      message: "Set your timezone before subscribing to a calendar — imported events have no timezone of their own."
+                unsafe_feed_url_private:
+                  summary: Hostname resolves into private space (SSRF rejection)
+                  value:
+                    error:
+                      code: unsafe_feed_url
+                      message: "That address is not publicly reachable."
+                unsafe_feed_url_scheme:
+                  value:
+                    error: { code: unsafe_feed_url, message: "Calendar feeds must use https." }
+                unsafe_feed_url_credentials:
+                  value:
+                    error:
+                      code: unsafe_feed_url
+                      message: "Calendar feed URLs must not contain credentials."
+                unsafe_feed_url_unparseable:
+                  value:
+                    error: { code: unsafe_feed_url, message: "That is not a valid URL." }
+                unsafe_feed_url_unresolvable:
+                  value:
+                    error: { code: unsafe_feed_url, message: "That address could not be resolved." }
+                invalid_feed:
+                  summary: '`details` is the RAW zod issues array here'
+                  value:
+                    error:
+                      code: invalid_feed
+                      message: "Check the address, name and category."
+                      details:
+                        - code: too_small
+                          minimum: 1
+                          type: string
+                          inclusive: true
+                          exact: false
+                          message: "String must contain at least 1 character(s)"
+                          path: ["url"]
+                        - received: nope
+                          code: invalid_enum_value
+                          options: [health, home, car, finance, family, pets]
+                          path: ["domain"]
+                          message: "Invalid enum value. Expected 'health' | 'home' | 'car' | 'finance' | 'family' | 'pets', received 'nope'"
+        '401': { $ref: '#/components/responses/ScanUnauthorized' }
+
+    get:
+      operationId: icsListFeeds
+      summary: List the caller's calendar subscriptions
+      description: |
+        `IcsFeed.find({userId}).sort({createdAt:-1})`. No limit, no pagination,
+        no rate limiter. `etag` and `lastModified` are stripped by `toJSON`.
+      security:
+        - icsBearerAuth: []
+      responses:
+        '200':
+          description: All subscriptions, newest first.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/IcsFeedListResponse' }
+              examples:
+                empty:
+                  value: { feeds: [] }
+        '401': { $ref: '#/components/responses/ScanUnauthorized' }
+
+  /me/ics-feeds/{id}/sync:
+    parameters:
+      - $ref: '#/components/parameters/IcsIdParam'
+    post:
+      operationId: icsSyncFeed
+      summary: Pull one calendar feed now (synchronous)
+      description: |
+        No request body. Performs the same synchronous fetch + reconcile as the
+        subscribe route. The `timezone_required` check runs AFTER the feed
+        lookup here (feed 404 wins over a missing timezone). No rate limiter.
+      security:
+        - icsBearerAuth: []
+      responses:
+        '200':
+          description: 'Sync completed (which includes `status: error` / `gone` outcomes).'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/IcsFeedSyncResponse' }
+        '400':
+          description: '`timezone_required`'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ScanErrorEnvelope' }
+        '401': { $ref: '#/components/responses/ScanUnauthorized' }
+        '404': { $ref: '#/components/responses/IcsFeedNotFound' }
+
+  /me/ics-feeds/{id}:
+    parameters:
+      - $ref: '#/components/parameters/IcsIdParam'
+    delete:
+      operationId: icsDeleteFeed
+      summary: Unsubscribe from a calendar feed and retire its future matters
+      description: |
+        NOT idempotent — a second delete returns 404 `feed_not_found`.
+        VERIFIED LIVE (contrast with document-scan delete, which IS idempotent).
+
+        Before deleting the row it soft-deletes (sets `deletedAt = now`) every
+        Task matching ALL of:
+          userId = caller
+          externalSource = 'ics_feed'
+          externalId matches /^<feedId>::/   (anchored prefix, feed id asserted
+                                              to be 24 hex chars first)
+          status = 'open'
+          dueAt  > now
+          not already soft-deleted
+        Past and completed matters are deliberately left alone.
+        `retiredMatters` is the Mongo `modifiedCount` of that updateMany.
+        No rate limiter.
+      security:
+        - icsBearerAuth: []
+      responses:
+        '200':
+          description: Unsubscribed.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/IcsDeleteResponse' }
+              examples:
+                observed:
+                  value: { removed: true, retiredMatters: 0 }
+        '401': { $ref: '#/components/responses/ScanUnauthorized' }
+        '404': { $ref: '#/components/responses/IcsFeedNotFound' }
+
+  # ===========================================================================
+  # GOOGLE INTEGRATION
+  #
+  # Four authenticated XHR endpoints plus ONE server-owned browser endpoint
+  # (`GET /integrations/google/callback`) that NEVER returns JSON.
+  # ===========================================================================
+
+  /integrations/google/authorize:
+    post:
+      operationId: googBeginAuthorize
+      summary: Mint a Google consent URL for the system browser
+      description: |
+        Returns a URL rather than issuing a 302: Google rejects OAuth inside an
+        embedded webview (`disallowed_useragent`), which is exactly what the
+        Capacitor shell is, so the CALLER must open the URL in the system
+        browser.
+
+        Readiness gate: `ready() = isGoogleConfigured() && isTokenCipherConfigured()`
+        i.e. GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GOOGLE_REDIRECT_URI and
+        INTEGRATION_ENCRYPTION_KEY must all be present. When not ready this
+        returns 400 (NOT 503) with code `google_not_configured`.
+        >>> CURRENT PARITY TARGET on the credential-less reference server:
+        >>> always 400 `google_not_configured`. VERIFIED LIVE. <<<
+
+        Body handling is deliberately loose — there is NO zod schema. Only
+        `req.body?.web === true` is read; every other property is ignored and an
+        absent/non-JSON body is fine (`web` then defaults to false). `web` is
+        baked into the SIGNED state, never read from the callback query.
+
+        The minted URL is
+        `https://accounts.google.com/o/oauth2/v2/auth` with query params
+        client_id, redirect_uri, response_type=code,
+        scope="openid email https://www.googleapis.com/auth/calendar.readonly https://www.googleapis.com/auth/tasks.readonly",
+        state=<HMAC-signed>, access_type=offline, prompt=consent,
+        include_granted_scopes=true.
+
+        The `state` is `base64url(JSON{uid,exp,n,w?}) + "." + base64url(HMAC-SHA256)`,
+        keyed by HMAC-SHA256(JWT_ACCESS_SECRET, "kitto:oauth-state:v1"), with a
+        10-minute TTL. No rate limiter.
+      security:
+        - googBearerAuth: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/GoogAuthorizeRequest' }
+      responses:
+        '200':
+          description: Consent URL to open in the system browser.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/GoogAuthorizeResponse' }
+        '400':
+          description: Google OAuth and/or token encryption are not configured on this server.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ScanErrorEnvelope' }
+              examples:
+                observed:
+                  summary: Live reference-server response
+                  value:
+                    error:
+                      code: google_not_configured
+                      message: "Connecting a Google account is not available yet."
+        '401': { $ref: '#/components/responses/ScanUnauthorized' }
+
+  /integrations/google/callback:
+    get:
+      operationId: googOauthCallback
+      summary: Google's OAuth redirect target — NEVER returns JSON
+      description: |
+        UNAUTHENTICATED and UNRATE-LIMITED by necessity: Google's redirect
+        carries no cookie and no Authorization header. The signed `state` is the
+        only thing binding the incoming tokens to a Kitto account.
+
+        EVERY exit is either a 302 to a deep link or a terminal HTML page.
+        There is no code path that emits the `{"error":{...}}` envelope: each
+        fallible step is wrapped in try/catch and converted to a redirect.
+
+        EXIT TABLE (evaluated top to bottom; `<scheme>` = APP_DEEP_LINK_SCHEME,
+        default `kitto`):
+
+        | condition                                   | result |
+        |---------------------------------------------|--------|
+        | `error` query param === 'access_denied'     | 302 `<scheme>://integrations/google?status=cancelled` |
+        | `error` query param present, any other value| 302 `<scheme>://integrations/google?status=error` |
+        | `state` missing / forged / expired          | 302 `...?status=error&reason=invalid_state` |
+        | `code` missing                              | 302 `...?status=error&reason=no_code` |
+        | token exchange or connection save throws    | 302 `...?status=error&reason=exchange_failed` |
+        | success AND state carried `w: true` (web)   | 200 `text/html` terminal page (see below) |
+        | success, native shell                       | 302 `...?status=connected` |
+
+        The 302 responses are produced by `res.redirect(302, url)`, so Express
+        also emits a `text/plain; charset=utf-8` body of the form
+        `Found. Redirecting to <url>` plus a matching `Content-Length`.
+        VERIFIED LIVE for the cancelled, generic-error and invalid_state exits.
+
+        The web terminal page is this EXACT string (note: no trailing newline,
+        no `<html>`/`<head>` wrapper, no script, no stylesheet):
+
+            <!doctype html><meta charset="utf-8">
+            <title>Connected</title>
+            <body style="font-family:system-ui;padding:3rem;text-align:center">
+            <h1 style="font-size:1.25rem">Google connected</h1>
+            <p style="color:#666">You can close this tab and go back to Kitto.</p>
+            </body>
+
+        served with `res.status(200).type('html')` -> `Content-Type: text/html; charset=utf-8`.
+
+        Extra query params Google may append (`scope`, `authuser`, `prompt`,
+        `hd`) are ignored entirely.
+      security: []
+      parameters:
+        - name: code
+          in: query
+          required: false
+          description: Google's authorization code. Only read when `error` is absent and `state` verified.
+          schema: { type: string }
+        - name: state
+          in: query
+          required: false
+          description: The signed state minted by POST /integrations/google/authorize.
+          schema: { type: string }
+        - name: error
+          in: query
+          required: false
+          description: |
+            Present when the user declined or Google failed. Checked FIRST,
+            before state verification. `access_denied` maps to `cancelled`;
+            anything else maps to a bare `status=error` with NO `reason`.
+          schema: { type: string }
+      responses:
+        '302':
+          description: |
+            Deep-link redirect back into the app. This is the outcome for every
+            failure and for the native-shell success path.
+          headers:
+            Location:
+              description: |
+                One of:
+                  kitto://integrations/google?status=connected
+                  kitto://integrations/google?status=cancelled
+                  kitto://integrations/google?status=error
+                  kitto://integrations/google?status=error&reason=invalid_state
+                  kitto://integrations/google?status=error&reason=no_code
+                  kitto://integrations/google?status=error&reason=exchange_failed
+              schema:
+                type: string
+                enum:
+                  - "kitto://integrations/google?status=connected"
+                  - "kitto://integrations/google?status=cancelled"
+                  - "kitto://integrations/google?status=error"
+                  - "kitto://integrations/google?status=error&reason=invalid_state"
+                  - "kitto://integrations/google?status=error&reason=no_code"
+                  - "kitto://integrations/google?status=error&reason=exchange_failed"
+          content:
+            text/plain:
+              schema: { type: string }
+              examples:
+                observed:
+                  value: "Found. Redirecting to kitto://integrations/google?status=cancelled"
+        '200':
+          description: |
+            Terminal HTML page, ONLY when consent began from a plain browser
+            (the signed state carried `w: true`) and the exchange succeeded.
+          content:
+            text/html:
+              schema: { type: string }
+
+  /integrations/google:
+    get:
+      operationId: googGetIntegration
+      summary: Read Google connection state and server readiness
+      description: |
+        `available` mirrors `ready()` — whether this server could complete a
+        connection at all. `integration` is the row's `toJSON()`, which STRIPS
+        `refreshTokenEnc`, `accessTokenEnc` and `accessTokenExpiresAt`, or
+        `null` when nothing is connected.
+        >>> CURRENT PARITY TARGET on the credential-less reference server:
+        >>> `{"available":false,"integration":null}`. VERIFIED LIVE. <<<
+        No rate limiter.
+      security:
+        - googBearerAuth: []
+      responses:
+        '200':
+          description: Connection state.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/GoogStatusResponse' }
+              examples:
+                observed_unconfigured:
+                  value: { available: false, integration: null }
+        '401': { $ref: '#/components/responses/ScanUnauthorized' }
+
+    delete:
+      operationId: googDisconnect
+      summary: Disconnect the Google account
+      description: |
+        Best-effort revoke at Google first (failures are logged as
+        `google:revoke-failed` and swallowed), then `integration.deleteOne()`.
+        NOT idempotent — a second call is 404 `not_connected`. VERIFIED LIVE.
+        No rate limiter.
+      security:
+        - googBearerAuth: []
+      responses:
+        '200':
+          description: Disconnected.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/GoogDisconnectResponse' }
+              examples:
+                ok: { value: { removed: true } }
+        '401': { $ref: '#/components/responses/ScanUnauthorized' }
+        '404': { $ref: '#/components/responses/GoogNotConnected' }
+
+  /integrations/google/sync:
+    post:
+      operationId: googSyncNow
+      summary: Pull Google Calendar and Google Tasks now (synchronous, sequential)
+      description: |
+        No request body. Runs Calendar THEN Tasks in sequence — never in
+        parallel, because they share one access token and a concurrent refresh
+        would race to write the same row. Both results are reported.
+
+        Order: integration lookup (404 `not_connected`) -> user timezone check
+        (400 `timezone_required`) -> calendar sync -> tasks sync -> 200.
+
+        Each sub-sync returns `status: 'skipped'` with a `reason` when the
+        corresponding scope was not granted, rather than throwing:
+          Calendar missing scope -> reason "Calendar access was not granted."
+          Tasks missing scope    -> reason (see GoogTasksSyncResult)
+        A dead refresh token surfaces as a 500 `internal_error`
+        (`IntegrationUnavailableError` is not an AppError). UNVERIFIED — no
+        Google credentials on the reference server.
+        No rate limiter.
+      security:
+        - googBearerAuth: []
+      responses:
+        '200':
+          description: Both syncs ran (or were skipped for missing scope).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/GoogSyncResponse' }
+        '400':
+          description: The caller has no `timezone` set on their User row.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ScanErrorEnvelope' }
+              examples:
+                timezone_required:
+                  value:
+                    error:
+                      code: timezone_required
+                      message: "Set your timezone before importing — Google items have no timezone of their own."
+        '401': { $ref: '#/components/responses/ScanUnauthorized' }
+        '404': { $ref: '#/components/responses/GoogNotConnected' }
+
+  # ===========================================================================
+  # AI
+  # ===========================================================================
+
+  /ai/conversation:
+    get:
+      operationId: aiGetConversation
+      summary: Load the caller's personal AI conversation
+      description: |
+        Scope is HARD-CODED to `personal` / `scopeId: null`; there are no query
+        parameters. `loadConversation` upserts an empty document on first read,
+        so this never 404s. Each message is re-shaped by the route (it is NOT
+        the raw Mongoose `toJSON`): `sources` and `toolCalls` default to `[]`
+        and `createdAt` is emitted as an ISO string. No rate limiter, and no
+        `isAiConfigured()` gate — this works with no AI key.
+      security:
+        - aiBearerAuth: []
+      responses:
+        '200':
+          description: The conversation.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AiConversationResponse' }
+              examples:
+                observed_empty:
+                  value: { scope: personal, scopeId: null, messages: [] }
+        '401': { $ref: '#/components/responses/ScanUnauthorized' }
+
+  /ai/conversation/reset:
+    post:
+      operationId: aiResetConversation
+      summary: Clear the caller's personal AI conversation
+      description: |
+        No request body is read. Clears `messages` and always answers with the
+        literal empty conversation envelope. Idempotent. No rate limiter.
+      security:
+        - aiBearerAuth: []
+      responses:
+        '200':
+          description: Always this exact body.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AiConversationResponse' }
+              examples:
+                observed:
+                  value: { scope: personal, scopeId: null, messages: [] }
+        '401': { $ref: '#/components/responses/ScanUnauthorized' }
+
+  /ai/quota:
+    get:
+      operationId: aiGetQuota
+      summary: Read the caller's daily AI message quota
+      description: |
+        Tier is HARD-CODED to `free` by `resolveTier()` (v1 has no Pro path), so
+        `limit` is `AI_QUOTA_FREE_DAILY` (env, default 30). `quotas` is one
+        entry per member of `AI_USAGE_KINDS`, which currently contains exactly
+        one kind: `message`. `resetAt` is the next UTC midnight. The bucket is a
+        `YYYY-MM-DD` UTC date. No rate limiter.
+      security:
+        - aiBearerAuth: []
+      responses:
+        '200':
+          description: Quota meters.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AiQuotaResponse' }
+              examples:
+                observed:
+                  value:
+                    tier: free
+                    quotas:
+                      - kind: message
+                        limit: 30
+                        used: 0
+                        remaining: 30
+                        resetAt: "2026-08-10T00:00:00.000Z"
+        '401': { $ref: '#/components/responses/ScanUnauthorized' }
+
+  /ai/ask:
+    post:
+      operationId: aiAsk
+      summary: Ask Kitto — Server-Sent Events stream
+      description: |
+        ###################################################################
+        # CURRENT PARITY TARGET ON THIS SERVER                            #
+        # With no GEMINI_API_KEY the stream is NEVER opened. The request  #
+        # fails at the `isAiConfigured()` gate and returns an ORDINARY    #
+        # JSON HTTP error:                                                #
+        #   503 application/json                                          #
+        #   {"error":{"code":"ai_not_configured",                         #
+        #     "message":"AI is not configured. Set GEMINI_API_KEY in      #
+        #                server/.env to enable."}}                        #
+        # VERIFIED LIVE. Everything below the gate is the full streaming  #
+        # contract the .NET port must also implement.                     #
+        ###################################################################
+
+        THE CRUCIAL RULE: failures BEFORE the stream opens are ordinary JSON
+        HTTP errors with a real status code; failures AFTER it opens are
+        `{"type":"error",...}` FRAMES inside a 200 `text/event-stream`. The
+        status line is committed the moment `res.flushHeaders()` runs, so a
+        client must branch on `Content-Type`, never on hope.
+
+        PRE-STREAM STEPS (each can produce a JSON error):
+          1. `requireAuth`                       -> 401 missing_token/invalid_token
+          2. `aiAskLimiter` (60 s / 30)          -> 429 rate_limited
+          3. `askBodySchema.safeParse(req.body)` -> 400 invalid_body
+          4. `isAiConfigured()`                  -> 503 ai_not_configured
+          5. `admitWithinQuota(kind:'message')`  -> 402 quota_exceeded
+          6. headers flushed — from here on, only frames.
+
+        RESPONSE HEADERS once the stream opens (set in this order):
+          Content-Type: text/event-stream
+          Cache-Control: no-cache, no-transform
+          Connection: keep-alive
+          X-Accel-Buffering: no        <- disables nginx response buffering
+        Status is 200.
+
+        FRAME FORMAT — every payload frame is exactly:
+          `data: ` + JSON.stringify(obj) + `\n\n`
+        There is NO `event:` line, NO `id:` line, and NO `retry:` line. Frames
+        are never split across writes.
+
+        HEARTBEAT — every 25000 ms (`SSE_HEARTBEAT_MS`) the server writes an SSE
+        COMMENT line:
+          `: ping ` + Date.now() + `\n\n`
+        (leading colon, one space, the epoch-millisecond integer). Comment lines
+        must be ignored by the parser. The interval is cleared in `finally`
+        before `res.end()`.
+
+        EVENT NORMALISATION — internally the generator yields objects keyed
+        `kind`; the route renames that key to `type` and deletes `kind` before
+        serialising: `{type: event.kind, ...event}` then `delete .kind`. Because
+        the spread happens AFTER `type` is written and the source object has no
+        `type` property of its own, `type` always survives. Property order in
+        the emitted JSON is therefore `type` first, then the original keys in
+        their original order.
+
+        EVENT SEQUENCE for a normal turn:
+          sources -> (tool_call -> tool_result)* -> token* -> done -> quota
+        `quota` is emitted by the ROUTE immediately after it sees `done`, so it
+        is always the LAST frame of a successful turn.
+
+        QUOTA SLOT LIFECYCLE: the slot is consumed by `admitWithinQuota` BEFORE
+        the stream opens. If the turn never reaches `done` (error, client
+        disconnect, generator throw), `releaseUsageSlot` refunds it in the
+        `finally` block. `done` does NOT increment again.
+
+        The stream always terminates with `res.end()` in `finally`.
+      security:
+        - aiBearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AiAskRequest' }
+      responses:
+        '200':
+          description: |
+            SSE stream. See `AiStreamEvent` for the discriminated union carried
+            in each `data:` frame.
+          headers:
+            Cache-Control:
+              schema: { type: string, const: "no-cache, no-transform" }
+            Connection:
+              schema: { type: string, const: "keep-alive" }
+            X-Accel-Buffering:
+              schema: { type: string, const: "no" }
+          content:
+            text/event-stream:
+              schema:
+                type: string
+                description: |
+                  Newline-delimited SSE. Payload frames are
+                  `data: <AiStreamEvent JSON>\n\n`; heartbeats are
+                  `: ping <epochMs>\n\n`.
+              examples:
+                successful_turn:
+                  value: |
+                    data: {"type":"sources","sources":[{"kind":"task","id":"6a7...","title":"Renew passport"}]}
+
+                    : ping 1786297300000
+
+                    data: {"type":"token","text":"Your passport renewal is due on the 30th."}
+
+                    data: {"type":"done","usage":{"promptTokens":812,"candidatesTokens":19,"totalTokens":831}}
+
+                    data: {"type":"quota","tier":"free","quotas":[{"kind":"message","limit":30,"used":1,"remaining":29,"resetAt":"2026-08-10T00:00:00.000Z"}]}
+                mid_stream_failure:
+                  summary: Error AFTER the stream opened — a frame, not an HTTP status
+                  value: |
+                    data: {"type":"sources","sources":[]}
+
+                    data: {"type":"error","code":"internal_error","message":"fetch failed"}
+        '400':
+          description: Body failed `askBodySchema`. Pre-stream, so ordinary JSON.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ScanErrorEnvelope' }
+              examples:
+                observed:
+                  value:
+                    error:
+                      code: invalid_body
+                      message: "Invalid ask payload."
+                      details:
+                        formErrors: []
+                        fieldErrors:
+                          question: ["question cannot be empty"]
+        '401': { $ref: '#/components/responses/ScanUnauthorized' }
+        '402':
+          description: |
+            Daily AI message quota exhausted. Pre-stream, so ordinary JSON.
+            Note `details` here carries `resetAt` as well — unlike the
+            document-scan 402. UNVERIFIED live (the `ai_not_configured` gate
+            runs first on this server), but read directly from
+            `quotaExceeded()` in src/modules/ai/quota.ts.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AiQuotaExceededError' }
+              examples:
+                shape:
+                  value:
+                    error:
+                      code: quota_exceeded
+                      message: "You've hit today's limit of 30 messages."
+                      details:
+                        kind: message
+                        tier: free
+                        limit: 30
+                        used: 30
+                        resetAt: "2026-08-10T00:00:00.000Z"
+        '429': { $ref: '#/components/responses/ScanRateLimited' }
+        '503':
+          description: |
+            No GEMINI_API_KEY configured. Pre-stream, so ordinary JSON.
+            THIS IS THE CURRENT PARITY TARGET on the reference server.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ScanErrorEnvelope' }
+              examples:
+                observed:
+                  value:
+                    error:
+                      code: ai_not_configured
+                      message: "AI is not configured. Set GEMINI_API_KEY in server/.env to enable."
+
+  /ai/tools/confirm/{callId}:
+    parameters:
+      - name: callId
+        in: path
+        required: true
+        description: |
+          The `callId` from a prior `tool_call` frame. NOT an ObjectId — it is a
+          `randomUUID()` string, so a malformed value produces the normal
+          `pending_call_not_found` 404, never the CastError 404.
+        schema: { type: string }
+    post:
+      operationId: aiConfirmTool
+      summary: Confirm or decline a pending destructive tool — Server-Sent Events stream
+      description: |
+        ###################################################################
+        # CURRENT PARITY TARGET ON THIS SERVER                            #
+        # There is NO `isAiConfigured()` gate at the top of this route, so #
+        # it does NOT return 503 `ai_not_configured`. With no AI key no    #
+        # pending tool call can ever be created, so every call fails at    #
+        # the durable-record lookup and returns an ordinary JSON error:    #
+        #   404 {"error":{"code":"pending_call_not_found",                 #
+        #                 "message":"This confirmation has expired."}}     #
+        # VERIFIED LIVE (`POST /ai/tools/confirm/xyz` with                 #
+        # `{"action":"confirm"}`). `isAiConfigured()` IS consulted, but    #
+        # only mid-stream and only to skip the follow-up turn — it emits   #
+        # `{"type":"done","usage":{}}`, never an error.                    #
+        ###################################################################
+
+        Same SSE contract as POST /ai/ask: same headers (including
+        `X-Accel-Buffering: no`), same `data: {json}\n\n` frame format, same
+        `: ping <ms>\n\n` comment heartbeat every 25000 ms, same
+        `{kind:...} -> {type:...}` normalisation, same before/after rule.
+
+        PRE-STREAM STEPS (each can produce a JSON error):
+          1. `requireAuth`                             -> 401
+          2. `aiConfirmLimiter` (60 s / 30)            -> 429 rate_limited
+          3. `confirmToolBodySchema.safeParse`         -> 400 invalid_body
+          4. `findPendingToolCall` on the DURABLE AiConversation record
+             (the in-memory map is only a cache and does NOT survive a restart)
+               - not found                            -> 404 pending_call_not_found
+                 message "This confirmation has expired."
+               - found but `status !== 'pending_confirmation'`
+                                                      -> 404 pending_call_not_found
+                 message "This confirmation has already been handled."
+                 (SAME code, DIFFERENT message — reproduce both.)
+          5. in-memory cache entry exists but belongs to another user
+                                                      -> 403 cross_user_confirm
+          6. `validateToolArgs(name, args)` re-validated from the DB record
+                                                      -> 400 invalid_tool_args
+             (message is `JSON.stringify(zodError.flatten())` — the whole
+             flattened object rendered as the message STRING, with no `details`)
+          7. `consumePendingCall(callId)` clears the cache, then headers flush.
+
+        POST-STREAM BEHAVIOUR:
+          * `action: 'decline'` -> record resolved as `declined`, then exactly
+            two frames and end:
+              data: {"type":"tool_result","callId":"<id>","result":null,"error":"declined"}
+              data: {"type":"done","usage":{}}
+          * `action: 'confirm'` -> run the tool, resolve the record as
+            `executed` (with `result`) or `failed` (with `error`), emit
+              data: {"type":"tool_result","callId":"<id>","result":<obj|null>,"error":<string|null>}
+            then, if `isAiConfigured()` is false, emit
+              data: {"type":"done","usage":{}}
+            and stop; otherwise re-enter the orchestrator via
+            `continueAfterConfirm` and stream its events, recording ONE extra
+            usage unit on `done` (via `recordUsage`, which is NOT gated — the
+            continuation is the same logical turn the user already paid for)
+            followed by a `quota` frame.
+          * Any throw after the headers flushed becomes
+            `{"type":"error","code":...,"message":...}`.
+
+        Only `deleteAllTasks` ever requires confirmation
+        (`requiresConfirmation(name) === name === 'deleteAllTasks'`), so in
+        practice `callId` always refers to a bulk-wipe.
+      security:
+        - aiBearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AiConfirmToolRequest' }
+      responses:
+        '200':
+          description: SSE stream (see AiStreamEvent).
+          headers:
+            Cache-Control:
+              schema: { type: string, const: "no-cache, no-transform" }
+            Connection:
+              schema: { type: string, const: "keep-alive" }
+            X-Accel-Buffering:
+              schema: { type: string, const: "no" }
+          content:
+            text/event-stream:
+              schema: { type: string }
+              examples:
+                declined:
+                  value: |
+                    data: {"type":"tool_result","callId":"6f1c...","result":null,"error":"declined"}
+
+                    data: {"type":"done","usage":{}}
+        '400':
+          description: '`invalid_body` | `invalid_tool_args`'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ScanErrorEnvelope' }
+              examples:
+                invalid_body:
+                  summary: Live reference-server response
+                  value:
+                    error:
+                      code: invalid_body
+                      message: "Invalid confirm payload."
+                      details:
+                        formErrors: []
+                        fieldErrors:
+                          action: ["Invalid enum value. Expected 'confirm' | 'decline', received 'nope'"]
+                invalid_tool_args:
+                  summary: 'Message is a JSON STRING; there is no `details`'
+                  value:
+                    error:
+                      code: invalid_tool_args
+                      message: "{\"formErrors\":[],\"fieldErrors\":{\"scope\":[\"Required\"]}}"
+        '401': { $ref: '#/components/responses/ScanUnauthorized' }
+        '403':
+          description: The cached pending call belongs to a different user.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ScanErrorEnvelope' }
+              examples:
+                cross_user_confirm:
+                  value:
+                    error:
+                      code: cross_user_confirm
+                      message: "You cannot confirm another user's pending call."
+        '404':
+          description: |
+            No such pending call, or it has already been resolved. Two distinct
+            messages under ONE code.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ScanErrorEnvelope' }
+              examples:
+                expired:
+                  summary: Live reference-server response (the parity target here)
+                  value:
+                    error:
+                      code: pending_call_not_found
+                      message: "This confirmation has expired."
+                already_handled:
+                  value:
+                    error:
+                      code: pending_call_not_found
+                      message: "This confirmation has already been handled."
+        '429': { $ref: '#/components/responses/ScanRateLimited' }
+
+  /ai/voice/transcribe:
+    post:
+      operationId: aiTranscribeVoice
+      summary: Transcribe chat voice input (RAW BINARY body)
+      description: |
+        Synchronous audio -> text for chat voice mode. RAW audio bytes, NOT
+        multipart and NOT base64-in-JSON (the base64 envelope was removed
+        because the app-wide `express.json({limit:'256kb'})` rejected it before
+        the route ran, and base64 inflates by 33%).
+
+        MIDDLEWARE ORDER IS DIFFERENT FROM THE OTHER RAW ROUTES — the parser
+        runs FIRST, before auth:
+          1. `express.raw({ type: ['audio/m4a','audio/mp4','audio/aac',
+                                   'application/octet-stream'],
+                            limit: 6291456 * 2 })`
+          2. `requireAuth`
+          3. `aiVoiceLimiter` (60 s / 12, SHARED bucket with POST /me/voice-notes)
+          4. handler
+
+        Handler order (note the AI gate comes BEFORE the size check — an
+        11 MB body on this server returns 503, not 400; VERIFIED LIVE):
+          a. `isAiConfigured()`                 -> 503 ai_not_configured
+             message "AI is not configured. Set GEMINI_API_KEY in server/.env."
+             (NOTE: NO " to enable." suffix — this string differs from the
+             /ai/ask one by those two words. Reproduce both exactly.)
+          b. body missing / not a Buffer / empty -> 400 empty_body
+             message "No audio payload received."
+          c. length > 6291456 (6 MiB, the hard-coded `CHAT_AUDIO_MAX_BYTES`,
+             NOT an env var)                    -> 400 payload_too_large
+             message "Recording exceeds 6MB. Try a shorter clip."
+          d. `admitWithinQuota(kind:'message')` -> 402 quota_exceeded
+          e. transcribe; on throw the quota slot is released and the error
+             propagates (a provider failure surfaces as 500 internal_error
+             unless it is an AppError)
+          f. 200 {"text": "..."}
+
+        A body above the DOUBLED raw ceiling (12 MiB) is rejected by
+        body-parser and surfaces as 500 internal_error.
+
+        `Content-Type` defaults to `audio/m4a` when the header is absent; only
+        the portion before `;` is used.
+      security:
+        - aiBearerAuth: []
+      requestBody:
+        required: true
+        description: Raw audio bytes.
+        content:
+          audio/m4a:                { schema: { type: string, format: binary } }
+          audio/mp4:                { schema: { type: string, format: binary } }
+          audio/aac:                { schema: { type: string, format: binary } }
+          application/octet-stream: { schema: { type: string, format: binary } }
+      responses:
+        '200':
+          description: Transcript.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AiTranscribeResponse' }
+        '400':
+          description: '`empty_body` | `payload_too_large`'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ScanErrorEnvelope' }
+              examples:
+                empty_body:
+                  value:
+                    error: { code: empty_body, message: "No audio payload received." }
+                payload_too_large:
+                  value:
+                    error:
+                      code: payload_too_large
+                      message: "Recording exceeds 6MB. Try a shorter clip."
+        '401': { $ref: '#/components/responses/ScanUnauthorized' }
+        '402':
+          description: Daily AI message quota exhausted.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AiQuotaExceededError' }
+        '429': { $ref: '#/components/responses/ScanRateLimited' }
+        '503':
+          description: |
+            No GEMINI_API_KEY. THE CURRENT PARITY TARGET — checked before the
+            payload checks, so it wins over `empty_body`/`payload_too_large`.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ScanErrorEnvelope' }
+              examples:
+                observed:
+                  value:
+                    error:
+                      code: ai_not_configured
+                      message: "AI is not configured. Set GEMINI_API_KEY in server/.env."
+        '500': { $ref: '#/components/responses/ScanInternalOrBodyTooLarge' }
+
+  # ===========================================================================
+  # VOICE NOTES
+  # ===========================================================================
+
+  /me/voice-notes:
+    post:
+      operationId: voiceUploadNote
+      summary: Upload a voice note (RAW BINARY body — NOT multipart)
+      description: |
+        Same raw-body pattern as POST /me/document-scans: the audio IS the
+        request body and the metadata rides on `x-voice-note-*` headers, to
+        avoid dragging multer into the stack for one binary field.
+
+        Middleware chain, in exact order:
+          1. `requireAuth`
+          2. `aiVoiceLimiter` (60 s / 12, SHARED bucket with /ai/voice/transcribe)
+          3. `express.raw({ type: ['audio/m4a','audio/mp4','audio/aac',
+                                   'application/octet-stream'],
+                            limit: VOICE_NOTE_MAX_BYTES * 2 })`
+          4. handler
+
+        TWO SIZE CEILINGS:
+          * FRIENDLY CAP = `VOICE_NOTE_MAX_BYTES` (env, default 5242880 = 5 MiB)
+            -> 400 `payload_too_large`, message "Voice note exceeds 5MB."
+            (number = `Math.round(maxBytes / 1048576)`). VERIFIED LIVE at 6 MB.
+          * BODY-PARSER CEILING = 2x that (default 10 MiB). Above it the request
+            never reaches the handler and surfaces as
+            500 internal_error. VERIFIED LIVE at 11 MB.
+
+        Handler order:
+          a. empty / non-Buffer body           -> 400 empty_body
+             message "No audio payload received."
+          b. length > friendly cap             -> 400 payload_too_large
+          c. `x-voice-note-*` header zod parse -> 400 invalid_metadata
+             message "Missing or invalid x-voice-note-* headers."
+          d. storage put -> VoiceNote.create -> `enqueueTranscription` -> 202
+
+        UNLIKE the document-scan route there is NO content-type check in the
+        handler and NO quota admission — voice-note uploads are bounded only by
+        the rate limiter.
+
+        The stored `mimeType` is `content-type` up to the first `;`, or
+        undefined when the header is absent.
+      security:
+        - voiceBearerAuth: []
+      parameters:
+        - name: x-voice-note-duration-ms
+          in: header
+          required: true
+          description: |
+            REQUIRED. `z.coerce.number().int().min(0).max(600000)` — an integer
+            count of milliseconds, 0 to 10 minutes inclusive. Absent produces
+            `["Expected number, received nan"]` (coercion of undefined), not
+            `["Required"]`.
+          schema: { type: integer, minimum: 0, maximum: 600000 }
+        - name: x-voice-note-captured-at
+          in: header
+          required: true
+          description: REQUIRED. `z.string().datetime()`. Stored as `clientCapturedAt`.
+          schema: { type: string, format: date-time }
+        - name: x-voice-note-source
+          in: header
+          required: false
+          description: |
+            Optional. One of `app`, `widget`, `dynamic_island`, `lock_screen`.
+            Defaults to `app`. An unrecognised value is a hard failure.
+          schema:
+            type: string
+            enum: [app, widget, dynamic_island, lock_screen]
+            default: app
+        - name: x-voice-note-timezone
+          in: header
+          required: false
+          description: |
+            Optional, 1..64 chars. NOTE: on THIS route the timezone is NOT
+            IANA-validated (unlike `POST /me/voice-notes/{id}/extract-tasks` and
+            the document-scan upload) — any 1..64 character string is accepted
+            and stored verbatim.
+          schema: { type: string, minLength: 1, maxLength: 64 }
+      requestBody:
+        required: true
+        content:
+          audio/m4a:                { schema: { type: string, format: binary } }
+          audio/mp4:                { schema: { type: string, format: binary } }
+          audio/aac:                { schema: { type: string, format: binary } }
+          application/octet-stream: { schema: { type: string, format: binary } }
+      responses:
+        '202':
+          description: Accepted; status `pending`, transcription kicked via `setImmediate`.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/VoiceSingleResponse' }
+              examples:
+                observed:
+                  value:
+                    voiceNote:
+                      userId: "6a78bbbeaa461ae1dc64a0bf"
+                      durationMs: 4200
+                      byteSize: 2048
+                      source: "app"
+                      status: "pending"
+                      clientCapturedAt: "2026-08-09T10:05:00.000Z"
+                      timezone: "Africa/Cairo"
+                      mimeType: "audio/m4a"
+                      extractedTasks: []
+                      reviewItems: []
+                      createdAt: "2026-08-09T17:45:00.408Z"
+                      updatedAt: "2026-08-09T17:45:00.408Z"
+                      id: "6a78bc9caa461ae1dc64a294"
+        '400':
+          description: '`empty_body` | `payload_too_large` | `invalid_metadata`'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ScanErrorEnvelope' }
+              examples:
+                empty_body:
+                  value:
+                    error: { code: empty_body, message: "No audio payload received." }
+                payload_too_large:
+                  value:
+                    error: { code: payload_too_large, message: "Voice note exceeds 5MB." }
+                invalid_metadata:
+                  value:
+                    error:
+                      code: invalid_metadata
+                      message: "Missing or invalid x-voice-note-* headers."
+                      details:
+                        formErrors: []
+                        fieldErrors:
+                          durationMs: ["Expected number, received nan"]
+                          capturedAt: ["Required"]
+        '401': { $ref: '#/components/responses/ScanUnauthorized' }
+        '429': { $ref: '#/components/responses/ScanRateLimited' }
+        '500': { $ref: '#/components/responses/ScanInternalOrBodyTooLarge' }
+
+    get:
+      operationId: voiceListNotes
+      summary: List the caller's voice notes
+      description: |
+        `VoiceNote.find({userId}).sort({createdAt:-1}).limit(50)`. Hard-coded
+        limit of 50, no pagination, no query parameters, no rate limiter.
+      security:
+        - voiceBearerAuth: []
+      responses:
+        '200':
+          description: Up to 50 notes, newest first.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/VoiceListResponse' }
+        '401': { $ref: '#/components/responses/ScanUnauthorized' }
+
+  /me/voice-notes/{id}:
+    parameters:
+      - $ref: '#/components/parameters/VoiceIdParam'
+    get:
+      operationId: voiceGetNote
+      summary: Fetch one voice note
+      description: Scoped to the caller. No rate limiter.
+      security:
+        - voiceBearerAuth: []
+      responses:
+        '200':
+          description: The note.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/VoiceSingleResponse' }
+        '401': { $ref: '#/components/responses/ScanUnauthorized' }
+        '404': { $ref: '#/components/responses/VoiceNoteNotFound' }
+
+  /me/voice-notes/{id}/extract-tasks:
+    parameters:
+      - $ref: '#/components/parameters/VoiceIdParam'
+    post:
+      operationId: voiceExtractTasks
+      summary: Re-run extraction on a stored transcript
+      description: |
+        Manual / fallback re-extraction; the worker already does this
+        automatically. Idempotent — the note-scoped keys mean a second call
+        never double-creates Tasks or duplicate clarifications.
+
+        Order (body validated FIRST, deliberately, so a bad timezone 400s
+        instead of crashing `Intl.DateTimeFormat` with a RangeError -> 500):
+          1. `ExtractBodySchema.safeParse(req.body ?? {})` -> 400 invalid_body
+             `timezone`, if present, is trimmed, 1..64 chars, and must construct
+             a valid `Intl.DateTimeFormat` -> message "must be a valid IANA timezone"
+          2. note lookup                                   -> 404 voice_note_not_found
+          3. `!note.transcript`                            -> 400 voice_note_not_ready
+          4. extract -> gate -> persist; sets
+               `extractedTasks` (auto-saved, high confidence + reason 'clear')
+               `reviewItems`    (held for the user)
+               `clarifyItems`   (internal; STRIPPED from the response)
+               `status` = 'needs_review' when reviewItems is non-empty, else 'ready'
+          5. 200
+
+        Caller-supplied `timezone` wins over the note's stored `timezone`.
+        With no AI key configured the extractor throws and the request becomes
+        500 internal_error. No rate limiter (the AI cost here is ungated).
+      security:
+        - voiceBearerAuth: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/VoiceExtractRequest' }
+      responses:
+        '200':
+          description: Tasks created this call, plus the updated note.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/VoiceExtractResponse' }
+        '400':
+          description: '`invalid_body` | `voice_note_not_ready`'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ScanErrorEnvelope' }
+              examples:
+                voice_note_not_ready:
+                  value:
+                    error:
+                      code: voice_note_not_ready
+                      message: "Voice note transcript is not ready yet."
+                invalid_body:
+                  value:
+                    error:
+                      code: invalid_body
+                      message: "Invalid extract payload."
+                      details:
+                        formErrors: []
+                        fieldErrors:
+                          timezone: ["must be a valid IANA timezone"]
+        '401': { $ref: '#/components/responses/ScanUnauthorized' }
+        '404': { $ref: '#/components/responses/VoiceNoteNotFound' }
+
+  /me/voice-notes/{id}/review:
+    parameters:
+      - $ref: '#/components/parameters/VoiceIdParam'
+    post:
+      operationId: voiceReviewNote
+      summary: Commit a review pass on a voice note
+      description: |
+        There is NO status precondition here (contrast with the document-scan
+        review, which demands `ready_for_review`). Calling it on any note is
+        legal; with an empty body it simply clears the review lane and marks the
+        note `ready` with a `reviewedAt` stamp. VERIFIED LIVE on a `pending`
+        note.
+
+        Order: note lookup (404) -> body parse (400 `invalid_review`) -> accept
+        / discard -> save -> 200.
+
+        Accept semantics: each `accepts[].key` must match a current
+        `reviewItems` entry; unknown keys are silently ignored. Accepted items
+        are forced to `confidence: 'high'`, `reviewReason: 'clear'`,
+        `reasons: []`; `estimate` is carried from the held item and can never be
+        supplied by the caller. Accepted records are APPENDED to
+        `extractedTasks`, and every handled key (accepted or discarded) is
+        removed from `reviewItems`. When `reviewItems` empties, `status` becomes
+        `ready` and `reviewedAt` is stamped.
+        No rate limiter.
+      security:
+        - voiceBearerAuth: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/VoiceReviewRequest' }
+      responses:
+        '200':
+          description: Tasks created from accepted items, plus the updated note.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/VoiceReviewResponse' }
+              examples:
+                observed_empty_body:
+                  value:
+                    tasks: []
+                    voiceNote:
+                      userId: "6a78bbbeaa461ae1dc64a0bf"
+                      durationMs: 4200
+                      byteSize: 2048
+                      source: "app"
+                      status: "ready"
+                      clientCapturedAt: "2026-08-09T10:05:00.000Z"
+                      timezone: "Africa/Cairo"
+                      mimeType: "audio/m4a"
+                      extractedTasks: []
+                      reviewItems: []
+                      createdAt: "2026-08-09T17:45:00.408Z"
+                      updatedAt: "2026-08-09T17:45:17.959Z"
+                      reviewedAt: "2026-08-09T17:45:17.958Z"
+                      id: "6a78bc9caa461ae1dc64a294"
+        '400':
+          description: '`invalid_review`'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ScanErrorEnvelope' }
+              examples:
+                invalid_review:
+                  value:
+                    error:
+                      code: invalid_review
+                      message: "Invalid review payload."
+                      details:
+                        formErrors: []
+                        fieldErrors:
+                          accepts: ["String must contain at least 1 character(s)"]
+        '401': { $ref: '#/components/responses/ScanUnauthorized' }
+        '404': { $ref: '#/components/responses/VoiceNoteNotFound' }
+
+# =============================================================================
+components:
+
+  securitySchemes:
+    scanBearerAuth:  { type: http, scheme: bearer, bearerFormat: JWT }
+    icsBearerAuth:   { type: http, scheme: bearer, bearerFormat: JWT }
+    googBearerAuth:  { type: http, scheme: bearer, bearerFormat: JWT }
+    aiBearerAuth:    { type: http, scheme: bearer, bearerFormat: JWT }
+    voiceBearerAuth: { type: http, scheme: bearer, bearerFormat: JWT }
+
+  parameters:
+    ScanIdParam:
+      name: id
+      in: path
+      required: true
+      description: |
+        24-hex Mongo ObjectId. A malformed value raises a Mongoose CastError,
+        which the global handler maps to 404 `not_found` / "Not found" — a
+        DIFFERENT body from the route's own `scanned_document_not_found`.
+      schema: { type: string, pattern: '^[a-f0-9]{24}$' }
+    IcsIdParam:
+      name: id
+      in: path
+      required: true
+      description: |
+        24-hex Mongo ObjectId. Malformed -> global CastError 404 `not_found`.
+        VERIFIED LIVE.
+      schema: { type: string, pattern: '^[a-f0-9]{24}$' }
+    VoiceIdParam:
+      name: id
+      in: path
+      required: true
+      description: 24-hex Mongo ObjectId. Malformed -> global CastError 404 `not_found`.
+      schema: { type: string, pattern: '^[a-f0-9]{24}$' }
+
+  responses:
+    ScanUnauthorized:
+      description: |
+        Missing or unusable bearer token. Emitted by `requireAuth` BEFORE any
+        rate limiter or body parsing.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ScanErrorEnvelope' }
+          examples:
+            missing_token:
+              value:
+                error: { code: missing_token, message: "Missing access token" }
+            invalid_token:
+              value:
+                error: { code: invalid_token, message: "Invalid or expired access token" }
+    ScanRateLimited:
+      description: |
+        Per-user sliding-window limiter tripped. Always carries a `Retry-After`
+        header in whole seconds. VERIFIED LIVE (`Retry-After: 47`).
+      headers:
+        Retry-After:
+          description: Whole seconds until the oldest hit leaves the window (minimum 1).
+          schema: { type: integer, minimum: 1 }
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ScanErrorEnvelope' }
+          examples:
+            rate_limited:
+              value:
+                error:
+                  code: rate_limited
+                  message: "You are going a little fast — give it a moment and try again."
+    ScanInternalOrBodyTooLarge:
+      description: |
+        Unhandled server error. NOTE: this is ALSO what a request body above the
+        doubled `express.raw()` ceiling produces — body-parser's own 413 is not
+        recognised by `errorHandler`, so it degrades to this. VERIFIED LIVE.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ScanErrorEnvelope' }
+          examples:
+            internal_error:
+              value:
+                error: { code: internal_error, message: "Internal server error" }
+    ScanDocumentNotFound:
+      description: No such scan for this user (or the id belongs to someone else).
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ScanErrorEnvelope' }
+          examples:
+            scanned_document_not_found:
+              value:
+                error:
+                  code: scanned_document_not_found
+                  message: "Scanned document no longer exists."
+    IcsFeedNotFound:
+      description: No such subscription for this user.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ScanErrorEnvelope' }
+          examples:
+            feed_not_found:
+              value:
+                error: { code: feed_not_found, message: "That calendar is not connected." }
+    GoogNotConnected:
+      description: This user has no Google Integration row.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ScanErrorEnvelope' }
+          examples:
+            not_connected:
+              value:
+                error: { code: not_connected, message: "No Google account is connected." }
+    VoiceNoteNotFound:
+      description: No such voice note for this user.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ScanErrorEnvelope' }
+          examples:
+            voice_note_not_found:
+              value:
+                error: { code: voice_note_not_found, message: "Voice note no longer exists." }
+
+  schemas:
+
+    # -------------------------------------------------------------------
+    # SHARED ERROR ENVELOPE
+    # The `Scan` prefix is only a namespace tag to avoid collisions with
+    # sibling contract fragments — this schema is the envelope used by EVERY
+    # JSON error in this file (document scans, ICS, Google, AI, voice notes).
+    # -------------------------------------------------------------------
+    ScanErrorEnvelope:
+      type: object
+      required: [error]
+      additionalProperties: false
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          additionalProperties: false
+          properties:
+            code:
+              type: string
+              description: Stable snake_case identifier. See the ERROR CODE INDEX below.
+            message:
+              type: string
+              description: |
+                User-facing English sentence. LITERAL — reproduce punctuation
+                exactly, including U+2014 em dashes and U+2019 apostrophes.
+            details:
+              description: |
+                Present only when the AppError carried details. Three distinct
+                shapes appear in this fragment:
+                  * zod `.flatten()` OBJECT (see ScanZodFlattenedError) — used by
+                    invalid_metadata, invalid_review and invalid_body
+                  * RAW zod issues ARRAY — used ONLY by `invalid_feed`
+                  * a plain quota OBJECT — see ScanQuotaExceededError and
+                    AiQuotaExceededError (their shapes differ from each other)
+                  * the global `validation_error` uses a THIRD array shape:
+                    `[{path: "a.b", message: "..."}]`
+                When absent the key is omitted entirely, never set to null.
+
+    ScanZodFlattenedError:
+      type: object
+      description: |
+        The output of zod's `.flatten()`. Used as `details` by
+        `invalid_metadata`, `invalid_review`, `invalid_body`.
+      required: [formErrors, fieldErrors]
+      properties:
+        formErrors:
+          type: array
+          items: { type: string }
+        fieldErrors:
+          type: object
+          additionalProperties:
+            type: array
+            items: { type: string }
+
+    ScanQuotaExceededError:
+      type: object
+      description: The 402 body from `admitDocumentScan`.
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message, details]
+          properties:
+            code: { type: string, const: document_scan_quota_exceeded }
+            message:
+              type: string
+              description: '`You''ve hit this month''s limit of ${limit} document scans.`'
+            details:
+              type: object
+              required: [tier, limit, used]
+              additionalProperties: false
+              properties:
+                tier:  { type: string, enum: [free, pro] }
+                limit: { type: integer }
+                used:  { type: integer }
+
+    ScanQuotaStatus:
+      type: object
+      description: Monthly document-scan meter (`readDocumentScanQuota`).
+      required: [kind, limit, used, remaining, resetAt]
+      additionalProperties: false
+      properties:
+        kind:      { type: string, const: document_scan }
+        limit:
+          type: integer
+          description: |
+            `DOCUMENT_SCAN_QUOTA_FREE_MONTHLY` (default 20) or
+            `DOCUMENT_SCAN_QUOTA_PRO_MONTHLY` (default 200), by the user's real tier.
+        used:      { type: integer, minimum: 0 }
+        remaining: { type: integer, minimum: 0, description: '`Math.max(0, limit - used)`' }
+        resetAt:
+          type: string
+          format: date-time
+          description: Midnight UTC on the 1st of the following month.
+
+    ScanQuotaResponse:
+      type: object
+      required: [tier, quota]
+      additionalProperties: false
+      properties:
+        tier:  { type: string, enum: [free, pro] }
+        quota: { $ref: '#/components/schemas/ScanQuotaStatus' }
+
+    ScanEstimate:
+      type: object
+      description: Effort estimate carried from the extraction pass.
+      required: [minMinutes, maxMinutes, source]
+      properties:
+        minMinutes: { type: integer }
+        maxMinutes: { type: integer }
+        source:     { type: string, enum: [ai, user] }
+
+    ScanExtractedTaskCandidate:
+      type: object
+      description: |
+        One extracted item held for review. NOTHING from a scan auto-saves —
+        every candidate needs an explicit accept or discard.
+      required: [key, title, domain, priority, confidence]
+      properties:
+        key:        { type: string }
+        title:      { type: string }
+        domain:     { type: string, enum: [health, home, car, finance, family, pets] }
+        priority:   { type: string, enum: [low, normal, high, urgent], default: normal }
+        confidence: { type: string, enum: [high, medium, low], default: medium }
+        estimate:   { $ref: '#/components/schemas/ScanEstimate' }
+        dueAt:      { type: string, format: date-time }
+        notes:      { type: string }
+        sourcePage: { type: integer }
+        taskId:
+          type: string
+          description: Set once the candidate has been accepted into a Task.
+
+    ScanScannedDocument:
+      type: object
+      description: |
+        A ScannedDocument AFTER the model's `toJSON` transform. The transform:
+          * sets `id = String(_id)`, deletes `_id` and `__v`
+          * DERIVES `canRetry = (status === 'failed' && manualRetries < 3)`
+          * DELETES, and therefore NEVER exposes:
+              storageKey, rawExtractedText, attempts, maxAttempts,
+              manualRetries, lockedUntil, nextRunAt, lastError, notifiedAt
+        VERIFIED LIVE: `canRetry` present on every payload; none of the nine
+        stripped fields ever appears.
+        `userId` IS exposed, as a 24-hex string.
+        Optional properties are OMITTED when unset, never emitted as null —
+        with the sole exception of nothing here (all nullable job fields are in
+        the stripped list).
+      required:
+        [userId, mimeType, sourceType, pageCount, byteSize, status,
+         clientCapturedAt, candidates, createdAt, updatedAt, id, canRetry]
+      additionalProperties: false
+      properties:
+        id:         { type: string, description: 24-hex ObjectId string. }
+        userId:     { type: string }
+        mimeType:
+          type: string
+          enum: [application/pdf, image/jpeg, image/png, image/heic, image/webp]
+        sourceType: { type: string, enum: [camera, pdf, gallery] }
+        pageCount:  { type: integer, minimum: 1, description: 1 for any non-PDF. }
+        byteSize:   { type: integer, minimum: 0 }
+        status:
+          type: string
+          enum: [pending, processing, ready_for_review, failed]
+        canRetry:
+          type: boolean
+          description: |
+            DERIVED, not stored. True only when `status === 'failed'` AND the
+            hidden `manualRetries` counter is below MAX_MANUAL_SCAN_RETRIES (3).
+        failureReason:
+          type: string
+          description: |
+            Plain-language failure text, present only while `status === 'failed'`.
+            Cleared by `/reprocess`. Distinct from the STRIPPED `lastError`.
+        documentSummary:  { type: string, description: One-to-two-sentence AI overview. }
+        documentType:
+          type: string
+          enum: [bill, statement, letter, form, receipt, insurance, medical, legal, identity, tax, other]
+        documentTitle:    { type: string, maxLength: 60 }
+        documentSubtitle: { type: string, maxLength: 120 }
+        issuer:           { type: string, maxLength: 80 }
+        candidates:
+          type: array
+          items: { $ref: '#/components/schemas/ScanExtractedTaskCandidate' }
+        clientCapturedAt: { type: string, format: date-time }
+        timezone:         { type: string }
+        reviewedAt:
+          type: string
+          format: date-time
+          description: Stamped when no candidate is left without a `taskId`.
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+
+    ScanSingleResponse:
+      type: object
+      required: [scannedDocument]
+      additionalProperties: false
+      properties:
+        scannedDocument: { $ref: '#/components/schemas/ScanScannedDocument' }
+
+    ScanListResponse:
+      type: object
+      required: [scannedDocuments]
+      additionalProperties: false
+      properties:
+        scannedDocuments:
+          type: array
+          maxItems: 50
+          items: { $ref: '#/components/schemas/ScanScannedDocument' }
+
+    ScanReviewRequest:
+      type: object
+      description: |
+        Parsed from `req.body ?? {}`; both members default to `[]`, so `{}` and
+        an absent body are both valid.
+      additionalProperties: false
+      properties:
+        accepts:
+          type: array
+          default: []
+          items:
+            type: object
+            required: [key]
+            additionalProperties: false
+            properties:
+              key:      { type: string, minLength: 1 }
+              title:    { type: string, minLength: 1, maxLength: 240, description: Trimmed before validation. }
+              domain:   { type: string, enum: [health, home, car, finance, family, pets] }
+              priority: { type: string, enum: [low, normal, high, urgent] }
+              dueAt:    { type: string, format: date-time }
+              notes:    { type: string, maxLength: 2000 }
+        discards:
+          type: array
+          default: []
+          items: { type: string, minLength: 1 }
+
+    ScanTaskObject:
+      type: object
+      description: |
+        A Task after its own `toJSON` (adds `id` and the derived `priorityRank`,
+        drops `_id`/`__v`). The authoritative Task schema is owned by the tasks
+        contract fragment; treated as open here on purpose.
+      additionalProperties: true
+
+    ScanReviewResponse:
+      type: object
+      required: [tasks, scannedDocument]
+      additionalProperties: false
+      properties:
+        tasks:
+          type: array
+          description: Only the Tasks created by THIS call.
+          items: { $ref: '#/components/schemas/ScanTaskObject' }
+        scannedDocument: { $ref: '#/components/schemas/ScanScannedDocument' }
+
+    # ------------------------------ ICS --------------------------------
+
+    IcsSubscribeRequest:
+      type: object
+      required: [url, label, domain]
+      additionalProperties: false
+      properties:
+        url:
+          type: string
+          minLength: 1
+          maxLength: 2048
+          description: |
+            `http:`, `https:` or `webcal:`. `webcal://` is rewritten to
+            `https://` before storage. Stored as the NORMALISED
+            `URL.toString()`, which may differ from what was sent (e.g. a
+            trailing slash added to a bare origin) — the (userId, url)
+            uniqueness check runs on the normalised form.
+        label:
+          type: string
+          minLength: 1
+          maxLength: 80
+          description: Trimmed before validation.
+        domain:
+          type: string
+          enum: [health, home, car, finance, family, pets]
+
+    IcsFeed:
+      type: object
+      description: |
+        An IcsFeed after `toJSON`, which sets `id`, deletes `_id`/`__v` and ALSO
+        STRIPS the cache validators `etag` and `lastModified`.
+      required: [userId, url, label, domain, status, failureCount, createdAt, updatedAt, id]
+      additionalProperties: false
+      properties:
+        id:           { type: string }
+        userId:       { type: string }
+        url:          { type: string, maxLength: 2048 }
+        label:        { type: string, maxLength: 80 }
+        domain:       { type: string, enum: [health, home, car, finance, family, pets] }
+        status:
+          type: string
+          enum: [active, error, gone]
+          description: '`gone` is terminal (404/410 from the publisher).'
+        lastError:
+          type: string
+          description: |
+            Plain-language reason the last poll failed. Cleared on a healthy
+            poll. Same string as `sync.reason` for that attempt.
+        failureCount: { type: integer, minimum: 0, description: Consecutive failures; reset to 0 on success. }
+        lastFetchedAt:
+          type: string
+          format: date-time
+          description: Every attempt, successful or not.
+        lastSyncedAt:
+          type: string
+          format: date-time
+          description: Only attempts that returned a body we parsed.
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+
+    IcsSyncResult:
+      type: object
+      description: |
+        The outcome of one synchronous poll (`syncFeed`). NOTE that an unhealthy
+        feed is reported HERE with HTTP 200/201 — it is not an HTTP error.
+      required: [status, created, updated, needingConfirmation]
+      additionalProperties: false
+      properties:
+        status:
+          type: string
+          enum: [unchanged, synced, gone, error]
+          description: |
+            `unchanged` = publisher answered 304 (no body, no writes, feed
+            marked healthy). `synced` = body parsed and reconciled.
+            `gone` = 404/410, terminal. `error` = everything else.
+        created:
+          type: integer
+          description: New Tasks created this poll. Always 0 unless status is `synced`.
+        updated:
+          type: integer
+          description: |
+            Existing Tasks whose TIMING changed (moved > 60000 ms, or the
+            reminder/list kind flipped). Title, notes and domain are never
+            rewritten by a poll.
+        needingConfirmation:
+          type: integer
+          description: |
+            Occurrences whose time was ambiguous and were therefore filed as
+            passive `list` items rather than firing `reminder` items.
+        reason:
+          type: string
+          description: |
+            Present only for `gone` and `error`. Observed literals:
+              "That feed no longer exists."           (404 or 410)
+              "That feed returned <status>."          (any other non-OK status)
+              "That feed took too long to respond."   (15 s timeout)
+              "That feed could not be reached."       (network failure)
+              "That feed sent an invalid redirect."   (3xx with no Location)
+              "That feed redirected too many times."  (> 3 hops)
+              "That feed is too large."               (> 5 MiB)
+              "That address did not return a calendar."
+                                                      (200 with no BEGIN:VCALENDAR
+                                                       in the first 2048 chars)
+              "That address is unusable."             (non-UnsafeFeedUrlError at vet time)
+              "That redirect is unusable."            (non-UnsafeFeedUrlError on a hop)
+              "That feed could not be read."          (ICS parse threw)
+              plus any `UnsafeFeedUrlError.message` when a REDIRECT HOP fails
+              the SSRF vet.
+
+    IcsFeedSyncResponse:
+      type: object
+      required: [feed, sync]
+      additionalProperties: false
+      properties:
+        feed: { $ref: '#/components/schemas/IcsFeed' }
+        sync: { $ref: '#/components/schemas/IcsSyncResult' }
+
+    IcsFeedListResponse:
+      type: object
+      required: [feeds]
+      additionalProperties: false
+      properties:
+        feeds:
+          type: array
+          items: { $ref: '#/components/schemas/IcsFeed' }
+
+    IcsDeleteResponse:
+      type: object
+      required: [removed, retiredMatters]
+      additionalProperties: false
+      properties:
+        removed: { type: boolean, const: true }
+        retiredMatters:
+          type: integer
+          minimum: 0
+          description: |
+            `modifiedCount` of the soft-delete sweep over this feed's FUTURE
+            OPEN matters only.
+
+    # ----------------------------- GOOGLE ------------------------------
+
+    GoogAuthorizeRequest:
+      type: object
+      description: |
+        NOT zod-validated. Only `web === true` is read; everything else is
+        ignored, and an absent or non-JSON body is accepted (`web` -> false).
+      additionalProperties: true
+      properties:
+        web:
+          type: boolean
+          default: false
+          description: |
+            True when consent is starting from a plain browser, so the callback
+            should end on an HTML page instead of a `kitto://` deep link. Baked
+            into the SIGNED state; never read from the callback query.
+
+    GoogAuthorizeResponse:
+      type: object
+      required: [url]
+      additionalProperties: false
+      properties:
+        url:
+          type: string
+          format: uri
+          description: |
+            `https://accounts.google.com/o/oauth2/v2/auth?...` — must be opened
+            in the SYSTEM browser, never an embedded webview.
+
+    GoogIntegration:
+      type: object
+      description: |
+        An Integration after `toJSON`, which sets `id`, deletes `_id`/`__v` and
+        STRIPS `refreshTokenEnc`, `accessTokenEnc` and `accessTokenExpiresAt`.
+        No token material is ever serialised.
+      required: [userId, provider, externalAccountId, grantedScopes, status, importDomain, connectedAt, createdAt, updatedAt, id]
+      additionalProperties: false
+      properties:
+        id:                   { type: string }
+        userId:               { type: string }
+        provider:             { type: string, const: google }
+        externalAccountId:    { type: string, description: "Google `sub`; `unknown` when the id_token carried none." }
+        externalAccountEmail: { type: string }
+        grantedScopes:
+          type: array
+          items: { type: string }
+          description: |
+            What Google ACTUALLY granted, which may be fewer than the four
+            requested (openid, email, calendar.readonly, tasks.readonly).
+        status:
+          type: string
+          enum: [active, needs_reauth, revoked]
+        lastError:            { type: string }
+        calendarSyncToken:    { type: string, description: Google Calendar incremental cursor. }
+        calendarSyncedAt:     { type: string, format: date-time }
+        tasksSyncedAt:        { type: string, format: date-time }
+        importDomain:
+          type: string
+          enum: [health, home, car, finance, family, pets]
+          default: home
+        connectedAt: { type: string, format: date-time }
+        revokedAt:   { type: string, format: date-time }
+        createdAt:   { type: string, format: date-time }
+        updatedAt:   { type: string, format: date-time }
+
+    GoogStatusResponse:
+      type: object
+      required: [available, integration]
+      additionalProperties: false
+      properties:
+        available:
+          type: boolean
+          description: |
+            `isGoogleConfigured() && isTokenCipherConfigured()`. FALSE on the
+            reference server. Note this key is ALWAYS present and is a real
+            boolean, never omitted.
+        integration:
+          description: The connection, or explicit `null` (the key is always present).
+          oneOf:
+            - { $ref: '#/components/schemas/GoogIntegration' }
+            - { type: 'null' }
+
+    GoogCalendarSyncResult:
+      type: object
+      required: [status, created, updated, commitments, ignored, fullResync]
+      additionalProperties: false
+      properties:
+        status:
+          type: string
+          enum: [synced, skipped]
+          description: '`skipped` when `calendar.readonly` was not granted.'
+        created:     { type: integer }
+        updated:     { type: integer }
+        commitments: { type: integer, description: Meetings/recurring slots seen and deliberately NOT filed as matters. }
+        ignored:     { type: integer }
+        fullResync:
+          type: boolean
+          description: True when Google answered 410 Gone and the cursor had to be discarded.
+        reason:
+          type: string
+          description: 'Present when skipped. Literal: "Calendar access was not granted."'
+
+    GoogTasksSyncResult:
+      type: object
+      required: [status, created, updated]
+      additionalProperties: false
+      properties:
+        status:  { type: string, enum: [synced, skipped] }
+        created: { type: integer }
+        updated: { type: integer }
+        reason:  { type: string, description: Present when skipped for a missing `tasks.readonly` scope. }
+
+    GoogSyncResponse:
+      type: object
+      required: [integration, calendar, tasks]
+      additionalProperties: false
+      properties:
+        integration: { $ref: '#/components/schemas/GoogIntegration' }
+        calendar:    { $ref: '#/components/schemas/GoogCalendarSyncResult' }
+        tasks:       { $ref: '#/components/schemas/GoogTasksSyncResult' }
+
+    GoogDisconnectResponse:
+      type: object
+      required: [removed]
+      additionalProperties: false
+      properties:
+        removed: { type: boolean, const: true }
+
+    # ------------------------------- AI --------------------------------
+
+    AiAskRequest:
+      type: object
+      required: [question]
+      additionalProperties: false
+      properties:
+        question:
+          type: string
+          minLength: 1
+          maxLength: 2000
+          description: |
+            Trimmed BEFORE the length checks. Empty/whitespace-only ->
+            "question cannot be empty"; over 2000 ->
+            "question cannot exceed 2000 characters".
+        scope:
+          type: string
+          enum: [personal]
+          default: personal
+          description: Forward-looking; `personal` is the only accepted value in v1.
+        timezone:
+          type: string
+          minLength: 1
+          maxLength: 64
+          description: |
+            IANA zone anchoring relative phrases. NOT IANA-validated on this
+            route (contrast the voice routes) — any 1..64 char string passes.
+            Falls back to UTC when absent.
+
+    AiConfirmToolRequest:
+      type: object
+      required: [action]
+      additionalProperties: false
+      properties:
+        action: { type: string, enum: [confirm, decline] }
+
+    AiTranscribeResponse:
+      type: object
+      required: [text]
+      additionalProperties: false
+      properties:
+        text: { type: string }
+
+    AiQuotaStatus:
+      type: object
+      required: [kind, limit, used, remaining, resetAt]
+      additionalProperties: false
+      properties:
+        kind:      { type: string, enum: [message], description: 'AI_USAGE_KINDS currently has exactly one member.' }
+        limit:     { type: integer, description: 'AI_QUOTA_FREE_DAILY (default 30) — tier is hard-coded to free.' }
+        used:      { type: integer, minimum: 0 }
+        remaining: { type: integer, minimum: 0 }
+        resetAt:   { type: string, format: date-time, description: Next UTC midnight. }
+
+    AiQuotaResponse:
+      type: object
+      required: [tier, quotas]
+      additionalProperties: false
+      properties:
+        tier:
+          type: string
+          enum: [free, pro]
+          description: Always `free` in v1 (`resolveTier()` is a constant).
+        quotas:
+          type: array
+          items: { $ref: '#/components/schemas/AiQuotaStatus' }
+
+    AiQuotaExceededError:
+      type: object
+      description: |
+        The 402 body from `admitWithinQuota`. Note this `details` carries `kind`
+        and `resetAt` in addition to tier/limit/used — a DIFFERENT shape from
+        the document-scan 402.
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message, details]
+          properties:
+            code: { type: string, const: quota_exceeded }
+            message:
+              type: string
+              description: '`You''ve hit today''s limit of ${limit} ${kind}s.` -> "…limit of 30 messages."'
+            details:
+              type: object
+              required: [kind, tier, limit, used, resetAt]
+              additionalProperties: false
+              properties:
+                kind:    { type: string, enum: [message] }
+                tier:    { type: string, enum: [free, pro] }
+                limit:   { type: integer }
+                used:    { type: integer }
+                resetAt: { type: string, format: date-time }
+
+    AiConversationSource:
+      type: object
+      required: [kind, id, title]
+      additionalProperties: false
+      properties:
+        kind:  { type: string, enum: [task, voice] }
+        id:    { type: string }
+        title:
+          type: string
+          description: |
+            For `voice`, the transcript truncated to 80 chars, or the literal
+            "Voice note" when the transcript is empty.
+
+    AiConversationToolCall:
+      type: object
+      required: [callId, name, args, status]
+      additionalProperties: false
+      properties:
+        callId:      { type: string, description: Server-minted `randomUUID()`. }
+        modelCallId: { type: string, description: Gemini's own id, when it supplied one. }
+        name:        { $ref: '#/components/schemas/AiToolName' }
+        args:        { type: object, additionalProperties: true }
+        status:
+          type: string
+          enum: [pending_confirmation, executed, failed, declined]
+        result:
+          description: Present (possibly null) once executed.
+          oneOf:
+            - { type: object, additionalProperties: true }
+            - { type: 'null' }
+        error:
+          oneOf:
+            - { type: string }
+            - { type: 'null' }
+
+    AiConversationMessage:
+      type: object
+      description: |
+        Re-shaped by the route, NOT the raw Mongoose document: `sources` and
+        `toolCalls` are coerced to `[]` when absent, and `createdAt` is emitted
+        as an ISO 8601 string.
+      required: [role, text, sources, toolCalls, createdAt]
+      additionalProperties: false
+      properties:
+        role:      { type: string, enum: [user, assistant] }
+        text:      { type: string, description: May be the empty string for a tool-only assistant turn. }
+        sources:
+          type: array
+          items: { $ref: '#/components/schemas/AiConversationSource' }
+        toolCalls:
+          type: array
+          items: { $ref: '#/components/schemas/AiConversationToolCall' }
+        createdAt: { type: string, format: date-time }
+
+    AiConversationResponse:
+      type: object
+      required: [scope, scopeId, messages]
+      additionalProperties: false
+      properties:
+        scope:   { type: string, const: personal }
+        scopeId:
+          type: 'null'
+          description: Always literally `null` in v1 — the key is always present.
+        messages:
+          type: array
+          maxItems: 50
+          description: 'Capped at AI_CONVERSATION_MAX_TURNS (50) by a `$slice` on every push.'
+          items: { $ref: '#/components/schemas/AiConversationMessage' }
+
+    AiToolName:
+      type: string
+      description: |
+        The 11 tools the agent can invoke. Only `deleteAllTasks` requires a
+        human confirmation round-trip, so it is the only name that can ever
+        appear on `POST /ai/tools/confirm/{callId}`.
+      enum:
+        - createTask
+        - updateTask
+        - completeTask
+        - deleteTask
+        - deleteAllTasks
+        - snoozeTask
+        - queryTasks
+        - addSubtask
+        - toggleSubtask
+        - removeSubtask
+        - holdForClarification
+
+    AiStreamEvent:
+      description: |
+        The JSON object carried by each `data:` frame on POST /ai/ask and
+        POST /ai/tools/confirm/{callId}. Discriminated on `type`. SEVEN
+        variants. `type` is always the FIRST key in the serialised object.
+
+        Six come from the generator (where they are keyed `kind` internally and
+        renamed to `type` by the route): sources, token, tool_call, tool_result,
+        done, error. The seventh, `quota`, is synthesised by the ROUTE right
+        after it observes `done`.
+      oneOf:
+        - { $ref: '#/components/schemas/AiEventSources' }
+        - { $ref: '#/components/schemas/AiEventToken' }
+        - { $ref: '#/components/schemas/AiEventToolCall' }
+        - { $ref: '#/components/schemas/AiEventToolResult' }
+        - { $ref: '#/components/schemas/AiEventDone' }
+        - { $ref: '#/components/schemas/AiEventError' }
+        - { $ref: '#/components/schemas/AiEventQuota' }
+      discriminator:
+        propertyName: type
+        mapping:
+          sources:     '#/components/schemas/AiEventSources'
+          token:       '#/components/schemas/AiEventToken'
+          tool_call:   '#/components/schemas/AiEventToolCall'
+          tool_result: '#/components/schemas/AiEventToolResult'
+          done:        '#/components/schemas/AiEventDone'
+          error:       '#/components/schemas/AiEventError'
+          quota:       '#/components/schemas/AiEventQuota'
+
+    AiEventSources:
+      type: object
+      description: |
+        The grounding set for this turn. Emitted FIRST on /ai/ask (possibly with
+        an empty array), and again mid-stream when a `queryTasks` tool call adds
+        a source.
+      required: [type, sources]
+      additionalProperties: false
+      properties:
+        type: { type: string, const: sources }
+        sources:
+          type: array
+          items: { $ref: '#/components/schemas/AiConversationSource' }
+
+    AiEventToken:
+      type: object
+      description: |
+        A chunk of assistant text. Despite the name this is NOT a per-token
+        stream — the service yields whole assembled assistant messages.
+      required: [type, text]
+      additionalProperties: false
+      properties:
+        type: { type: string, const: token }
+        text: { type: string }
+
+    AiEventToolCall:
+      type: object
+      description: |
+        The agent wants to run a tool. When `needsConfirmation` is true the
+        stream will NOT run it; the client must call
+        POST /ai/tools/confirm/{callId} with this `callId`.
+      required: [type, callId, name, args, needsConfirmation]
+      additionalProperties: false
+      properties:
+        type:   { type: string, const: tool_call }
+        callId: { type: string }
+        name:   { $ref: '#/components/schemas/AiToolName' }
+        args:   { type: object, additionalProperties: true }
+        needsConfirmation:
+          type: boolean
+          description: True only for `deleteAllTasks`.
+
+    AiEventToolResult:
+      type: object
+      description: |
+        Outcome of a tool run. On a decline the server emits
+        `{"type":"tool_result","callId":...,"result":null,"error":"declined"}`.
+      required: [type, callId, result, error]
+      additionalProperties: false
+      properties:
+        type:   { type: string, const: tool_result }
+        callId: { type: string }
+        result:
+          description: Both keys are ALWAYS present; the unused one is explicit `null`.
+          oneOf:
+            - { type: object, additionalProperties: true }
+            - { type: 'null' }
+        error:
+          oneOf:
+            - { type: string }
+            - { type: 'null' }
+
+    AiEventDone:
+      type: object
+      description: |
+        The generator finished. On the decline path and the
+        AI-not-configured continuation path `usage` is the empty object `{}`.
+      required: [type, usage]
+      additionalProperties: false
+      properties:
+        type: { type: string, const: done }
+        usage:
+          type: object
+          description: Provider token counts; values may be undefined and therefore omitted.
+          additionalProperties: { type: integer }
+
+    AiEventError:
+      type: object
+      description: |
+        A failure AFTER the stream opened. The HTTP status is already 200 — this
+        frame is the only signal. `code` is the AppError's code, or
+        `internal_error` for a plain Error. `message` is the AppError/Error
+        message, or the literal "Unexpected error" for a non-Error throw.
+        The stream ends normally (`res.end()`) right after.
+      required: [type, code, message]
+      additionalProperties: false
+      properties:
+        type:    { type: string, const: error }
+        code:    { type: string }
+        message: { type: string }
+
+    AiEventQuota:
+      type: object
+      description: |
+        Synthesised by the ROUTE immediately after a `done` event, so it is the
+        last frame of a successful turn.
+      required: [type, tier, quotas]
+      additionalProperties: false
+      properties:
+        type:  { type: string, const: quota }
+        tier:  { type: string, enum: [free, pro] }
+        quotas:
+          type: array
+          items: { $ref: '#/components/schemas/AiQuotaStatus' }
+
+    # --------------------------- VOICE NOTES ----------------------------
+
+    VoiceEstimate:
+      type: object
+      required: [minMinutes, maxMinutes, source]
+      properties:
+        minMinutes: { type: integer }
+        maxMinutes: { type: integer }
+        source:     { type: string, enum: [ai, user] }
+
+    VoiceExtractedTask:
+      type: object
+      description: An item that became (or will become) a Task. Kept on the note for audit.
+      required: [key, title, domain, priority, confidence, reviewReason]
+      properties:
+        key:          { type: string }
+        title:        { type: string }
+        domain:       { type: string, enum: [health, home, car, finance, family, pets] }
+        priority:     { type: string, enum: [low, normal, high, urgent], default: normal }
+        confidence:   { type: string, enum: [high, medium, low], default: high }
+        reviewReason: { $ref: '#/components/schemas/VoiceReviewReason' }
+        estimate:     { $ref: '#/components/schemas/VoiceEstimate' }
+        dueAt:        { type: string, format: date-time }
+        notes:        { type: string }
+        taskId:       { type: string }
+
+    VoiceReviewReason:
+      type: string
+      enum: [clear, ambiguous_intent, vague_date, maybe_duplicate, incomplete, low_asr, unknown_domain]
+
+    VoiceReviewItem:
+      type: object
+      description: Held for the user; NOT yet a Task.
+      required: [key, title, domain, priority, confidence, reviewReason, reasons]
+      properties:
+        key:          { type: string }
+        title:        { type: string }
+        domain:       { type: string, enum: [health, home, car, finance, family, pets] }
+        priority:     { type: string, enum: [low, normal, high, urgent], default: normal }
+        confidence:   { type: string, enum: [high, medium, low], default: medium }
+        reviewReason: { $ref: '#/components/schemas/VoiceReviewReason' }
+        reasons:
+          type: array
+          items: { type: string }
+        estimate: { $ref: '#/components/schemas/VoiceEstimate' }
+        dueRaw:   { type: string, description: The raw date phrase heard, before resolution. }
+        dueAt:    { type: string, format: date-time }
+        notes:    { type: string }
+
+    VoiceNote:
+      type: object
+      description: |
+        A VoiceNote after `toJSON`, which sets `id`, deletes `_id`/`__v` and
+        DELETES: storageKey, attempts, maxAttempts, lockedUntil, nextRunAt,
+        lastError, notifiedAt, AND `clarifyItems` (an internal staging lane that
+        surfaces through the separate Clarifications endpoint instead).
+        VERIFIED LIVE.
+      required:
+        [userId, durationMs, byteSize, source, status, extractedTasks,
+         reviewItems, clientCapturedAt, createdAt, updatedAt, id]
+      additionalProperties: false
+      properties:
+        id:         { type: string }
+        userId:     { type: string }
+        durationMs: { type: integer, minimum: 0, maximum: 600000 }
+        byteSize:   { type: integer, minimum: 0 }
+        source:     { type: string, enum: [app, widget, dynamic_island, lock_screen] }
+        status:
+          type: string
+          enum: [pending, transcribing, extracting, ready, needs_review, failed]
+        transcript:      { type: string }
+        failureReason:   { type: string }
+        extractedTasks:
+          type: array
+          items: { $ref: '#/components/schemas/VoiceExtractedTask' }
+        reviewItems:
+          type: array
+          items: { $ref: '#/components/schemas/VoiceReviewItem' }
+        clientCapturedAt: { type: string, format: date-time }
+        timezone:         { type: string }
+        mimeType:         { type: string, description: Content-Type up to the first `;`; omitted when the header was absent. }
+        reviewedAt:       { type: string, format: date-time }
+        createdAt:        { type: string, format: date-time }
+        updatedAt:        { type: string, format: date-time }
+
+    VoiceSingleResponse:
+      type: object
+      required: [voiceNote]
+      additionalProperties: false
+      properties:
+        voiceNote: { $ref: '#/components/schemas/VoiceNote' }
+
+    VoiceListResponse:
+      type: object
+      required: [voiceNotes]
+      additionalProperties: false
+      properties:
+        voiceNotes:
+          type: array
+          maxItems: 50
+          items: { $ref: '#/components/schemas/VoiceNote' }
+
+    VoiceExtractRequest:
+      type: object
+      description: Parsed from `req.body ?? {}`; `{}` and an absent body are both valid.
+      additionalProperties: false
+      properties:
+        timezone:
+          type: string
+          minLength: 1
+          maxLength: 64
+          description: |
+            Trimmed, then IANA-validated by constructing an
+            `Intl.DateTimeFormat`. Overrides the note's stored timezone.
+
+    VoiceTaskObject:
+      type: object
+      description: |
+        A Task after its own `toJSON`. Authoritative schema lives in the tasks
+        contract fragment; open here on purpose.
+      additionalProperties: true
+
+    VoiceExtractResponse:
+      type: object
+      required: [tasks, voiceNote]
+      additionalProperties: false
+      properties:
+        tasks:
+          type: array
+          items: { $ref: '#/components/schemas/VoiceTaskObject' }
+        voiceNote: { $ref: '#/components/schemas/VoiceNote' }
+
+    VoiceReviewRequest:
+      type: object
+      description: Identical shape to ScanReviewRequest; both members default to `[]`.
+      additionalProperties: false
+      properties:
+        accepts:
+          type: array
+          default: []
+          items:
+            type: object
+            required: [key]
+            additionalProperties: false
+            properties:
+              key:      { type: string, minLength: 1 }
+              title:    { type: string, minLength: 1, maxLength: 240 }
+              domain:   { type: string, enum: [health, home, car, finance, family, pets] }
+              priority: { type: string, enum: [low, normal, high, urgent] }
+              dueAt:    { type: string, format: date-time }
+              notes:    { type: string, maxLength: 2000 }
+        discards:
+          type: array
+          default: []
+          items: { type: string, minLength: 1 }
+
+    VoiceReviewResponse:
+      type: object
+      required: [tasks, voiceNote]
+      additionalProperties: false
+      properties:
+        tasks:
+          type: array
+          items: { $ref: '#/components/schemas/VoiceTaskObject' }
+        voiceNote: { $ref: '#/components/schemas/VoiceNote' }
+
+# =============================================================================
+# ERROR CODE INDEX — every code this domain can emit
+#
+# Status | code                          | literal message
+# -------+-------------------------------+--------------------------------------
+#  400   | empty_body                    | No document payload received.        (document scans)
+#  400   | empty_body                    | No audio payload received.           (voice notes AND /ai/voice/transcribe)
+#  400   | payload_too_large             | Document exceeds 15MB.               (15 = round(DOCUMENT_SCAN_MAX_BYTES/1MiB))
+#  400   | payload_too_large             | Voice note exceeds 5MB.              (5 = round(VOICE_NOTE_MAX_BYTES/1MiB))
+#  400   | payload_too_large             | Recording exceeds 6MB. Try a shorter clip.   (/ai/voice/transcribe, hard-coded 6 MiB)
+#  400   | unsupported_media_type        | Only PDF, JPEG, PNG, HEIC, or WebP are supported.   (unreachable in practice)
+#  400   | invalid_metadata              | Missing or invalid x-document-scan-* headers.
+#  400   | invalid_metadata              | Missing or invalid x-voice-note-* headers.
+#  400   | invalid_pdf                   | Could not read that PDF — it may be corrupt or password-protected.
+#  400   | document_too_many_pages       | PDF has <N> pages, exceeding the 20-page limit.
+#  400   | document_scan_retry_exhausted | This document has failed too many times to keep retrying. Try scanning it again.
+#  400   | scan_not_ready                | This scan is not ready for review yet.
+#  400   | invalid_review                | Invalid review payload.              (document scans AND voice notes)
+#  400   | invalid_body                  | Invalid extract payload.             (voice extract-tasks)
+#  400   | invalid_body                  | Invalid ask payload.                 (/ai/ask)
+#  400   | invalid_body                  | Invalid confirm payload.             (/ai/tools/confirm)
+#  400   | invalid_tool_args             | <JSON.stringify(zodFlatten)>          (/ai/tools/confirm re-validation)
+#  400   | invalid_feed                  | Check the address, name and category.   (details = RAW zod issues ARRAY)
+#  400   | timezone_required             | Set your timezone before subscribing to a calendar — imported events have no timezone of their own.
+#  400   | timezone_required             | Set your timezone before importing — Google items have no timezone of their own.
+#  400   | unsafe_feed_url               | That is not a valid URL.
+#  400   | unsafe_feed_url               | Calendar feeds must use https.
+#  400   | unsafe_feed_url               | Calendar feed URLs must not contain credentials.
+#  400   | unsafe_feed_url               | That address could not be resolved.
+#  400   | unsafe_feed_url               | That address is not publicly reachable.
+#  400   | unsafe_feed_url               | That address cannot be used.          (non-UnsafeFeedUrlError fallback)
+#  400   | google_not_configured         | Connecting a Google account is not available yet.
+#  400   | validation_error              | Request validation failed             (global: an escaped ZodError)
+#  401   | missing_token                 | Missing access token
+#  401   | invalid_token                 | Invalid or expired access token
+#  402   | document_scan_quota_exceeded  | You've hit this month's limit of <limit> document scans.
+#  402   | quota_exceeded                | You've hit today's limit of <limit> messages.
+#  403   | cross_user_confirm            | You cannot confirm another user's pending call.
+#  404   | not_found                     | Not found                             (global: CastError on a malformed :id)
+#  404   | scanned_document_not_found    | Scanned document no longer exists.
+#  404   | user_not_found                | Account no longer exists.
+#  404   | feed_not_found                | That calendar is not connected.
+#  404   | not_connected                 | No Google account is connected.
+#  404   | voice_note_not_found          | Voice note no longer exists.
+#  404   | pending_call_not_found        | This confirmation has expired.
+#  404   | pending_call_not_found        | This confirmation has already been handled.
+#  429   | rate_limited                  | You are going a little fast — give it a moment and try again.
+#  500   | internal_error                | Internal server error                 (incl. body-parser over-ceiling 413)
+#  503   | ai_not_configured             | AI is not configured. Set GEMINI_API_KEY in server/.env to enable.   (/ai/ask)
+#  503   | ai_not_configured             | AI is not configured. Set GEMINI_API_KEY in server/.env.             (/ai/voice/transcribe)
+#
+# In-stream only (HTTP 200, `text/event-stream`):
+#   {"type":"error","code":"<AppError.code|internal_error>","message":"<...>"}
+#
+# NOT an error envelope: `GET /integrations/google/callback` never emits one.
+# =============================================================================

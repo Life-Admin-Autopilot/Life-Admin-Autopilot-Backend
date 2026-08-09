@@ -1,0 +1,2535 @@
+# =============================================================================
+# FROZEN CONTRACT — auth / session / account domain
+# =============================================================================
+# Source of truth: the Express + Mongoose reference implementation at
+#   Steward/server/src/routes/{auth.password,auth.session,auth.email,
+#     auth.emailChange,auth.magic,me,me.export,me.subscription,me.billing,
+#     me.integrations,health}.ts
+# Every response in this file was executed against a live reference server
+# (http://localhost:4100, isolated throwaway Mongo) unless the operation is
+# tagged `x-verified: source`. The .NET reimplementation must match this
+# byte-for-byte: identical status codes, identical `code` strings, identical
+# `message` strings (including punctuation and capitalisation), identical
+# property names, and identical omit-vs-null behaviour.
+#
+# GLOBAL RULES (apply to every operation below)
+# ---------------------------------------------------------------------------
+# * No global path prefix. Routers are mounted at the app root.
+# * Body parser: express.json({ limit: '256kb' }). A body is only parsed when
+#   Content-Type is JSON; otherwise req.body is `{}`.
+# * All 2xx JSON bodies are produced by res.json() => Content-Type
+#   `application/json; charset=utf-8`, with a weak ETag and Content-Length.
+# * All 204 responses have a completely empty body and no Content-Type.
+# * Absent optional properties are OMITTED from the JSON, never emitted as
+#   null. This is JSON.stringify dropping `undefined`; the .NET serialiser must
+#   be configured to ignore nulls, not to emit them.
+# * Error envelope: {"error":{"code":<string>,"message":<string>,"details"?:<any>}}
+#   `details` is present only where noted.
+# * Security headers on every response (helmet defaults): Content-Security-Policy,
+#   Cross-Origin-Opener-Policy: same-origin, Cross-Origin-Resource-Policy:
+#   same-origin, Origin-Agent-Cluster: ?1, Referrer-Policy: no-referrer,
+#   Strict-Transport-Security: max-age=31536000; includeSubDomains,
+#   X-Content-Type-Options: nosniff, X-DNS-Prefetch-Control: off,
+#   X-Download-Options: noopen, X-Frame-Options: SAMEORIGIN,
+#   X-Permitted-Cross-Domain-Policies: none, X-XSS-Protection: 0.
+#   `X-Powered-By` is disabled. CORS: credentials true, allowlist from
+#   CORS_ORIGINS; a request with no Origin header is always allowed.
+# * Unknown route / unknown method on a known path => Express' DEFAULT 404,
+#   which is an HTML page (`<!DOCTYPE html>…<pre>Cannot GET /nope</pre>`) with
+#   Content-Type text/html, NOT the JSON error envelope. There is no catch-all
+#   404 handler.
+# * Malformed JSON, or a body over the 256kb limit, produces
+#   HTTP 500 {"error":{"code":"internal_error","message":"Internal server error"}}
+#   — see `x-note` on AuthErrInternal. body-parser's SyntaxError is not
+#   special-cased by the error handler, so it falls through to the 500 branch.
+# * A Mongoose CastError on an ObjectId anywhere maps to
+#   404 {"error":{"code":"not_found","message":"Not found"}} (AuthErrNotFound).
+#   Not reachable from this domain's routes (the only `:id` param is guarded by
+#   isValidObjectId first), but it is the framework-level behaviour.
+# * Rate limiting is DISABLED ENTIRELY when NODE_ENV === 'test'.
+# * Rate-limit buckets are keyed on `req.ip`. `trust proxy` is NOT enabled, so
+#   the key is the raw socket peer address.
+#
+# RATE LIMITERS (express-rate-limit 7.5.1, in-memory store, per-IP)
+# ---------------------------------------------------------------------------
+#   authLimiter        windowMs 900000   (15 min)  max 20
+#                      -> 429 {"error":{"code":"rate_limited",
+#                              "message":"Too many requests. Try again in a few minutes."}}
+#   strictAuthLimiter  windowMs 3600000  (60 min)  max 5
+#                      -> 429 {"error":{"code":"rate_limited",
+#                              "message":"Too many attempts. Try again later."}}
+# Both use standardHeaders: true, legacyHeaders: false, so every response they
+# touch carries: RateLimit-Policy: <max>;w=<windowSeconds>, RateLimit-Limit,
+# RateLimit-Remaining, RateLimit-Reset. The 429 additionally carries Retry-After
+# (seconds, integer). Counting includes requests that end in 4xx.
+#
+# MIDDLEWARE ORDER MATTERS
+# ---------------------------------------------------------------------------
+# On routes declared as `requireAuth, strictAuthLimiter` (change-password,
+# verify-email/send-code, verify-email/confirm-code, change-email,
+# change-email/confirm) authentication runs FIRST: an unauthenticated request
+# is rejected 401 WITHOUT consuming a rate-limit slot.
+#
+# MONGOOSE toJSON TRANSFORM (User only)
+# ---------------------------------------------------------------------------
+#   virtuals: true, versionKey: false, plus a transform that:
+#     _id           -> `id` (24-char lowercase hex string), `_id` deleted
+#     __v           -> dropped (versionKey: false)
+#     passwordHash  -> DELETED, never serialised
+#     hasPassword   -> ADDED: `typeof passwordHash === 'string' && length > 0`
+#   Dates serialise as ISO-8601 UTC with milliseconds, e.g.
+#   "2026-08-09T17:43:15.317Z".
+#
+# `x-verified: live`   = exact body captured from the running reference server.
+# `x-verified: source` = read off the source; not exercised live (the
+#                        strictAuthLimiter budget of 5/hour/IP was exhausted).
+#                        These are all plain 204s or the standard envelope with
+#                        a literal code/message lifted verbatim from source.
+#
+# NO LIVE-VS-SOURCE DISAGREEMENTS WERE FOUND. Every `x-note` below flags a
+# non-obvious behaviour, not a contradiction.
+# =============================================================================
+
+paths:
+  # ===========================================================================
+  # HEALTH
+  # ===========================================================================
+  /health:
+    get:
+      operationId: authHealth
+      summary: Liveness + database readiness probe.
+      tags: [auth]
+      security: []
+      description: >-
+        Unauthenticated and NOT rate limited. Status is derived from
+        `mongoose.connection.readyState`: 200 + "ok" when readyState === 1,
+        otherwise 503 + "degraded". `uptime` is `process.uptime()` — seconds as
+        a float since process start. Request logging is suppressed for this path.
+      responses:
+        '200':
+          description: Database connected.
+          x-verified: live
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuthHealthOk' }
+              example: { status: ok, db: connected, uptime: 73.309413792 }
+        '503':
+          description: >-
+            Database not connected. `db` is the readyState label:
+            0 disconnected, 2 connecting, 3 disconnecting, 99 uninitialized,
+            anything else "unknown".
+          x-verified: source
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuthHealthDegraded' }
+
+  # ===========================================================================
+  # PASSWORD AUTH
+  # ===========================================================================
+  /auth/signup:
+    post:
+      operationId: authSignup
+      summary: Create a password account and issue a session.
+      tags: [auth]
+      security: []
+      x-rate-limit: { name: authLimiter, windowMs: 900000, max: 20 }
+      description: >-
+        Creates the user, hashes the password with argon2id
+        (memoryCost 2^16 = 65536 KiB, timeCost 3, parallelism 1), issues a
+        session, then fires the verification email WITHOUT awaiting it — an
+        email failure is logged and never affects the 201.
+        `emailVerifiedAt` is therefore absent on the returned user.
+        Uniqueness is checked with a `findOne({ email })` before insert.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AuthSignupRequest' }
+      responses:
+        '201':
+          description: Account created; user + tokens returned.
+          x-verified: live
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuthSessionResponse' }
+        '400':
+          description: Zod parse failure (`.parse()` throws, handled globally).
+          x-verified: live
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuthErrValidation' }
+        '409':
+          description: An account already exists with this email.
+          x-verified: live
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuthErrEmailTaken' }
+        '429':
+          $ref: '#/components/responses/AuthRateLimitedAuth'
+        '500':
+          $ref: '#/components/responses/AuthInternal'
+
+  /auth/signin:
+    post:
+      operationId: authSignin
+      summary: Exchange email + password for a session.
+      tags: [auth]
+      security: []
+      x-rate-limit: { name: authLimiter, windowMs: 900000, max: 20 }
+      description: >-
+        A missing user, a user with no `passwordHash` (magic-link-only account),
+        and a wrong password all produce the SAME 401 body — no account
+        enumeration. Note the timing is not equalised: the no-user branch skips
+        argon2 verification.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AuthSigninRequest' }
+      responses:
+        '200':
+          description: Signed in.
+          x-verified: live
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuthSessionResponse' }
+        '400':
+          x-verified: live
+          description: Zod parse failure.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuthErrValidation' }
+        '401':
+          description: Unknown email, passwordless account, or wrong password.
+          x-verified: live
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuthErrInvalidCredentialsSignin' }
+        '429':
+          $ref: '#/components/responses/AuthRateLimitedAuth'
+        '500':
+          $ref: '#/components/responses/AuthInternal'
+
+  /auth/forgot-password:
+    post:
+      operationId: authForgotPassword
+      summary: Request a password-reset email.
+      tags: [auth]
+      security: []
+      x-rate-limit: { name: strictAuthLimiter, windowMs: 3600000, max: 5 }
+      description: >-
+        NO ENUMERATION: always 204, whether or not the address belongs to an
+        account. When the user exists a `password_reset` VerificationToken is
+        minted (32 random bytes, base64url; stored as its sha256 hex) with a
+        1-hour TTL and mailed as a deep link
+        `<APP_DEEP_LINK_SCHEME>://auth/reset-password?token=<raw>`. The send is
+        fire-and-forget: a mail failure is logged, never surfaced.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AuthForgotPasswordRequest' }
+      responses:
+        '204':
+          description: Always returned for any syntactically valid email.
+          x-verified: live
+        '400':
+          description: Zod parse failure (malformed email).
+          x-verified: source
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuthErrValidation' }
+        '429':
+          $ref: '#/components/responses/AuthRateLimitedStrict'
+        '500':
+          $ref: '#/components/responses/AuthInternal'
+
+  /auth/reset-password:
+    post:
+      operationId: authResetPassword
+      summary: Redeem a password-reset token and set a new password.
+      tags: [auth]
+      security: []
+      x-rate-limit: { name: strictAuthLimiter, windowMs: 3600000, max: 5 }
+      description: >-
+        The token is single-use (`consumedAt` stamped on first success) and must
+        be unconsumed, unexpired, and of purpose `password_reset`. On success
+        EVERY active refresh token for the user is revoked — including the
+        caller's — so the client must sign in again. No `refreshToken` escape
+        hatch exists on this route, unlike change-password.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AuthResetPasswordRequest' }
+      responses:
+        '204':
+          description: Password replaced; all sessions revoked.
+          x-verified: live
+        '400':
+          description: >-
+            Zod parse failure, or the token is unknown / already consumed /
+            expired / wrong purpose (`invalid_reset_token`), or the token was
+            valid but its user row has since been deleted (`invalid_reset_token`
+            with the message "Account not found.").
+          x-verified: live
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/AuthErrValidation'
+                  - $ref: '#/components/schemas/AuthErrInvalidResetToken'
+                  - $ref: '#/components/schemas/AuthErrResetTokenUserGone'
+        '429':
+          $ref: '#/components/responses/AuthRateLimitedStrict'
+        '500':
+          $ref: '#/components/responses/AuthInternal'
+
+  /auth/change-password:
+    post:
+      operationId: authChangePassword
+      summary: Change the password of the signed-in account.
+      tags: [auth]
+      security:
+        - AuthBearerAuth: []
+      x-rate-limit: { name: strictAuthLimiter, windowMs: 3600000, max: 5 }
+      x-middleware-order: [requireAuth, strictAuthLimiter]
+      description: >-
+        CONFIRM-TOKEN-IN-BODY PATTERN. If `refreshToken` is supplied it is the
+        caller's own refresh token and is the ONE session kept alive; every
+        other active session for the user is revoked. If `refreshToken` is
+        OMITTED, ALL sessions are revoked, including the caller's — the client
+        is signed out everywhere. The body-carried token (rather than a URL or
+        header) keeps it out of access logs.
+        Schema-level `.refine()` rejects `newPassword === currentPassword`; the
+        refine is reported through the GLOBAL ZodError handler, so it emits
+        `validation_error` with an ISSUE-ARRAY `details`, not `invalid_body`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AuthChangePasswordRequest' }
+      responses:
+        '204':
+          description: Password replaced.
+          x-verified: live
+        '400':
+          description: >-
+            Zod parse failure, including the refine
+            `{"path":"newPassword","message":"New password must be different from your current one."}`;
+            or the account is magic-link-only and has no password to change
+            (`no_password_set`).
+          x-verified: live
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/AuthErrValidation'
+                  - $ref: '#/components/schemas/AuthErrNoPasswordSet'
+        '401':
+          description: >-
+            Missing/invalid bearer token, or `currentPassword` did not verify.
+          x-verified: live
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/AuthErrMissingToken'
+                  - $ref: '#/components/schemas/AuthErrInvalidToken'
+                  - $ref: '#/components/schemas/AuthErrInvalidCredentialsCurrent'
+        '429':
+          $ref: '#/components/responses/AuthRateLimitedStrict'
+        '500':
+          $ref: '#/components/responses/AuthInternal'
+
+  # ===========================================================================
+  # SESSIONS
+  # ===========================================================================
+  /auth/refresh:
+    post:
+      operationId: authRefresh
+      summary: Rotate a refresh token for a fresh token pair.
+      tags: [auth]
+      security: []
+      x-rate-limit: { name: authLimiter, windowMs: 900000, max: 20 }
+      description: >-
+        SINGLE-USE ROTATION WITH REUSE DETECTION.
+        1. Look up the RefreshToken row by sha256(rawToken).
+        2. Not found -> 401.
+        3. Found but ALREADY REVOKED -> this is token reuse. EVERY refresh token
+           of that user that is still unrevoked is revoked in one sweep (family
+           revoke), then 401. The whole device fleet is signed out.
+        4. Expired -> 401 (no family revoke).
+        5. Owning user deleted -> 401.
+        6. Otherwise a NEW row is inserted and the presented row is stamped
+           `revokedAt` + `replacedBy: <new hash>`.
+        The rotated row inherits `userAgent`/`ip` from the request, falling back
+        to the previous row's values when the request supplies none.
+        Every failure mode returns the identical `invalid_refresh_token` body.
+        The response contains ONLY `tokens` — no `user` object.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AuthRefreshRequest' }
+      responses:
+        '200':
+          description: New token pair. The presented refresh token is now dead.
+          x-verified: live
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuthTokensResponse' }
+        '400':
+          description: Zod parse failure (missing or empty `refreshToken`).
+          x-verified: live
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuthErrValidation' }
+        '401':
+          description: Unknown, revoked (reuse), expired, or orphaned token.
+          x-verified: live
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuthErrInvalidRefreshToken' }
+        '429':
+          $ref: '#/components/responses/AuthRateLimitedAuth'
+        '500':
+          $ref: '#/components/responses/AuthInternal'
+
+  /auth/signout:
+    post:
+      operationId: authSignout
+      summary: Revoke one refresh token.
+      tags: [auth]
+      security:
+        - AuthBearerAuth: []
+      description: >-
+        NOT rate limited. The body is parsed with `safeParse` and a failure is
+        SILENTLY IGNORED — an absent, empty, or malformed body still yields 204
+        and simply revokes nothing. An unknown/garbage `refreshToken` also
+        yields 204 (the underlying updateOne matches zero rows). The access
+        token itself is stateless and remains valid until it expires.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AuthRefreshRequest' }
+      responses:
+        '204':
+          description: Always, for any authenticated caller.
+          x-verified: live
+        '401':
+          $ref: '#/components/responses/AuthUnauthenticated'
+        '500':
+          $ref: '#/components/responses/AuthInternal'
+
+  /auth/me:
+    get:
+      operationId: authMe
+      summary: The signed-in user.
+      tags: [auth]
+      security:
+        - AuthBearerAuth: []
+      description: NOT rate limited. Re-reads the user from Mongo on every call.
+      responses:
+        '200':
+          x-verified: live
+          description: Current user document (post-toJSON).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuthUserResponse' }
+        '401':
+          $ref: '#/components/responses/AuthUnauthenticated'
+        '404':
+          description: The token is valid but the account has been deleted.
+          x-verified: live
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuthErrUserNotFound' }
+        '500':
+          $ref: '#/components/responses/AuthInternal'
+
+  /auth/sessions/list:
+    post:
+      operationId: authSessionsList
+      summary: List the caller's active sessions.
+      tags: [auth]
+      security:
+        - AuthBearerAuth: []
+      description: >-
+        POST, NOT GET, and NOT rate limited. The verb is POST purely so the
+        caller's refresh token can travel in the body and never appear in a URL
+        or access log — this is the CONFIRM-TOKEN-IN-BODY pattern.
+        `refreshToken` is OPTIONAL: supply it and exactly the matching session
+        comes back with `current: true`; omit it and every entry has
+        `current: false`. A missing/absent body is treated as `{}`.
+        Only sessions with no `revokedAt` are returned (expired-but-unrevoked
+        rows are still listed until the Mongo TTL monitor sweeps them).
+        Sort: `lastUsedAt` descending, then `createdAt` descending.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AuthSessionContextRequest' }
+      responses:
+        '200':
+          x-verified: live
+          description: Active sessions, newest-used first.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuthSessionsResponse' }
+        '400':
+          description: >-
+            Zod parse failure — `refreshToken` present but not a string, or an
+            empty string.
+          x-verified: live
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuthErrValidation' }
+        '401':
+          $ref: '#/components/responses/AuthUnauthenticated'
+        '500':
+          $ref: '#/components/responses/AuthInternal'
+
+  /auth/sessions/{id}:
+    delete:
+      operationId: authSessionRevoke
+      summary: Revoke one session by id.
+      tags: [auth]
+      security:
+        - AuthBearerAuth: []
+      description: >-
+        NOT rate limited. Scoped to the caller: the update matches
+        `{_id: id, userId: <caller>, revokedAt: {$exists: false}}`. A
+        syntactically invalid ObjectId is short-circuited by an
+        `isValidObjectId` guard BEFORE the query, so it produces the same 404
+        `session_not_found` as an unknown id rather than a CastError — another
+        user's session id, an already-revoked id, a well-formed unknown id and
+        the string "zzz" are all indistinguishable.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: >-
+            The RefreshToken document id, as returned in `sessions[].id`.
+            Any string is accepted at the routing layer.
+          schema: { type: string }
+      responses:
+        '204':
+          description: Session revoked.
+          x-verified: live
+        '401':
+          $ref: '#/components/responses/AuthUnauthenticated'
+        '404':
+          description: >-
+            Not a valid ObjectId, not owned by the caller, or already revoked.
+          x-verified: live
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuthErrSessionNotFound' }
+        '500':
+          $ref: '#/components/responses/AuthInternal'
+
+  /auth/sessions/revoke-others:
+    post:
+      operationId: authSessionsRevokeOthers
+      summary: Sign out every device except this one.
+      tags: [auth]
+      security:
+        - AuthBearerAuth: []
+      description: >-
+        NOT rate limited. CONFIRM-TOKEN-IN-BODY: `refreshToken` is REQUIRED
+        here (unlike sessions/list, where it is optional) and identifies the one
+        session to keep. Everything else with no `revokedAt` is revoked. Passing
+        a refresh token that is not the caller's simply revokes all of the
+        caller's sessions — ownership of the supplied token is not checked, only
+        its hash is excluded from the sweep.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AuthRefreshRequest' }
+      responses:
+        '204':
+          description: Other sessions revoked.
+          x-verified: live
+        '400':
+          description: Zod parse failure — `refreshToken` missing or empty.
+          x-verified: live
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuthErrValidation' }
+        '401':
+          $ref: '#/components/responses/AuthUnauthenticated'
+        '500':
+          $ref: '#/components/responses/AuthInternal'
+
+  # ===========================================================================
+  # EMAIL VERIFICATION
+  # ===========================================================================
+  /auth/verify-email:
+    post:
+      operationId: authVerifyEmailToken
+      summary: Redeem a mailed email-verification link token.
+      tags: [auth]
+      security: []
+      x-rate-limit: { name: authLimiter, windowMs: 900000, max: 20 }
+      description: >-
+        The mailed-link path (24-hour TTL, purpose `email_verification`).
+        Unauthenticated — the token itself is the proof. Single-use: replaying a
+        consumed token yields the same 400 as an unknown one. Sets
+        `emailVerifiedAt` to now and returns the full updated user.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AuthTokenRequest' }
+      responses:
+        '200':
+          description: Email verified; `emailVerifiedAt` now present.
+          x-verified: live
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuthUserResponse' }
+        '400':
+          description: >-
+            Zod parse failure, or unknown / consumed / expired / wrong-purpose
+            token, or a valid token whose user has since been deleted
+            ("Account not found.").
+          x-verified: live
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/AuthErrValidation'
+                  - $ref: '#/components/schemas/AuthErrInvalidVerificationToken'
+                  - $ref: '#/components/schemas/AuthErrVerificationTokenUserGone'
+        '429':
+          $ref: '#/components/responses/AuthRateLimitedAuth'
+        '500':
+          $ref: '#/components/responses/AuthInternal'
+
+  /auth/verify-email/send-code:
+    post:
+      operationId: authVerifyEmailSendCode
+      summary: Mail a 6-digit verification code to the signed-in user.
+      tags: [auth]
+      security:
+        - AuthBearerAuth: []
+      x-rate-limit: { name: strictAuthLimiter, windowMs: 3600000, max: 5 }
+      x-middleware-order: [requireAuth, strictAuthLimiter]
+      description: >-
+        Takes NO request body. The in-app alternative to the mailed link,
+        because no URL scheme is registered to reopen the app.
+        Issuing a code first DELETES every unconsumed
+        `email_verification_code` token for the user, so a resend INVALIDATES
+        the previous code rather than widening the guessing window. Exactly one
+        live code per (user, purpose). TTL 15 minutes. The digits are stored as
+        sha256("<userId>:<purpose>:<code>") — bound to the account, so a code
+        minted for one user is inert against another.
+        Already-verified is a deliberate NO-OP 204, not an error, and does not
+        send mail. Unlike signup, the send is AWAITED: a mail failure becomes a
+        400 `email_send_failed`.
+      responses:
+        '204':
+          description: >-
+            Code mailed, or the account was already verified (no mail sent).
+            Both cases are indistinguishable to the client.
+          x-verified: live
+        '400':
+          description: The mail provider rejected the send.
+          x-verified: source
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuthErrEmailSendFailed' }
+        '401':
+          $ref: '#/components/responses/AuthUnauthenticated'
+        '404':
+          description: The account has been deleted.
+          x-verified: source
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuthErrUserNotFound' }
+        '429':
+          $ref: '#/components/responses/AuthRateLimitedStrict'
+        '500':
+          $ref: '#/components/responses/AuthInternal'
+
+  /auth/verify-email/confirm-code:
+    post:
+      operationId: authVerifyEmailConfirmCode
+      summary: Redeem the 6-digit email verification code.
+      tags: [auth]
+      security:
+        - AuthBearerAuth: []
+      x-rate-limit: { name: strictAuthLimiter, windowMs: 3600000, max: 5 }
+      x-middleware-order: [requireAuth, strictAuthLimiter]
+      description: >-
+        The code is trimmed BEFORE the `^\d{6}$` test, so " 424242 " is
+        accepted. Two distinct 400s share the `invalid_code` code: a FORMAT
+        failure carries a `details` object (Zod `.flatten()`), a REJECTED code
+        (wrong digits, expired, already consumed, or minted for another
+        purpose/account) carries NO `details` and a different message.
+        Success stamps `emailVerifiedAt` and returns the whole user.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AuthCodeRequest' }
+      responses:
+        '200':
+          description: Verified.
+          x-verified: live
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuthUserResponse' }
+        '400':
+          description: Malformed code (with details) or rejected code (no details).
+          x-verified: live
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/AuthErrInvalidCodeFormat'
+                  - $ref: '#/components/schemas/AuthErrInvalidCodeRejected'
+        '401':
+          $ref: '#/components/responses/AuthUnauthenticated'
+        '404':
+          description: >-
+            The code verified but the account was deleted between the two reads.
+          x-verified: source
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuthErrUserNotFound' }
+        '429':
+          $ref: '#/components/responses/AuthRateLimitedStrict'
+        '500':
+          $ref: '#/components/responses/AuthInternal'
+
+  # ===========================================================================
+  # EMAIL CHANGE (two-step)
+  # ===========================================================================
+  /auth/change-email:
+    post:
+      operationId: authChangeEmailRequest
+      summary: Step 1 — stash a pending email and mail a code to it.
+      tags: [auth]
+      security:
+        - AuthBearerAuth: []
+      x-rate-limit: { name: strictAuthLimiter, windowMs: 3600000, max: 5 }
+      x-middleware-order: [requireAuth, strictAuthLimiter]
+      description: >-
+        The account keeps authenticating as the OLD address; the new one is only
+        parked in `pendingEmail`, so a typo or a hostile address can never lock
+        the owner out. The code goes to the NEW address, never the current one.
+        Order of checks, exactly:
+          1. Zod safeParse -> 400 `invalid_body` (details = Zod flatten).
+          2. User lookup -> 404 `user_not_found`.
+          3. `newEmail === user.email` -> 400 `email_unchanged`.
+          4. If the account has a password: `password` REQUIRED
+             (400 `password_required`), then verified (401 `invalid_credentials`).
+             Magic-link-only accounts skip both.
+          5. Uniqueness -> 409 `email_taken`.
+          6. Persist `pendingEmail`, then AWAIT the mail (400 `email_send_failed`).
+        NOTE the ordering consequence: `pendingEmail` is saved BEFORE the mail
+        is attempted, so an `email_send_failed` still leaves the pending address
+        parked on the account.
+        Returns the full user WITH `pendingEmail` populated and `email`
+        unchanged.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AuthChangeEmailRequest' }
+      responses:
+        '200':
+          description: Pending email stored and code mailed.
+          x-verified: live
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuthUserResponse' }
+        '400':
+          description: >-
+            `invalid_body` (Zod, with flatten details), `email_unchanged`,
+            `password_required`, or `email_send_failed`.
+          x-verified: live
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/AuthErrInvalidBodyEmail'
+                  - $ref: '#/components/schemas/AuthErrEmailUnchanged'
+                  - $ref: '#/components/schemas/AuthErrPasswordRequiredEmail'
+                  - $ref: '#/components/schemas/AuthErrEmailSendFailed'
+        '401':
+          description: Missing/invalid bearer token, or the password did not verify.
+          x-verified: live
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/AuthErrMissingToken'
+                  - $ref: '#/components/schemas/AuthErrInvalidToken'
+                  - $ref: '#/components/schemas/AuthErrInvalidCredentialsPassword'
+        '404':
+          x-verified: source
+          description: The account has been deleted.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuthErrUserNotFound' }
+        '409':
+          description: Another account already owns that address.
+          x-verified: live
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuthErrEmailTaken' }
+        '429':
+          $ref: '#/components/responses/AuthRateLimitedStrict'
+        '500':
+          $ref: '#/components/responses/AuthInternal'
+
+    delete:
+      operationId: authChangeEmailCancel
+      summary: Cancel a pending email change.
+      tags: [auth]
+      security:
+        - AuthBearerAuth: []
+      description: >-
+        NOT rate limited and takes no body. Idempotent: unsets `pendingEmail`
+        and returns 204 whether or not one was pending.
+      responses:
+        '204':
+          description: Pending email cleared (or there was none).
+          x-verified: live
+        '401':
+          $ref: '#/components/responses/AuthUnauthenticated'
+        '404':
+          x-verified: source
+          description: The account has been deleted.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuthErrUserNotFound' }
+        '500':
+          $ref: '#/components/responses/AuthInternal'
+
+  /auth/change-email/confirm:
+    post:
+      operationId: authChangeEmailConfirm
+      summary: Step 2 — redeem the code and swap the address.
+      tags: [auth]
+      security:
+        - AuthBearerAuth: []
+      x-rate-limit: { name: strictAuthLimiter, windowMs: 3600000, max: 5 }
+      x-middleware-order: [requireAuth, strictAuthLimiter]
+      description: >-
+        CONFIRM-TOKEN-IN-BODY: the optional `refreshToken` is the caller's own
+        and, when present, is the one session kept alive while every other
+        session is revoked (the sign-in identity just changed, so anything
+        holding the old one is stale). When ABSENT, NO sessions are revoked at
+        all — unlike change-password, this route never does a blanket revoke.
+        Order of checks, exactly:
+          1. Zod safeParse -> 400 `invalid_code` WITH flatten details.
+          2. User lookup -> 404 `user_not_found`.
+          3. No `pendingEmail` -> 400 `no_pending_email`.
+          4. Consume the `email_change` code -> 400 `invalid_code` (no details).
+          5. RE-CHECK uniqueness (someone may have claimed the address in the
+             15 minutes since the code was issued): on conflict `pendingEmail`
+             is CLEARED and saved, then 409 `email_taken`.
+          6. Swap `email = pendingEmail`, unset `pendingEmail`, and set
+             `emailVerifiedAt = now` — redeeming a code sent to that address IS
+             proof of control.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AuthChangeEmailConfirmRequest' }
+      responses:
+        '200':
+          description: >-
+            Address swapped. `email` is the new address, `pendingEmail` is gone
+            from the payload, `emailVerifiedAt` is refreshed to now.
+          x-verified: live
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuthUserResponse' }
+        '400':
+          description: >-
+            `invalid_code` from the Zod format check (WITH details),
+            `no_pending_email`, or `invalid_code` from a rejected code
+            (NO details).
+          x-verified: live
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/AuthErrInvalidCodeFormat'
+                  - $ref: '#/components/schemas/AuthErrNoPendingEmail'
+                  - $ref: '#/components/schemas/AuthErrInvalidCodeRejected'
+        '401':
+          $ref: '#/components/responses/AuthUnauthenticated'
+        '404':
+          x-verified: source
+          description: The account has been deleted.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuthErrUserNotFound' }
+        '409':
+          description: >-
+            The pending address was claimed by someone else after the code was
+            issued. Side effect: `pendingEmail` has been cleared, and the code
+            has ALREADY been consumed — the user must restart step 1.
+          x-verified: source
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuthErrEmailTaken' }
+        '429':
+          $ref: '#/components/responses/AuthRateLimitedStrict'
+        '500':
+          $ref: '#/components/responses/AuthInternal'
+
+  # ===========================================================================
+  # MAGIC LINK
+  # ===========================================================================
+  /auth/magic-link:
+    post:
+      operationId: authMagicLinkRequest
+      summary: Mail a passwordless sign-in link.
+      tags: [auth]
+      security: []
+      x-rate-limit: { name: strictAuthLimiter, windowMs: 3600000, max: 5 }
+      description: >-
+        AUTO-CREATES the account on first request, so passwordless onboarding
+        works with no separate signup. The created user has NO `passwordHash`
+        (`hasPassword` will be false) and no `emailVerifiedAt`.
+        Always 204 — the response cannot distinguish an existing account from a
+        newly created one. TTL 15 minutes, purpose `magic_link`, deep link
+        `<APP_DEEP_LINK_SCHEME>://auth/magic-callback?token=<raw>`. The send is
+        fire-and-forget; a mail failure is logged only. Note the ACCOUNT IS
+        STILL CREATED even if the mail fails.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AuthMagicLinkRequest' }
+      responses:
+        '204':
+          description: Link mailed (account created if it did not exist).
+          x-verified: live
+        '400':
+          description: Zod parse failure (malformed email).
+          x-verified: source
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuthErrValidation' }
+        '429':
+          $ref: '#/components/responses/AuthRateLimitedStrict'
+        '500':
+          $ref: '#/components/responses/AuthInternal'
+
+  /auth/magic-consume:
+    post:
+      operationId: authMagicConsume
+      summary: Redeem a magic-link token for a session.
+      tags: [auth]
+      security: []
+      x-rate-limit: { name: authLimiter, windowMs: 900000, max: 20 }
+      description: >-
+        Single-use. A successful redemption implies control of the mailbox, so
+        `emailVerifiedAt` is set if it was not already (an already-verified user
+        keeps its original timestamp — the save is conditional).
+        Returns user AND tokens, like signup/signin.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AuthTokenRequest' }
+      responses:
+        '200':
+          description: Signed in.
+          x-verified: live
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuthSessionResponse' }
+        '400':
+          description: >-
+            Zod parse failure, or unknown / consumed / expired / wrong-purpose
+            token.
+          x-verified: live
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/AuthErrValidation'
+                  - $ref: '#/components/schemas/AuthErrInvalidMagicToken'
+        '404':
+          description: >-
+            The token was valid but the account has been deleted. NOTE this is
+            404 `user_not_found`, whereas the equivalent case on
+            /auth/verify-email and /auth/reset-password is 400.
+          x-verified: source
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuthErrUserNotFound' }
+        '429':
+          $ref: '#/components/responses/AuthRateLimitedAuth'
+        '500':
+          $ref: '#/components/responses/AuthInternal'
+
+  # ===========================================================================
+  # ACCOUNT (/me)
+  # ===========================================================================
+  /me:
+    patch:
+      operationId: authUpdateMe
+      summary: Patch account settings.
+      tags: [auth]
+      security:
+        - AuthBearerAuth: []
+      description: >-
+        NOT rate limited. Partial update — every field is optional and an empty
+        body `{}` is a valid 200 no-op.
+        DOT-NOTATION FLATTENING: the four nested objects `mic`, `notifications`,
+        `privacy`, `imports` are expanded into dot-notation `$set` keys
+        (`notifications.push`, `imports.defaultTimeOfDay`, …) so patching one
+        sub-key LEAVES ITS SIBLINGS INTACT. Everything else — including
+        `preferredDomains` and `onboardingAnswers` — is set WHOLESALE and
+        replaces the previous value entirely.
+        Unknown top-level keys are silently stripped by Zod (the object is not
+        `.strict()`), so e.g. `email` or `subscription` in the body is ignored
+        rather than rejected — those fields are not client-writable.
+        The update runs with `runValidators: true`, so schema-level enum/match
+        constraints are enforced a second time at the Mongo layer.
+        Validation failures use `safeParse`, so they emit `invalid_body` with a
+        Zod `.flatten()` `details` object — NOT the global `validation_error`
+        issue array.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AuthUpdateMeRequest' }
+      responses:
+        '200':
+          description: Updated user.
+          x-verified: live
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuthUserResponse' }
+        '400':
+          description: >-
+            Validation failure. `details` is Zod's flatten shape; note that
+            errors inside a NESTED object are keyed under the TOP-LEVEL key, so
+            a bad `mic.quality` reports as `fieldErrors.mic`, and a bad
+            `imports.defaultTimeOfDay` as `fieldErrors.imports`.
+          x-verified: live
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuthErrInvalidBodySettings' }
+        '401':
+          $ref: '#/components/responses/AuthUnauthenticated'
+        '404':
+          description: The account has been deleted.
+          x-verified: live
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuthErrUserNotFound' }
+        '500':
+          $ref: '#/components/responses/AuthInternal'
+
+    delete:
+      operationId: authDeleteMe
+      summary: Delete the account and every document that references it.
+      tags: [auth]
+      security:
+        - AuthBearerAuth: []
+      description: >-
+        NOT rate limited. CARRIES A JSON BODY ON A DELETE — the confirmation
+        password travels in the request body, so the .NET route must accept and
+        parse a DELETE body (many stacks discard it by default). A missing body
+        is treated as `{}`.
+        `password` is REQUIRED when the account has a `passwordHash` and MUST BE
+        OMITTED-OR-ANY-VALUE when it does not — magic-link-only accounts delete
+        with no confirmation at all.
+        Cascade order (NO transaction — the deployment is a standalone mongod,
+        so sessions would throw). Dependents strictly first, User last, so a
+        mid-cascade failure leaves a still-authenticated account rather than a
+        logged-out one with orphaned data:
+          1. Best-effort blob removal — VoiceNote.storageKey then
+             ScannedDocument.storageKey; storage misses are logged, never fatal.
+          2. revokeAllUserSessions, then deleteMany on: RefreshToken, Task,
+             TaskBulkOp, VoiceNote, ScannedDocument, AiConversation,
+             AiUsageCounter, DocumentScanUsageCounter, Clarification,
+             DailyDigest, Notification, VerificationToken.
+          3. User.deleteOne.
+        After deletion the access token remains cryptographically valid until it
+        expires; every user-backed route then answers 404 `user_not_found`,
+        while the two stub routes (/me/billing/invoices, /me/integrations) still
+        answer 200 because they never load the user.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AuthDeleteMeRequest' }
+      responses:
+        '204':
+          description: Account and all dependents deleted.
+          x-verified: live
+        '400':
+          description: >-
+            `invalid_body` (Zod flatten details), or `password_required` when
+            the account has a password and none was supplied.
+          x-verified: live
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/AuthErrInvalidBodyDelete'
+                  - $ref: '#/components/schemas/AuthErrPasswordRequiredDelete'
+        '401':
+          description: Missing/invalid bearer token, or the password did not verify.
+          x-verified: live
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/AuthErrMissingToken'
+                  - $ref: '#/components/schemas/AuthErrInvalidToken'
+                  - $ref: '#/components/schemas/AuthErrInvalidCredentialsPassword'
+        '404':
+          description: The account has already been deleted.
+          x-verified: live
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuthErrUserNotFound' }
+        '500':
+          $ref: '#/components/responses/AuthInternal'
+
+  /me/export:
+    get:
+      operationId: authExportMe
+      summary: Download everything held about the account as one JSON file.
+      tags: [auth]
+      security:
+        - AuthBearerAuth: []
+      description: >-
+        NOT rate limited. Served as a FILE DOWNLOAD, not a normal JSON response:
+        the handler sets `Content-Type: application/json; charset=utf-8` and
+        `Content-Disposition: attachment; filename="kitto-export-YYYY-MM-DD.json"`
+        by hand, then emits `JSON.stringify(payload, null, 2)` through
+        `res.send()` — i.e. a STRING body with TWO-SPACE INDENTATION and
+        newlines. Byte-for-byte parity therefore requires the same indentation
+        and the same property order. The date stamp is
+        `new Date().toISOString().slice(0, 10)` — UTC, not local.
+        Every collection is capped at MAX_PER_COLLECTION = 5000 with `.limit()`
+        and no sort or pagination, so which 5000 rows come back is Mongo's
+        natural order. `truncated` is `items.length === 5000` exactly — it is a
+        false NEGATIVE for an account with precisely 5000 rows in a collection,
+        and reports true for an account with exactly 5000 rows even though
+        nothing was dropped.
+        FIELDS PROJECTED OUT (the two rules: no credentials, no blobs):
+          * user      — via toJSON: `passwordHash` deleted, `_id` -> `id`,
+                        `__v` dropped, `hasPassword` added.
+          * voiceNotes, documents — `{ storageKey: 0 }` (internal disk path).
+          * sessions  — `{ tokenHash: 0, replacedBy: 0 }` (tokenHash IS the
+                        credential). `revokedAt` DOES ship when present, and
+                        revoked sessions are included — this list is not
+                        filtered the way /auth/sessions/list is.
+          * VerificationToken is not exported AT ALL — no section for it.
+        Everything except `user` is a RAW `.lean()` document: `_id` (not `id`),
+        `__v`, and `userId` are all present and NO toJSON transform is applied.
+      responses:
+        '200':
+          x-verified: live
+          description: The export document.
+          headers:
+            Content-Disposition:
+              description: 'attachment; filename="kitto-export-YYYY-MM-DD.json"'
+              schema:
+                type: string
+                pattern: '^attachment; filename="kitto-export-\d{4}-\d{2}-\d{2}\.json"$'
+            Content-Type:
+              schema: { type: string, const: 'application/json; charset=utf-8' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuthExport' }
+        '401':
+          $ref: '#/components/responses/AuthUnauthenticated'
+        '404':
+          description: The account has been deleted.
+          x-verified: live
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuthErrUserNotFound' }
+        '500':
+          $ref: '#/components/responses/AuthInternal'
+
+  /me/subscription:
+    get:
+      operationId: authGetSubscription
+      summary: The account's subscription state.
+      tags: [auth]
+      security:
+        - AuthBearerAuth: []
+      description: >-
+        NOT rate limited. Read-only and server-managed — there is no write
+        endpoint in this domain. Reads with `.lean()` (no toJSON transform, but
+        the subscription sub-document has no `_id` because the sub-schema is
+        declared `_id: false`). Falls back to the literal `{ tier: 'free' }`
+        when the stored document somehow has no `subscription`.
+      responses:
+        '200':
+          x-verified: live
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuthSubscriptionResponse' }
+        '401':
+          $ref: '#/components/responses/AuthUnauthenticated'
+        '404':
+          description: The account has been deleted.
+          x-verified: live
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuthErrUserNotFound' }
+        '500':
+          $ref: '#/components/responses/AuthInternal'
+
+  /me/billing/invoices:
+    get:
+      operationId: authGetInvoices
+      summary: Invoice history (stub).
+      tags: [auth]
+      security:
+        - AuthBearerAuth: []
+      description: >-
+        NOT rate limited. Hard-coded empty list until a payment provider is
+        wired up; the frontend renders a designed empty state from this shape.
+        Does NOT load the user, so it still answers 200 for a deleted account
+        whose access token has not yet expired.
+      responses:
+        '200':
+          x-verified: live
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuthInvoicesResponse' }
+              example: { invoices: [] }
+        '401':
+          $ref: '#/components/responses/AuthUnauthenticated'
+        '500':
+          $ref: '#/components/responses/AuthInternal'
+
+  /me/integrations:
+    get:
+      operationId: authGetIntegrations
+      summary: Connected third-party services (stub).
+      tags: [auth]
+      security:
+        - AuthBearerAuth: []
+      description: >-
+        NOT rate limited. Hard-coded empty list; the frontend shows preview
+        tiles in a "coming soon" state. Does NOT load the user, so it still
+        answers 200 for a deleted account whose access token has not yet
+        expired. Unrelated to the live Google integration routes, which live in
+        a different router.
+      responses:
+        '200':
+          x-verified: live
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuthIntegrationsResponse' }
+              example: { integrations: [] }
+        '401':
+          $ref: '#/components/responses/AuthUnauthenticated'
+        '500':
+          $ref: '#/components/responses/AuthInternal'
+
+components:
+  securitySchemes:
+    AuthBearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: >-
+        `Authorization: Bearer <accessToken>`. The middleware requires the
+        header to START WITH the exact string "Bearer " (capital B, one space);
+        anything else — including "bearer ", "Token …", or a bare token — is
+        `missing_token`, NOT `invalid_token`. The remainder is `.trim()`ed and
+        verified with HS256 pinned on BOTH sign and verify (so `alg: none` is
+        rejected). Claims must include string `sub` and string `email`; any
+        verification or claim-shape failure is `invalid_token`.
+
+  responses:
+    AuthUnauthenticated:
+      description: >-
+        No Authorization header, a malformed one (`missing_token`) or a token that
+        fails signature, expiry, or claim-shape checks (`invalid_token`).
+      x-verified: live
+      content:
+        application/json:
+          schema:
+            oneOf:
+              - $ref: '#/components/schemas/AuthErrMissingToken'
+              - $ref: '#/components/schemas/AuthErrInvalidToken'
+    AuthRateLimitedAuth:
+      description: authLimiter tripped (20 requests / 15 minutes / IP).
+      x-verified: live
+      headers:
+        Retry-After:
+          description: Seconds until the window resets.
+          schema: { type: integer }
+        RateLimit-Policy:
+          schema: { type: string, const: '20;w=900' }
+        RateLimit-Limit:
+          schema: { type: integer, const: 20 }
+        RateLimit-Remaining:
+          schema: { type: integer, const: 0 }
+        RateLimit-Reset:
+          schema: { type: integer }
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/AuthErrRateLimitedAuth' }
+    AuthRateLimitedStrict:
+      description: strictAuthLimiter tripped (5 requests / 60 minutes / IP).
+      x-verified: live
+      headers:
+        Retry-After:
+          description: Seconds until the window resets.
+          schema: { type: integer }
+        RateLimit-Policy:
+          schema: { type: string, const: '5;w=3600' }
+        RateLimit-Limit:
+          schema: { type: integer, const: 5 }
+        RateLimit-Remaining:
+          schema: { type: integer, const: 0 }
+        RateLimit-Reset:
+          schema: { type: integer }
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/AuthErrRateLimitedStrict' }
+    AuthInternal:
+      description: >-
+        Unhandled exception, malformed JSON body, or a body over the 256kb
+        limit. See the x-note on AuthErrInternal.
+      x-verified: live
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/AuthErrInternal' }
+
+  schemas:
+
+    # -----------------------------------------------------------------------
+    # Core value objects
+    # -----------------------------------------------------------------------
+    AuthObjectId:
+      type: string
+      pattern: '^[0-9a-f]{24}$'
+      description: 24-character lowercase-hex Mongo ObjectId rendered as a string.
+      examples: ['6a78bc33aa461ae1dc64a176']
+
+    AuthTimestamp:
+      type: string
+      format: date-time
+      description: >-
+        ISO-8601 UTC with exactly three fractional digits and a trailing `Z`
+        (JavaScript `Date.prototype.toJSON`), e.g. "2026-08-09T17:43:15.317Z".
+      pattern: '^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$'
+
+    AuthMicPrefs:
+      type: object
+      additionalProperties: false
+      required: [quality]
+      properties:
+        quality:
+          type: string
+          enum: [standard, high]
+          default: standard
+
+    AuthNotificationPrefs:
+      type: object
+      additionalProperties: false
+      required: [push, emailDigest, marketing]
+      properties:
+        push: { type: boolean, default: true }
+        emailDigest: { type: boolean, default: true }
+        marketing: { type: boolean, default: false }
+
+    AuthImportPrefs:
+      type: object
+      additionalProperties: false
+      required: [defaultTimeOfDay]
+      properties:
+        defaultTimeOfDay:
+          type: string
+          pattern: '^([01]\d|2[0-3]):([0-5]\d)$'
+          default: '09:00'
+          description: >-
+            'HH:mm' on a 24-hour clock, interpreted in the user's `timezone`.
+            Enforced by BOTH the Zod edge schema and a Mongoose `match`.
+
+    AuthPrivacyPrefs:
+      type: object
+      additionalProperties: false
+      required: [analytics, crashReports]
+      properties:
+        analytics: { type: boolean, default: true }
+        crashReports: { type: boolean, default: true }
+
+    AuthSubscription:
+      type: object
+      additionalProperties: false
+      required: [tier]
+      description: >-
+        Server-managed. `renewsAt`/`canceledAt` are omitted when unset. The
+        sub-schema is declared `_id: false`, so no `_id` is ever emitted.
+      properties:
+        tier:
+          type: string
+          enum: [free, pro]
+          default: free
+        renewsAt: { $ref: '#/components/schemas/AuthTimestamp' }
+        canceledAt: { $ref: '#/components/schemas/AuthTimestamp' }
+
+    AuthOnboardingAnswer:
+      type: object
+      additionalProperties: false
+      required: [id, question, answer]
+      description: >-
+        One captured onboarding Q&A, persisted as AI personalization memory.
+        Sub-schema is `_id: false`, so no `_id` is emitted.
+      properties:
+        id: { type: string, maxLength: 100 }
+        question: { type: string, maxLength: 200 }
+        answer: { type: string, maxLength: 500 }
+
+    # -----------------------------------------------------------------------
+    # AuthUser — the shape AFTER the Mongoose toJSON transform
+    # -----------------------------------------------------------------------
+    AuthUser:
+      type: object
+      additionalProperties: false
+      description: >-
+        `passwordHash` is DELETED by the transform and must never appear.
+        `hasPassword` is DERIVED (`typeof passwordHash === 'string' && length > 0`)
+        and is always present. `_id` becomes `id`; `__v` is dropped
+        (`versionKey: false`).
+        The six optional properties below are OMITTED — not null — when unset.
+        OBSERVED PROPERTY ORDER from the Node implementation (Mongo document
+        field order, then `id` and `hasPassword` appended last):
+        email, [pendingEmail], hasOnboarded, theme, textSize, preferredDomains,
+        onboardingAnswers, mic, notifications, imports, privacy, subscription,
+        createdAt, updatedAt, [displayName], [locale], [localeFollowsDevice],
+        [timezone], [emailVerifiedAt], [pendingEmail], id, hasPassword.
+        Property order is NOT semantically part of the contract for JSON
+        consumers, but it IS observable in the pretty-printed /me/export body.
+      required:
+        - email
+        - hasOnboarded
+        - theme
+        - textSize
+        - preferredDomains
+        - onboardingAnswers
+        - mic
+        - notifications
+        - imports
+        - privacy
+        - subscription
+        - createdAt
+        - updatedAt
+        - id
+        - hasPassword
+      properties:
+        id: { $ref: '#/components/schemas/AuthObjectId' }
+        email:
+          type: string
+          format: email
+          description: Stored lowercased and trimmed. Unique index.
+        pendingEmail:
+          type: string
+          format: email
+          description: >-
+            Present only between POST /auth/change-email and its confirm/cancel.
+            Deliberately NOT unique in the database: two accounts may both have
+            a pending move to the same address, and only the one that confirms
+            first gets it.
+        hasPassword:
+          type: boolean
+          description: >-
+            Derived, not stored. False for magic-link-only accounts, which is
+            what tells the client not to demand a password before a destructive
+            action.
+        displayName:
+          type: string
+          maxLength: 80
+          description: Omitted until set.
+        preferredDomains:
+          type: array
+          description: Defaults to ALL SIX domains, in this exact order.
+          default: [health, home, car, finance, family, pets]
+          items:
+            type: string
+            enum: [health, home, car, finance, family, pets]
+        hasOnboarded: { type: boolean, default: false }
+        onboardingAnswers:
+          type: array
+          default: []
+          maxItems: 20
+          items: { $ref: '#/components/schemas/AuthOnboardingAnswer' }
+        emailVerifiedAt:
+          allOf: [{ $ref: '#/components/schemas/AuthTimestamp' }]
+          description: Omitted until the address is verified.
+        timezone:
+          type: string
+          maxLength: 64
+          description: >-
+            IANA zone, e.g. "Africa/Cairo". Omitted means "trust the device".
+        locale:
+          type: string
+          maxLength: 35
+          description: BCP-47 tag, e.g. "en-GB". The EFFECTIVE language.
+        localeFollowsDevice:
+          type: boolean
+          description: True when `locale` was read off a device rather than chosen.
+        theme:
+          type: string
+          enum: [system, light, dark]
+          default: system
+        textSize:
+          type: string
+          enum: [sm, md, lg]
+          default: md
+        mic: { $ref: '#/components/schemas/AuthMicPrefs' }
+        notifications: { $ref: '#/components/schemas/AuthNotificationPrefs' }
+        imports: { $ref: '#/components/schemas/AuthImportPrefs' }
+        privacy: { $ref: '#/components/schemas/AuthPrivacyPrefs' }
+        subscription: { $ref: '#/components/schemas/AuthSubscription' }
+        createdAt: { $ref: '#/components/schemas/AuthTimestamp' }
+        updatedAt: { $ref: '#/components/schemas/AuthTimestamp' }
+
+    AuthTokens:
+      type: object
+      additionalProperties: false
+      required: [accessToken, refreshToken]
+      properties:
+        accessToken:
+          type: string
+          description: >-
+            HS256 JWT signed with JWT_ACCESS_SECRET. Payload is exactly
+            `{sub: <user id>, email: <user email>, iat, exp}`. Lifetime is
+            JWT_ACCESS_TTL (default "15m") converted to whole seconds.
+        refreshToken:
+          type: string
+          description: >-
+            OPAQUE, not a JWT: 32 CSPRNG bytes rendered base64url (43
+            characters, no padding). Only its sha256 hex digest is persisted, so
+            the raw value is unrecoverable server-side. Lifetime
+            JWT_REFRESH_TTL (default "30d"). Single-use — see /auth/refresh.
+          pattern: '^[A-Za-z0-9_-]{43}$'
+
+    AuthSession:
+      type: object
+      additionalProperties: false
+      required: [id, current]
+      description: >-
+        A row of /auth/sessions/list. Built by hand (not toJSON), so it is a
+        deliberately narrow projection of RefreshToken — `tokenHash`,
+        `expiresAt`, `revokedAt`, `replacedBy` and `userId` are all withheld.
+        The four optional fields are omitted when the stored value is undefined.
+      properties:
+        id: { $ref: '#/components/schemas/AuthObjectId' }
+        current:
+          type: boolean
+          description: >-
+            True only when the request supplied a `refreshToken` whose sha256
+            matches this row. Always false when no `refreshToken` was supplied.
+        userAgent:
+          type: string
+          maxLength: 256
+          description: >-
+            The `User-Agent` header at issue time, TRUNCATED TO 256 CHARACTERS.
+            Omitted when the header was absent.
+        ip:
+          type: string
+          description: >-
+            `req.ip` at issue time. With `trust proxy` off this is the raw
+            socket peer, so loopback requests record "::1" or "::ffff:127.0.0.1".
+        createdAt: { $ref: '#/components/schemas/AuthTimestamp' }
+        lastUsedAt:
+          allOf: [{ $ref: '#/components/schemas/AuthTimestamp' }]
+          description: >-
+            Set to the issue time and NEVER UPDATED afterwards by any route in
+            this domain — despite the name, it is effectively a second
+            creation timestamp.
+
+    # -----------------------------------------------------------------------
+    # Response wrappers
+    # -----------------------------------------------------------------------
+    AuthSessionResponse:
+      type: object
+      additionalProperties: false
+      required: [user, tokens]
+      properties:
+        user: { $ref: '#/components/schemas/AuthUser' }
+        tokens: { $ref: '#/components/schemas/AuthTokens' }
+
+    AuthUserResponse:
+      type: object
+      additionalProperties: false
+      required: [user]
+      properties:
+        user: { $ref: '#/components/schemas/AuthUser' }
+
+    AuthTokensResponse:
+      type: object
+      additionalProperties: false
+      required: [tokens]
+      properties:
+        tokens: { $ref: '#/components/schemas/AuthTokens' }
+
+    AuthSessionsResponse:
+      type: object
+      additionalProperties: false
+      required: [sessions]
+      properties:
+        sessions:
+          type: array
+          items: { $ref: '#/components/schemas/AuthSession' }
+
+    AuthSubscriptionResponse:
+      type: object
+      additionalProperties: false
+      required: [subscription]
+      properties:
+        subscription: { $ref: '#/components/schemas/AuthSubscription' }
+
+    AuthInvoicesResponse:
+      type: object
+      additionalProperties: false
+      required: [invoices]
+      properties:
+        invoices:
+          type: array
+          maxItems: 0
+          description: Always empty in this build.
+          items: {}
+
+    AuthIntegrationsResponse:
+      type: object
+      additionalProperties: false
+      required: [integrations]
+      properties:
+        integrations:
+          type: array
+          maxItems: 0
+          description: Always empty in this build.
+          items: {}
+
+    AuthHealthOk:
+      type: object
+      additionalProperties: false
+      required: [status, db, uptime]
+      properties:
+        status: { type: string, const: ok }
+        db: { type: string, const: connected }
+        uptime:
+          type: number
+          description: '`process.uptime()` — seconds since process start, fractional.'
+
+    AuthHealthDegraded:
+      type: object
+      additionalProperties: false
+      required: [status, db, uptime]
+      properties:
+        status: { type: string, const: degraded }
+        db:
+          type: string
+          enum: [disconnected, connecting, disconnecting, uninitialized, unknown]
+        uptime: { type: number }
+
+    # -----------------------------------------------------------------------
+    # /me/export
+    # -----------------------------------------------------------------------
+    AuthExportSection:
+      type: object
+      additionalProperties: false
+      required: [count, truncated, items]
+      properties:
+        count:
+          type: integer
+          minimum: 0
+          maximum: 5000
+          description: '`items.length` — not a total row count.'
+        truncated:
+          type: boolean
+          description: '`items.length === 5000`, exactly.'
+        items:
+          type: array
+          maxItems: 5000
+          description: >-
+            RAW `.lean()` Mongo documents. `_id` (an ObjectId rendered as a hex
+            string), `__v` and `userId` are all present; no toJSON transform is
+            applied. Per-collection item schemas are owned by the sibling
+            contract files for those domains.
+          items: { type: object }
+
+    AuthExport:
+      type: object
+      additionalProperties: false
+      description: >-
+        Emitted with `JSON.stringify(payload, null, 2)` — two-space indent.
+        Property order is exactly as listed here.
+      required:
+        - exportedAt
+        - version
+        - user
+        - matters
+        - bulkOperations
+        - voiceNotes
+        - documents
+        - conversations
+        - clarifications
+        - dailyDigests
+        - notifications
+        - aiUsage
+        - documentScanUsage
+        - sessions
+      properties:
+        exportedAt: { $ref: '#/components/schemas/AuthTimestamp' }
+        version: { type: integer, const: 1 }
+        user: { $ref: '#/components/schemas/AuthUser' }
+        matters:
+          allOf: [{ $ref: '#/components/schemas/AuthExportSection' }]
+          description: 'Task collection. Key is `matters`, not `tasks`.'
+        bulkOperations:
+          allOf: [{ $ref: '#/components/schemas/AuthExportSection' }]
+          description: TaskBulkOp collection.
+        voiceNotes:
+          allOf: [{ $ref: '#/components/schemas/AuthExportSection' }]
+          description: 'VoiceNote collection, projection `{ storageKey: 0 }`.'
+        documents:
+          allOf: [{ $ref: '#/components/schemas/AuthExportSection' }]
+          description: 'ScannedDocument collection, projection `{ storageKey: 0 }`.'
+        conversations:
+          allOf: [{ $ref: '#/components/schemas/AuthExportSection' }]
+          description: AiConversation collection.
+        clarifications:
+          allOf: [{ $ref: '#/components/schemas/AuthExportSection' }]
+        dailyDigests:
+          allOf: [{ $ref: '#/components/schemas/AuthExportSection' }]
+          description: DailyDigest collection.
+        notifications:
+          allOf: [{ $ref: '#/components/schemas/AuthExportSection' }]
+        aiUsage:
+          allOf: [{ $ref: '#/components/schemas/AuthExportSection' }]
+          description: AiUsageCounter collection.
+        documentScanUsage:
+          allOf: [{ $ref: '#/components/schemas/AuthExportSection' }]
+          description: DocumentScanUsageCounter collection.
+        sessions:
+          allOf: [{ $ref: '#/components/schemas/AuthExportSection' }]
+          description: >-
+            RefreshToken collection, projection `{ tokenHash: 0, replacedBy: 0 }`.
+            Observed item keys: _id, userId, expiresAt, userAgent, ip,
+            lastUsedAt, createdAt, updatedAt, __v, and revokedAt when revoked.
+            REVOKED SESSIONS ARE INCLUDED.
+
+    # -----------------------------------------------------------------------
+    # Request bodies
+    # -----------------------------------------------------------------------
+    AuthEmailField:
+      type: string
+      format: email
+      description: >-
+        Zod `z.string().email().toLowerCase().trim()`. CHECK ORDER MATTERS: the
+        email format test runs BEFORE the transforms, so an address with
+        SURROUNDING WHITESPACE is REJECTED ("  a@b.com  " -> 400 "Invalid
+        email"); it is not trimmed and then accepted. Mixed case IS accepted and
+        is lowercased before storage/lookup.
+
+    AuthSignupRequest:
+      type: object
+      additionalProperties: true
+      required: [email, password]
+      description: Unknown keys are ignored (the Zod object is not `.strict()`).
+      properties:
+        email: { $ref: '#/components/schemas/AuthEmailField' }
+        password:
+          type: string
+          minLength: 8
+          maxLength: 128
+          description: Length is measured in JS UTF-16 code units.
+
+    AuthSigninRequest:
+      type: object
+      additionalProperties: true
+      required: [email, password]
+      properties:
+        email: { $ref: '#/components/schemas/AuthEmailField' }
+        password:
+          type: string
+          minLength: 1
+          description: No max here — only signup/reset/change bound it at 128.
+
+    AuthForgotPasswordRequest:
+      type: object
+      additionalProperties: true
+      required: [email]
+      properties:
+        email: { $ref: '#/components/schemas/AuthEmailField' }
+
+    AuthMagicLinkRequest:
+      type: object
+      additionalProperties: true
+      required: [email]
+      properties:
+        email: { $ref: '#/components/schemas/AuthEmailField' }
+
+    AuthResetPasswordRequest:
+      type: object
+      additionalProperties: true
+      required: [token, newPassword]
+      properties:
+        token: { type: string, minLength: 1 }
+        newPassword: { type: string, minLength: 8, maxLength: 128 }
+
+    AuthChangePasswordRequest:
+      type: object
+      additionalProperties: true
+      required: [currentPassword, newPassword]
+      description: >-
+        Cross-field rule: `currentPassword !== newPassword`, reported on path
+        `newPassword` with the message
+        "New password must be different from your current one."
+      properties:
+        currentPassword: { type: string, minLength: 1 }
+        newPassword: { type: string, minLength: 8, maxLength: 128 }
+        refreshToken:
+          type: string
+          minLength: 1
+          description: >-
+            OPTIONAL. Present -> that one session survives and all others are
+            revoked. Absent -> ALL sessions are revoked, including the caller's.
+
+    AuthRefreshRequest:
+      type: object
+      additionalProperties: true
+      required: [refreshToken]
+      properties:
+        refreshToken: { type: string, minLength: 1 }
+
+    AuthSessionContextRequest:
+      type: object
+      additionalProperties: true
+      description: >-
+        Body is optional; an absent body is treated as `{}`. Used only by
+        POST /auth/sessions/list.
+      properties:
+        refreshToken: { type: string, minLength: 1 }
+
+    AuthTokenRequest:
+      type: object
+      additionalProperties: true
+      required: [token]
+      description: Used by POST /auth/verify-email and POST /auth/magic-consume.
+      properties:
+        token: { type: string, minLength: 1 }
+
+    AuthCodeRequest:
+      type: object
+      additionalProperties: true
+      required: [code]
+      properties:
+        code:
+          type: string
+          pattern: '^\d{6}$'
+          description: >-
+            Zod `z.string().trim().regex(/^\d{6}$/, 'Enter the 6-digit code.')`.
+            The TRIM RUNS FIRST, so " 424242 " is accepted and normalised. Six
+            ASCII digits exactly, zero-padded — the server mints them with
+            `randomInt(0, 10**6)` padded to width 6, so "000042" is a legal code.
+
+    AuthChangeEmailRequest:
+      type: object
+      additionalProperties: true
+      required: [newEmail]
+      properties:
+        newEmail: { $ref: '#/components/schemas/AuthEmailField' }
+        password:
+          type: string
+          minLength: 1
+          description: >-
+            Optional in the SCHEMA, required by the HANDLER whenever the account
+            has a password. Mirrors DELETE /me so magic-link-only accounts work.
+
+    AuthChangeEmailConfirmRequest:
+      type: object
+      additionalProperties: true
+      required: [code]
+      properties:
+        code:
+          type: string
+          pattern: '^\d{6}$'
+          description: Same trim-then-regex rule as AuthCodeRequest.
+        refreshToken:
+          type: string
+          minLength: 1
+          description: >-
+            OPTIONAL. Present -> that session survives and all others are
+            revoked. Absent -> NO sessions are revoked at all.
+
+    AuthDeleteMeRequest:
+      type: object
+      additionalProperties: true
+      description: >-
+        Sent as the BODY OF A DELETE. Absent body is treated as `{}`.
+      properties:
+        password:
+          type: string
+          minLength: 1
+          description: Required by the handler iff the account has a password.
+
+    AuthUpdateMeRequest:
+      type: object
+      additionalProperties: true
+      description: >-
+        Every field optional. Unknown keys — including `email`, `pendingEmail`,
+        `subscription`, `emailVerifiedAt` — are STRIPPED, not rejected.
+        `mic`, `notifications`, `privacy` and `imports` are merged key-by-key
+        via dot-notation `$set`; every other field is replaced wholesale.
+      properties:
+        displayName:
+          type: string
+          minLength: 1
+          maxLength: 80
+          description: >-
+            `z.string().min(1).max(80).trim()` — the TRIM RUNS LAST, so "" is
+            rejected but a whitespace-only value such as "   " passes the
+            min-length check and is then stored as the EMPTY STRING.
+        preferredDomains:
+          type: array
+          description: Replaced wholesale. An empty array is accepted.
+          items:
+            type: string
+            enum: [health, home, car, finance, family, pets]
+        hasOnboarded: { type: boolean }
+        onboardingAnswers:
+          type: array
+          maxItems: 20
+          description: Replaced wholesale, never merged.
+          items: { $ref: '#/components/schemas/AuthOnboardingAnswer' }
+        timezone:
+          type: string
+          minLength: 1
+          maxLength: 64
+          description: >-
+            Validated against the runtime's own tables, not a fixed list:
+            `new Intl.DateTimeFormat('en-US', { timeZone: zone })` must not
+            throw. Failure message: "Not a recognised time zone."
+        locale:
+          type: string
+          minLength: 2
+          maxLength: 35
+          description: >-
+            Validated with `Intl.getCanonicalLocales(tag).length > 0`. Failure
+            message: "Not a recognised locale."
+        localeFollowsDevice: { type: boolean }
+        theme: { type: string, enum: [system, light, dark] }
+        textSize: { type: string, enum: [sm, md, lg] }
+        mic:
+          type: object
+          additionalProperties: true
+          description: Merged key-by-key.
+          properties:
+            quality: { type: string, enum: [standard, high] }
+        notifications:
+          type: object
+          additionalProperties: true
+          description: Merged key-by-key.
+          properties:
+            push: { type: boolean }
+            emailDigest: { type: boolean }
+            marketing: { type: boolean }
+        privacy:
+          type: object
+          additionalProperties: true
+          description: Merged key-by-key.
+          properties:
+            analytics: { type: boolean }
+            crashReports: { type: boolean }
+        imports:
+          type: object
+          additionalProperties: true
+          description: Merged key-by-key.
+          properties:
+            defaultTimeOfDay:
+              type: string
+              pattern: '^([01]\d|2[0-3]):([0-5]\d)$'
+              description: 'Failure message: "Use a 24-hour time like 09:00."'
+
+    # -----------------------------------------------------------------------
+    # Error envelope + every distinct (status, code, message) this domain emits
+    # -----------------------------------------------------------------------
+    AuthErrorEnvelope:
+      type: object
+      additionalProperties: false
+      required: [error]
+      description: >-
+        The one and only error shape. `details` is present ONLY on
+        `validation_error`, on the three `invalid_body` variants, and on the
+        FORMAT flavour of `invalid_code`; it is omitted everywhere else (the
+        handler spreads it conditionally: `...(details !== undefined && {details})`).
+      properties:
+        error:
+          type: object
+          additionalProperties: false
+          required: [code, message]
+          properties:
+            code: { type: string }
+            message: { type: string }
+            details: {}
+
+    AuthZodIssueList:
+      type: array
+      description: >-
+        `details` shape produced by the GLOBAL ZodError handler (routes that use
+        `.parse()`): one entry per issue, in Zod's own issue order.
+        `path` is the issue path joined with ".", so a nested path renders as
+        "a.b" and a root-level issue renders as the empty string.
+      items:
+        type: object
+        additionalProperties: false
+        required: [path, message]
+        properties:
+          path: { type: string }
+          message: { type: string }
+
+    AuthZodFlatten:
+      type: object
+      additionalProperties: false
+      required: [formErrors, fieldErrors]
+      description: >-
+        `details` shape produced by routes that use `.safeParse()` and then
+        `parsed.error.flatten()`. Errors inside a nested object are attributed
+        to the TOP-LEVEL key, so a bad `mic.quality` appears under
+        `fieldErrors.mic`.
+      properties:
+        formErrors:
+          type: array
+          items: { type: string }
+        fieldErrors:
+          type: object
+          additionalProperties:
+            type: array
+            items: { type: string }
+
+    # --- 400 -----------------------------------------------------------------
+    AuthErrValidation:
+      type: object
+      additionalProperties: false
+      required: [error]
+      description: >-
+        HTTP 400. Emitted by the global ZodError branch for every route that
+        parses with `.parse()`: signup, signin, forgot-password, reset-password,
+        change-password, refresh, revoke-others, sessions/list, verify-email,
+        magic-link, magic-consume.
+        Observed messages come straight from Zod 3, e.g. "Required",
+        "Invalid email", "String must contain at least 8 character(s)",
+        "Expected string, received number".
+      properties:
+        error:
+          type: object
+          additionalProperties: false
+          required: [code, message, details]
+          properties:
+            code: { type: string, const: validation_error }
+            message: { type: string, const: Request validation failed }
+            details: { $ref: '#/components/schemas/AuthZodIssueList' }
+
+    AuthErrInvalidBodySettings:
+      type: object
+      additionalProperties: false
+      required: [error]
+      description: HTTP 400 — PATCH /me only.
+      properties:
+        error:
+          type: object
+          additionalProperties: false
+          required: [code, message, details]
+          properties:
+            code: { type: string, const: invalid_body }
+            message: { type: string, const: Some of those settings looked off. }
+            details: { $ref: '#/components/schemas/AuthZodFlatten' }
+
+    AuthErrInvalidBodyDelete:
+      type: object
+      additionalProperties: false
+      required: [error]
+      description: HTTP 400 — DELETE /me only.
+      properties:
+        error:
+          type: object
+          additionalProperties: false
+          required: [code, message, details]
+          properties:
+            code: { type: string, const: invalid_body }
+            message: { type: string, const: "That delete request didn't look right." }
+            details: { $ref: '#/components/schemas/AuthZodFlatten' }
+
+    AuthErrInvalidBodyEmail:
+      type: object
+      additionalProperties: false
+      required: [error]
+      description: HTTP 400 — POST /auth/change-email only.
+      properties:
+        error:
+          type: object
+          additionalProperties: false
+          required: [code, message, details]
+          properties:
+            code: { type: string, const: invalid_body }
+            message: { type: string, const: "That didn't look like an email address." }
+            details: { $ref: '#/components/schemas/AuthZodFlatten' }
+
+    AuthErrInvalidCodeFormat:
+      type: object
+      additionalProperties: false
+      required: [error]
+      description: >-
+        HTTP 400. The code failed the `^\d{6}$` shape check. Carries `details`.
+        Emitted by verify-email/confirm-code and change-email/confirm.
+      properties:
+        error:
+          type: object
+          additionalProperties: false
+          required: [code, message, details]
+          properties:
+            code: { type: string, const: invalid_code }
+            message: { type: string, const: Enter the 6-digit code. }
+            details: { $ref: '#/components/schemas/AuthZodFlatten' }
+
+    AuthErrInvalidCodeRejected:
+      type: object
+      additionalProperties: false
+      required: [error]
+      description: >-
+        HTTP 400. Well-formed but unusable code: wrong digits, expired, already
+        consumed, or minted for a different user/purpose. NO `details`.
+      properties:
+        error:
+          type: object
+          additionalProperties: false
+          required: [code, message]
+          properties:
+            code: { type: string, const: invalid_code }
+            message:
+              type: string
+              const: That code is wrong or has expired. Send a new one.
+
+    AuthErrInvalidVerificationToken:
+      type: object
+      additionalProperties: false
+      required: [error]
+      description: HTTP 400 — POST /auth/verify-email.
+      properties:
+        error:
+          type: object
+          additionalProperties: false
+          required: [code, message]
+          properties:
+            code: { type: string, const: invalid_verification_token }
+            message:
+              type: string
+              const: This verification link is invalid or has expired.
+
+    AuthErrVerificationTokenUserGone:
+      type: object
+      additionalProperties: false
+      required: [error]
+      description: >-
+        HTTP 400 — the verification token was valid but its user row is gone.
+        Same `code` as above, DIFFERENT `message`.
+      properties:
+        error:
+          type: object
+          additionalProperties: false
+          required: [code, message]
+          properties:
+            code: { type: string, const: invalid_verification_token }
+            message: { type: string, const: Account not found. }
+
+    AuthErrInvalidResetToken:
+      type: object
+      additionalProperties: false
+      required: [error]
+      description: HTTP 400 — POST /auth/reset-password.
+      properties:
+        error:
+          type: object
+          additionalProperties: false
+          required: [code, message]
+          properties:
+            code: { type: string, const: invalid_reset_token }
+            message:
+              type: string
+              const: This reset link is invalid or has expired. Please request a new one.
+
+    AuthErrResetTokenUserGone:
+      type: object
+      additionalProperties: false
+      required: [error]
+      description: >-
+        HTTP 400 — the reset token was valid but its user row is gone. Same
+        `code`, DIFFERENT `message`.
+      properties:
+        error:
+          type: object
+          additionalProperties: false
+          required: [code, message]
+          properties:
+            code: { type: string, const: invalid_reset_token }
+            message: { type: string, const: Account not found. }
+
+    AuthErrInvalidMagicToken:
+      type: object
+      additionalProperties: false
+      required: [error]
+      description: HTTP 400 — POST /auth/magic-consume.
+      properties:
+        error:
+          type: object
+          additionalProperties: false
+          required: [code, message]
+          properties:
+            code: { type: string, const: invalid_magic_token }
+            message:
+              type: string
+              const: This sign-in link is invalid or has expired. Request a new one.
+
+    AuthErrNoPasswordSet:
+      type: object
+      additionalProperties: false
+      required: [error]
+      description: >-
+        HTTP 400 — POST /auth/change-password on a magic-link-only account.
+      properties:
+        error:
+          type: object
+          additionalProperties: false
+          required: [code, message]
+          properties:
+            code: { type: string, const: no_password_set }
+            message: { type: string, const: This account has no password to change. }
+
+    AuthErrPasswordRequiredEmail:
+      type: object
+      additionalProperties: false
+      required: [error]
+      description: HTTP 400 — POST /auth/change-email.
+      properties:
+        error:
+          type: object
+          additionalProperties: false
+          required: [code, message]
+          properties:
+            code: { type: string, const: password_required }
+            message:
+              type: string
+              const: Enter your password to change your email.
+
+    AuthErrPasswordRequiredDelete:
+      type: object
+      additionalProperties: false
+      required: [error]
+      description: HTTP 400 — DELETE /me.
+      properties:
+        error:
+          type: object
+          additionalProperties: false
+          required: [code, message]
+          properties:
+            code: { type: string, const: password_required }
+            message:
+              type: string
+              const: Enter your password to delete your account.
+
+    AuthErrEmailUnchanged:
+      type: object
+      additionalProperties: false
+      required: [error]
+      description: HTTP 400 — POST /auth/change-email with the current address.
+      properties:
+        error:
+          type: object
+          additionalProperties: false
+          required: [code, message]
+          properties:
+            code: { type: string, const: email_unchanged }
+            message: { type: string, const: "That's already your email address." }
+
+    AuthErrNoPendingEmail:
+      type: object
+      additionalProperties: false
+      required: [error]
+      description: HTTP 400 — POST /auth/change-email/confirm with nothing pending.
+      properties:
+        error:
+          type: object
+          additionalProperties: false
+          required: [code, message]
+          properties:
+            code: { type: string, const: no_pending_email }
+            message: { type: string, const: "There's no email change waiting." }
+
+    AuthErrEmailSendFailed:
+      type: object
+      additionalProperties: false
+      required: [error]
+      description: >-
+        HTTP 400 — the AWAITED mail send threw. Emitted only by
+        /auth/verify-email/send-code and POST /auth/change-email; every other
+        mail in this domain is fire-and-forget and can never produce this.
+      properties:
+        error:
+          type: object
+          additionalProperties: false
+          required: [code, message]
+          properties:
+            code: { type: string, const: email_send_failed }
+            message:
+              type: string
+              const: We could not send that email. Try again in a moment.
+
+    # --- 401 -----------------------------------------------------------------
+    AuthErrMissingToken:
+      type: object
+      additionalProperties: false
+      required: [error]
+      description: >-
+        HTTP 401 — no Authorization header, or one that does not start with the
+        exact prefix "Bearer ".
+      properties:
+        error:
+          type: object
+          additionalProperties: false
+          required: [code, message]
+          properties:
+            code: { type: string, const: missing_token }
+            message: { type: string, const: Missing access token }
+
+    AuthErrInvalidToken:
+      type: object
+      additionalProperties: false
+      required: [error]
+      description: >-
+        HTTP 401 — bad signature, wrong algorithm, expired, or missing/non-string
+        `sub`/`email` claims.
+      properties:
+        error:
+          type: object
+          additionalProperties: false
+          required: [code, message]
+          properties:
+            code: { type: string, const: invalid_token }
+            message: { type: string, const: Invalid or expired access token }
+
+    AuthErrUnauthorized:
+      type: object
+      additionalProperties: false
+      required: [error]
+      description: >-
+        HTTP 401 — the bare `Unauthorized()` default, thrown by the defensive
+        `if (!req.auth) throw Unauthorized()` guard that every authenticated
+        handler opens with. UNREACHABLE in practice (requireAuth has already
+        populated `req.auth` or rejected), but it is part of the emitted code
+        surface and a faithful port should keep the same guard.
+      properties:
+        error:
+          type: object
+          additionalProperties: false
+          required: [code, message]
+          properties:
+            code: { type: string, const: unauthorized }
+            message: { type: string, const: Unauthorized }
+
+    AuthErrInvalidCredentialsSignin:
+      type: object
+      additionalProperties: false
+      required: [error]
+      description: HTTP 401 — POST /auth/signin.
+      properties:
+        error:
+          type: object
+          additionalProperties: false
+          required: [code, message]
+          properties:
+            code: { type: string, const: invalid_credentials }
+            message: { type: string, const: Wrong email or password. }
+
+    AuthErrInvalidCredentialsCurrent:
+      type: object
+      additionalProperties: false
+      required: [error]
+      description: HTTP 401 — POST /auth/change-password.
+      properties:
+        error:
+          type: object
+          additionalProperties: false
+          required: [code, message]
+          properties:
+            code: { type: string, const: invalid_credentials }
+            message: { type: string, const: Your current password is incorrect. }
+
+    AuthErrInvalidCredentialsPassword:
+      type: object
+      additionalProperties: false
+      required: [error]
+      description: HTTP 401 — POST /auth/change-email and DELETE /me.
+      properties:
+        error:
+          type: object
+          additionalProperties: false
+          required: [code, message]
+          properties:
+            code: { type: string, const: invalid_credentials }
+            message: { type: string, const: That password is incorrect. }
+
+    AuthErrInvalidRefreshToken:
+      type: object
+      additionalProperties: false
+      required: [error]
+      description: >-
+        HTTP 401 — POST /auth/refresh. Covers unknown, revoked (reuse-detected),
+        expired, and orphaned tokens with one indistinguishable body.
+      properties:
+        error:
+          type: object
+          additionalProperties: false
+          required: [code, message]
+          properties:
+            code: { type: string, const: invalid_refresh_token }
+            message:
+              type: string
+              const: This session has expired. Please sign in again.
+
+    # --- 404 -----------------------------------------------------------------
+    AuthErrUserNotFound:
+      type: object
+      additionalProperties: false
+      required: [error]
+      description: >-
+        HTTP 404 — a cryptographically valid access token whose user row no
+        longer exists.
+      properties:
+        error:
+          type: object
+          additionalProperties: false
+          required: [code, message]
+          properties:
+            code: { type: string, const: user_not_found }
+            message: { type: string, const: Account no longer exists. }
+
+    AuthErrSessionNotFound:
+      type: object
+      additionalProperties: false
+      required: [error]
+      description: HTTP 404 — DELETE /auth/sessions/{id}.
+      properties:
+        error:
+          type: object
+          additionalProperties: false
+          required: [code, message]
+          properties:
+            code: { type: string, const: session_not_found }
+            message: { type: string, const: That session is no longer active. }
+
+    AuthErrNotFound:
+      type: object
+      additionalProperties: false
+      required: [error]
+      description: >-
+        HTTP 404 — the global error handler's mapping of a Mongoose
+        `CastError` with `kind === 'ObjectId'`. Not reachable from any route in
+        this domain, but it is the framework behaviour a faithful port must
+        keep.
+      properties:
+        error:
+          type: object
+          additionalProperties: false
+          required: [code, message]
+          properties:
+            code: { type: string, const: not_found }
+            message: { type: string, const: Not found }
+
+    # --- 409 -----------------------------------------------------------------
+    AuthErrEmailTaken:
+      type: object
+      additionalProperties: false
+      required: [error]
+      description: >-
+        HTTP 409 — POST /auth/signup, POST /auth/change-email, and
+        POST /auth/change-email/confirm all use this identical body.
+      properties:
+        error:
+          type: object
+          additionalProperties: false
+          required: [code, message]
+          properties:
+            code: { type: string, const: email_taken }
+            message:
+              type: string
+              const: An account with this email already exists.
+
+    # --- 429 -----------------------------------------------------------------
+    AuthErrRateLimitedAuth:
+      type: object
+      additionalProperties: false
+      required: [error]
+      description: >-
+        HTTP 429 from authLimiter. Note the body is the limiter's static
+        `message` option, so it does NOT flow through the AppError handler —
+        but the shape is identical and `details` is never present.
+      properties:
+        error:
+          type: object
+          additionalProperties: false
+          required: [code, message]
+          properties:
+            code: { type: string, const: rate_limited }
+            message:
+              type: string
+              const: Too many requests. Try again in a few minutes.
+
+    AuthErrRateLimitedStrict:
+      type: object
+      additionalProperties: false
+      required: [error]
+      description: HTTP 429 from strictAuthLimiter.
+      properties:
+        error:
+          type: object
+          additionalProperties: false
+          required: [code, message]
+          properties:
+            code: { type: string, const: rate_limited }
+            message: { type: string, const: Too many attempts. Try again later. }
+
+    # --- 500 -----------------------------------------------------------------
+    AuthErrInternal:
+      type: object
+      additionalProperties: false
+      required: [error]
+      description: HTTP 500 — the error handler's catch-all branch.
+      x-note: >-
+        VERIFIED SURPRISE, not a source/live disagreement. A MALFORMED JSON body
+        and an OVERSIZED body (>256kb) both return 500 `internal_error`, NOT a
+        400. body-parser raises a SyntaxError / PayloadTooLargeError carrying
+        its own `status` property, but the error handler only recognises
+        CastError, ZodError and AppError, so both fall through to the 500
+        branch and are logged as `request:unhandled`. Confirmed live against
+        PATCH /me with a truncated JSON body and with a 300kb body. The .NET
+        port must reproduce the 500, not "fix" it to a 400.
+      properties:
+        error:
+          type: object
+          additionalProperties: false
+          required: [code, message]
+          properties:
+            code: { type: string, const: internal_error }
+            message: { type: string, const: Internal server error }
