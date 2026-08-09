@@ -743,6 +743,11 @@ public sealed class TaskEndpointTests : IClassFixture<TasksWebApplicationFactory
         {
             ["_id"] = userId,
             ["email"] = $"{userId}@example.test",
+
+            // `users` carries a UNIQUE index on identityUserId. Omitting it stores
+            // null, and the second seeded user in the database's lifetime then
+            // collides — which made this test pass once and fail on every rerun.
+            ["identityUserId"] = new BsonBinaryData(Guid.NewGuid(), GuidRepresentation.Standard),
             ["passwordHash"] = "x",
             ["timezone"] = "Africa/Cairo",
             ["locale"] = locale,
