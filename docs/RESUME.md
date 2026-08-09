@@ -48,9 +48,44 @@ The auth limiter is 20/15min and the strict one 5/hour, **keyed on raw socket IP
 ## Done
 
 - **Contract frozen** — 75 paths / 87 operations / 212 schemas, authored against a live server, zero collisions, all `$ref`s resolve.
-- **Kernel** (`36bec0d`, `56e6e1f`) — error envelope, CORS, binding, auth, DTO mappers, repository base, one quota primitive, `TaskQuery`, `BulkService`, rate limiters, and the `IEndpointModule` / `IUserDataEraser` / `IMongoIndexProvider` registries. Build clean, **165 tests**.
-- **Parity harness** (`c69d54d`) — 87/87 operations covered, self-test green, plus a negative control that plants five defects and confirms all five are caught.
-- **Slice A** (`30085fe` on `slice/a-account`) — health, subscription, invoices, integrations. 176 tests, all four rows PASS.
+- **Kernel** — error envelope, CORS, binding, auth, DTO mappers, repository base, one quota primitive, `TaskQuery`, `BulkService`, rate limiters, the `IEndpointModule` / `IUserDataEraser` / `IMongoIndexProvider` registries, the SQL provider seam, and the 405→404 method-mismatch fix.
+- **Parity harness** — 87/87 operations covered, self-test green, plus a negative control that plants five defects and confirms all five are caught.
+- **Slices A (account), B (auth), C (tasks core)** — all merged into `feat/node-parity`.
+
+### Current measured state
+
+`dotnet build` clean, **`dotnet test` 288 passing**.
+
+Full harness run, integration branch vs the live Node reference:
+
+```
+87 contract operations  |  PASS 44   FAIL 32   ERROR 8   SKIPPED 3
+```
+
+**Every FAIL and ERROR traces to an unimplemented slice, not a regression.** Verified: the two framework rows that look like kernel failures (`malformed-json-is-500-not-400`, `oversized-json-body-is-500-not-413`) fail only because `PATCH /me` does not exist yet — on a route that *does* exist, both servers return 500 as required. The 8 ERRORs are cascades where an upload step could not run, so `{{scanId}}` / `{{noteId}}` were never captured.
+
+Reproduce with:
+
+```bash
+ASPNETCORE_URLS="http://[::]:5100" ASPNETCORE_ENVIRONMENT=Development \
+Database__Provider=Sqlite ConnectionStrings__DefaultConnection="Data Source=/tmp/parity-int.db" \
+MongoDbSettings__ConnectionString="mongodb://127.0.0.1:27018" \
+MongoDbSettings__DatabaseName="kitto_parity_dotnet_int" \
+Jwt__Key="<any 64+ chars>" Kernel__Cors__Origins="http://localhost:3000,capacitor://localhost" \
+dotnet run --project Life-Admin-Autopilot-Backend --no-launch-profile
+
+node tools/parity/run.mjs --reference http://localhost:4200 --candidate http://localhost:5100 --no-colour
+```
+
+Bind `[::]` and dial `localhost` on both sides — `127.0.0.1` is IPv4-only and breaks any row echoing `req.ip`.
+
+### Three kernel defects found by slice B, all independently reproduced, all still open
+
+1. **Bodies are parsed regardless of Content-Type** (#21). `express.json()` parses only `application/json`; the kernel parses anything. `POST /auth/signup` with a valid JSON payload: `text/plain`, no content-type, `application/vnd.api+json` and form-encoded all give node=400 / dotnet=201. Affects every slice with a body, and it is a security regression — `text/plain` is a CORS *simple* request, so the content-type gate is what stops cross-origin state-changing calls without a preflight.
+2. **No security headers at all** (#22). Node sends CSP, HSTS, `nosniff` and `X-Frame-Options` on both success and error paths; the candidate sends none on either, and leaks `Server: Kestrel`. Fix `KernelErrorMiddleware`'s `Response.Clear()` at the same time — it wipes headers set before a throw, including the 429's `Retry-After`.
+3. **`KERNEL.md` §12.1 prescribes an IPv4-only bind** (#23), which fails `sessions[].ip` parity.
+
+None of these fails a harness row today; all three took hand-rolled differentials to find.
 
 ## Interrupted mid-work — WIP is committed, NOT verified
 
