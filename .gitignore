@@ -21,3 +21,7 @@ Thumbs.db
 ## Firebase service account keys - these are private keys, never commit one
 *firebase-adminsdk*.json
 *service-account*.json
+# Local SQLite database created when running with Database:Provider=Sqlite
+*.db
+*.db-shm
+*.db-wal
