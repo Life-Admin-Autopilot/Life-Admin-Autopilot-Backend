@@ -119,9 +119,69 @@ which Node never produces (`SuppressModelStateInvalidFilter` is already on).
 ### 2.2 Unknown route / wrong method returns the default 404, not the envelope
 
 **Do not add a catch-all route or a fallback endpoint.** Node's Express falls
-through to its own HTML 404. The one accepted delta: Express's body is an HTML page
-(`Cannot GET /nope`), ASP.NET's 404 has an empty body. Status and "not JSON" are
-preserved, which is what clients branch on.
+through to its own HTML 404, and routing an unknown path into the JSON envelope is
+the failure this rule exists to prevent.
+
+Express's 404 covers BOTH cases: an unknown path, and a **known path with an
+unmatched method** (Express only matches path+method together, so `PUT /health`
+falls through to the same 404).
+
+> **⚠️ KNOWN KERNEL BUG — open, affects every route, no slice can fix it.**
+>
+> ASP.NET routing matches the path, finds no method match, and short-circuits
+> **405** before any kernel middleware runs:
+>
+> ```
+> PUT :4200/health  → 404  (Express, text/html)
+> PUT :5110/health  → 405  (ASP.NET, empty body)
+> ```
+>
+> The harness row `framework/unknown-method-on-known-path-is-html-404` FAILs on
+> `status`. Reported by slice a-account against `GET /health`, which the kernel
+> owns.
+>
+> **Do not work around this in a slice**, and do not add a method-specific route to
+> silence it. The fix is a kernel-level 405→404 rewrite; see §2.2.1 for the exact
+> change and its current status.
+
+Once that lands, the remaining delta is **body-only**: Express serves an HTML page
+(`Cannot GET /nope`) with `Content-Type: text/html; charset=utf-8`; ASP.NET's 404
+has an empty body and no content type. Status and "not JSON" are what clients
+branch on, and both are preserved.
+
+**The harness currently FAILs `framework/unknown-route-is-html-404` on exactly that
+body/content-type delta.** That is a genuine difference, so the harness is not
+wrong to see it — but a permanently-red row that everyone is told to ignore trains
+people to ignore red rows. It needs a decision, not tolerance; see §2.2.1.
+
+### 2.2.1 Status of the two 404 deltas
+
+Neither is fixed yet. Both need one kernel change plus a `dotnet test` run, and the
+kernel author's environment was destroyed mid-session before it could be verified —
+so this is written up rather than half-landed.
+
+**Intended fix — one middleware, registered in `UseKernel()` immediately after
+`KernelErrorMiddleware` and OUTSIDE `NodeCorsMiddleware`**, so it observes the final
+status on the way out without disturbing the CORS short-circuit:
+
+1. `405` + method is **not** OPTIONS → rewrite to **404**, and drop the `Allow`
+   header (Express's 404 carries none).
+2. `405` + method **is** OPTIONS → rewrite to **200** + `Allow`, mirroring Express's
+   auto-OPTIONS responder. *This logic already exists as
+   `NodeCorsMiddleware.MimicExpressAutoOptions`, but it is currently only reachable
+   on the non-allowlisted-origin path. Move it into the new middleware so it applies
+   to every request.*
+3. `404` **and** `HttpContext.GetEndpoint() is null` **and** nothing written →
+   emit Express's exact HTML 404 body with `Content-Type: text/html; charset=utf-8`.
+   The `GetEndpoint() is null` guard is what keeps this from hijacking a slice's own
+   legitimate 404 — a route-level 404 always has a matched endpoint and must stay a
+   JSON envelope (`task_not_found` etc.).
+
+Step 3 is not a catch-all route; it is response shaping for a response the framework
+already produced, and it removes the red harness row honestly rather than by masking
+it. Capture the exact bytes from `curl -sD- -X GET :4200/nope` before implementing —
+they must match to the byte, including the `Content-Security-Policy: default-src
+'none'` and `X-Content-Type-Options: nosniff` headers Express sends with it.
 
 ### 2.3 Three `details` shapes, explicitly selected
 
@@ -300,7 +360,8 @@ return Results.Ok(new { tasks = docs.Select(d => d.ToDto()) });
 | `ClarificationDocument` | `sourceKey`, `_id`→`id`, `__v` | — |
 | `NotificationDocument`, `TaskBulkOpDocument` | `_id`→`id`, `__v` | — |
 
-Rules for a mapper you write:
+Rules for **any new mapper** you write — whether or not your slice owns a new
+collection. A standalone transform over an existing kernel document counts:
 
 - Read the `toJSON` block of the matching `server/src/models/*.ts` first. **The
   deletions are the whole point.**
@@ -310,6 +371,17 @@ Rules for a mapper you write:
 - Timestamps use `JsIsoDateTimeConverter` (registered globally): always three
   fractional digits and a `Z`, matching `Date#toISOString()`. STJ's default trims
   `.600` to `.6`, which is a parity break.
+
+**If you need a sub-object transform that `KernelMappers` currently builds inline**
+— e.g. `SubscriptionStateDocument` → `SubscriptionStateDto`, which exists only
+inside `ToDto(UserProfileDocument)` — the transform belongs in `KernelMappers` as a
+public extension, not copied into your slice. a-account hit exactly this, correctly
+declined to edit a `Kernel/` file, and wrote its own copy, so that transform now
+exists twice. *Pending kernel change: expose the standalone
+`ToDto(this SubscriptionStateDocument)` and have the user mapper call it.* Until
+that lands, if you find yourself duplicating a kernel transform, **report it rather
+than editing `Kernel/`** — a second copy that drifts is exactly what the mapper
+layer exists to prevent.
 
 ### Two mappers you must write, spelled out
 
@@ -661,12 +733,78 @@ public sealed class TaskEndpointTests : IClassFixture<KernelWebApplicationFactor
 }
 ```
 
-The fixture points Mongo at `mongodb://127.0.0.1:27018` / `kitto_parity_dotnet`,
-disables rate limiters and workers, and pins a CORS allowlist and JWT secret.
-`CreateApiClient()` does not follow redirects — a 3xx is a parity failure.
+The fixture points Mongo at `mongodb://127.0.0.1:27018`, disables rate limiters and
+workers, pins a CORS allowlist and JWT secret, and puts Identity on a private SQLite
+file. `CreateApiClient()` does not follow redirects — a 3xx is a parity failure.
 
 For an authenticated call, mint a Node-shaped token with
 `KernelPipelineTests.NodeShapedToken(sub, email)`.
+
+**Give your slice its own Mongo database.** Seven slices run tests concurrently
+against one `mongod`, and several seed and delete rows in `users`. Sharing one
+database is a real cross-slice flake source. Derive a factory — three lines, and the
+pattern a-account proved out:
+
+```csharp
+public sealed class AccountWebApplicationFactory : KernelWebApplicationFactory
+{
+    public AccountWebApplicationFactory() =>
+        With("MongoDbSettings:DatabaseName", "kitto_parity_dotnet_a_tests");
+}
+```
+
+*Pending kernel change:* the base fixture should default to a per-factory-type
+database (`kitto_parity_dotnet_{GetType().Name.ToLowerInvariant()}`) so derived
+factories are isolated with no `With()` call at all. Not yet landed — until it is,
+set it explicitly as above.
+
+### 12.1 Running your candidate server
+
+**`dotnet run` alone is wrong.** `Properties/launchSettings.json` silently overrides
+your environment: it pins `https://localhost:7276;http://localhost:5115` and forces
+`ASPNETCORE_ENVIRONMENT=Development`, so your server comes up on the wrong port in
+the wrong environment while you wait on the port you asked for. Always pass
+`--no-launch-profile`:
+
+```bash
+cd Life-Admin-Autopilot-Backend
+ASPNETCORE_ENVIRONMENT=Production \
+ASPNETCORE_URLS=http://127.0.0.1:<your port> \
+MongoDbSettings__ConnectionString=mongodb://127.0.0.1:27018 \
+MongoDbSettings__DatabaseName=kitto_parity_dotnet_<slice> \
+Kernel__Jwt__AccessSecret=<same secret the harness mints tokens with> \
+Kernel__RateLimit__Enabled=false \
+Kernel__Workers__Enabled=false \
+dotnet run --no-build --no-launch-profile
+```
+
+`RateLimit`/`Workers` disabled mirrors the `:4200` reference. Turn limiters back ON
+(and compare against `:4100`) when the thing under test is a 429.
+
+Ignore the alarming-looking `Server=(localdb)\mssqllocaldb;…` default in
+`appsettings.json` — LocalDB is Windows-only and unreachable here, but nothing opens
+a SQL connection at boot. If your slice touches Identity, set
+`Database__Provider=Sqlite` (§13.1).
+
+### 12.2 The harness cannot green an authed slice until `/auth/signup` exists
+
+`runner.mjs` `provisionUser()` signs up **on the candidate**. Until slice b-auth
+ships `POST /auth/signup`, every scenario marked `user: fresh` reports "candidate
+side unavailable" and its operations come back **UNREACHABLE** — including
+operations that are fully implemented and byte-correct.
+
+**This is not your bug and you cannot fix it from a slice.** Do not implement
+`/auth/signup` yourself to go green; that collides head-on with b-auth.
+
+For a real signal in the meantime, restrict to scenarios needing no provisioning:
+
+```bash
+node tools/parity/run.mjs --only auth-sweep --only framework
+```
+
+and hand-roll a differential for your own 200/404 branches. a-account's four rows
+pass this way. Expect "your rows must be PASS" on a full run to be unachievable for
+slices 2–7 until signup lands.
 
 **Never point a test at the Atlas cluster in `server/.env`.** That is production
 data.
@@ -735,16 +873,44 @@ every simple password.
 
 ## 14. Checklist before you call a slice done
 
+Several items are conditional — a read-only slice legitimately satisfies about half
+of these vacuously. "Not applicable" is a valid answer; a-account owned no
+collection, wrote no body binder and registered no eraser, and that was correct.
+
+**Always:**
+
 - [ ] No edits to `Program.cs`, `KernelExtensions.cs`, or anything under a `Kernel/` folder.
 - [ ] Every response goes through an explicit mapper — no entity is serialized directly.
-- [ ] Every Task read composes `NotDeleted()`; every clarification list composes `VisibleOpen()`.
-- [ ] Multi-task mutations go through `BulkService`.
 - [ ] Error codes and messages copied verbatim from the Node route.
+- [ ] No kernel transform duplicated into your slice (§6) — report instead.
+
+**If your slice reads Tasks or Clarifications:**
+
+- [ ] Every Task read composes `NotDeleted()`; every clarification list composes `VisibleOpen()`.
+
+**If your slice mutates more than one Task at a time:**
+
+- [ ] Multi-task mutations go through `BulkService`.
+
+**If your slice accepts a request body or query string:**
+
 - [ ] The right one of the three `details` mappers.
 - [ ] Body strictness matches the Node schema (lenient unless it says `.strict()`).
 - [ ] Query binding rejects unknown and empty parameters.
+
+**If your slice owns a collection:**
+
 - [ ] An `IUserDataEraser` registered for every collection the slice owns.
 - [ ] An `IMongoIndexProvider` registered for every uniqueness invariant.
+
+**If your slice has a rate-limited route (check the Node route for a limiter):**
+
 - [ ] Rate limiters applied by constant, after `[Authorize]`.
+- [ ] 429 body and `Retry-After` verified against **`:4100`** — `:4200` has limiters off.
+
+**Always, to finish:**
+
 - [ ] `dotnet build` clean, `dotnet test` green.
-- [ ] Spot-checked against `http://localhost:4100` with curl.
+- [ ] Spot-checked against **`:4200`** with curl (§0), using
+      `--no-launch-profile` to run your candidate (§12.1).
+- [ ] Harness run scoped per §12.2 if your scenarios need `user: fresh`.
