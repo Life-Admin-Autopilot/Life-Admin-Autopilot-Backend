@@ -150,38 +150,82 @@ has an empty body and no content type. Status and "not JSON" are what clients
 branch on, and both are preserved.
 
 **The harness currently FAILs `framework/unknown-route-is-html-404` on exactly that
-body/content-type delta.** That is a genuine difference, so the harness is not
-wrong to see it — but a permanently-red row that everyone is told to ignore trains
-people to ignore red rows. It needs a decision, not tolerance; see §2.2.1.
+body/content-type delta.** That is a genuine difference, so the harness is not wrong
+to see it — but a permanently-red row that everyone is told to ignore trains people
+to ignore red rows. It needs a decision, not tolerance. §2.2.1 recommends masking it
+with a documented reason rather than reproducing Express's HTML, because that HTML
+reflects the request path and would introduce XSS.
 
 ### 2.2.1 Status of the two 404 deltas
 
-Neither is fixed yet. Both need one kernel change plus a `dotnet test` run, and the
-kernel author's environment was destroyed mid-session before it could be verified —
-so this is written up rather than half-landed.
+Neither is fixed. Both need a kernel change plus a `dotnet test` run, and the kernel
+author's environment was destroyed mid-session before either could be verified — so
+this is a written specification, not half-landed code. Reviewed by slice a-account,
+who found a composition defect and a security issue in the first draft; both are
+folded in below.
 
-**Intended fix — one middleware, registered in `UseKernel()` immediately after
-`KernelErrorMiddleware` and OUTSIDE `NodeCorsMiddleware`**, so it observes the final
-status on the way out without disturbing the CORS short-circuit:
+**Fix A — the 405 status divergence. Required, and unambiguous.**
 
-1. `405` + method is **not** OPTIONS → rewrite to **404**, and drop the `Allow`
-   header (Express's 404 carries none).
-2. `405` + method **is** OPTIONS → rewrite to **200** + `Allow`, mirroring Express's
-   auto-OPTIONS responder. *This logic already exists as
-   `NodeCorsMiddleware.MimicExpressAutoOptions`, but it is currently only reachable
-   on the non-allowlisted-origin path. Move it into the new middleware so it applies
-   to every request.*
-3. `404` **and** `HttpContext.GetEndpoint() is null` **and** nothing written →
-   emit Express's exact HTML 404 body with `Content-Type: text/html; charset=utf-8`.
-   The `GetEndpoint() is null` guard is what keeps this from hijacking a slice's own
-   legitimate 404 — a route-level 404 always has a matched endpoint and must stay a
-   JSON envelope (`task_not_found` etc.).
+One middleware, registered in `UseKernel()` immediately after
+`KernelErrorMiddleware` and **outside** `NodeCorsMiddleware`, so it observes the
+final status without disturbing the CORS 204 short-circuit. After `await _next`:
 
-Step 3 is not a catch-all route; it is response shaping for a response the framework
-already produced, and it removes the red harness row honestly rather than by masking
-it. Capture the exact bytes from `curl -sD- -X GET :4200/nope` before implementing —
-they must match to the byte, including the `Content-Security-Policy: default-src
-'none'` and `X-Content-Type-Options: nosniff` headers Express sends with it.
+1. `405` + method is **not** OPTIONS → rewrite to **404** and drop the `Allow`
+   header. ⚠️ *The Allow-drop is inferred from Express's finalhandler, NOT verified —
+   confirm with `curl -sD- -X PUT :4200/health` before relying on it.*
+2. `405` + method **is** OPTIONS → **200** + `Allow`, mirroring Express's
+   auto-OPTIONS responder. **Move `NodeCorsMiddleware.MimicExpressAutoOptions`
+   wholesale — do not reimplement it from this summary.** It also rewrites `Allow`
+   to insert `HEAD` beside `GET` (Express lists both; ASP.NET emits only `GET`), and
+   a from-scratch reimplementation silently drops that and regresses preflight rows.
+
+Leave the existing CORS placement alone otherwise: for OPTIONS with an absent or
+allowlisted origin the middleware short-circuits at 204 and routing never runs, so
+no 405 is possible. The gap is only non-OPTIONS methods, which neither branch
+inspects.
+
+**Fix B — the HTML body. Recommended AGAINST; mask the harness row instead.**
+
+My earlier position was to reproduce Express's HTML. I've reversed it, because
+a-account surfaced a cost I had not weighed.
+
+The body embeds the request path — `Cannot PUT /health` — which is
+attacker-controlled. Express's finalhandler runs it through `encodeUrl` **and**
+`escapeHtml`. A port that interpolates the raw path into `<pre>` creates **reflected
+XSS on every unknown route**, served same-origin by an API that also serves
+authenticated JSON.
+
+Weigh that against the benefit: no client parses a 404 body, and the frontend
+branches on status. Fix A alone removes the only difference a client can observe.
+Adding an attacker-controlled HTML reflection path to a JSON API to green a
+cosmetic row is a bad trade.
+
+**So: mask `header.content-type` and `$` (body) for the two `framework/*` 404 rows
+in the harness, with an inline comment citing this section.** A declared, reviewed
+exception is not the same as a standing red row nobody explains — it answers
+a-account's "red rows train people to ignore red rows" objection without buying an
+XSS surface.
+
+**If the coordinator overrules this and wants byte-exact HTML anyway**, it is not
+mergeable without all four of:
+
+- `HtmlEncoder.Default.Encode` on the path — never raw interpolation;
+- a test asserting a request to `/<script>alert(1)</script>` comes back escaped;
+- Express's `Content-Security-Policy: default-src 'none'` and
+  `X-Content-Type-Options: nosniff` headers, which are defence-in-depth here rather
+  than cosmetic parity;
+- a byte-exact capture from `curl -sD- -X GET :4200/nope`, **still outstanding** —
+  a-account's shell died before taking it.
+
+A further defect if it is built: **`GetEndpoint() is null` is the wrong guard.** On a
+method mismatch ASP.NET *does* match the path and selects its internal
+method-not-allowed endpoint, so `GetEndpoint()` is non-null — meaning after Fix A
+turns the 405 into a 404, an endpoint-null guard declines and you get a bodyless
+404, fixing status while leaving content-type and body red. Do **not** widen it to
+"any 404 with nothing written" either; that hijacks a slice returning a bare
+`Results.NotFound()`. Correct approach: perform both translations in the **same**
+middleware and set a local flag when Fix A rewrites a 405, then write HTML only when
+`GetEndpoint() is null || thatFlag`. Ordering is then implicit and correct.
 
 ### 2.3 Three `details` shapes, explicitly selected
 

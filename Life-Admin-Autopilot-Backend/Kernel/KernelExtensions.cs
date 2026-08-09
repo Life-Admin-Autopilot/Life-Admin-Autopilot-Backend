@@ -92,7 +92,13 @@ public static class KernelExtensions
         //    envelope. It is FIRST because it must also catch CORS/auth failures.
         app.UseMiddleware<KernelErrorMiddleware>();
 
-        // 2. CORS before routing — a rejected preflight must never reach an endpoint,
+        // 2. Method-mismatch translation, OUTSIDE CORS so it observes the status after
+        //    CORS's post-processing. Express has no 405 — a path that matches a route
+        //    under a different method falls through to a 404. See the middleware's own
+        //    docs for why it must sit here rather than inside NodeCorsMiddleware.
+        app.UseMiddleware<MethodMismatchMiddleware>();
+
+        // 3. CORS before routing — a rejected preflight must never reach an endpoint,
         //    and an accepted one must be answered even for a path that does not exist.
         app.UseMiddleware<NodeCorsMiddleware>();
 

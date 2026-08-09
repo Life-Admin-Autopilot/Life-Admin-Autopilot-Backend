@@ -303,9 +303,27 @@ before the limiter counts them.
 The header prints the estimate and warns when it exceeds the window. Options:
 
 * `--max-wait 950` — the runner rides out the window and continues (slow, but
-  it is a gate, not a unit test).
-* Shard it: `--only framework --only auth-lifecycle --only profile`, then the
-  rest after the window resets.
+  it is a gate, not a unit test). Give the invocation a 45-minute timeout; a
+  shorter one kills the run mid-wait.
+* **Shard it** — two invocations that each fit inside one window, which is the
+  fastest way to get a full green self-test:
+
+  ```bash
+  # shard 1 — 18 slots
+  node tools/parity/run.mjs --self-test --no-colour \
+    --only auth-sweep --only framework --only auth-lifecycle \
+    --only profile --only tasks-core --only tasks-bulk \
+    --out tools/parity/out/self-test-a.json
+
+  # wait for the 15-minute window, then shard 2 — 10 slots
+  node tools/parity/run.mjs --self-test --no-colour --no-auth-sweep \
+    --only ai-nokey --only clarifications-digest --only document-scans \
+    --only voice-notes --only integrations-unconfigured \
+    --out tools/parity/out/self-test-b.json
+  ```
+
+  Each shard reports the operations the other shard owns as `SKIPPED`, never
+  as `PASS`, so neither report can overstate what it verified.
 * Live with it: an unexpected 429 is reported as `RATE-LIMITED`, never silently
   as a pass or a fail.
 

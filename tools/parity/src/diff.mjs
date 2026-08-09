@@ -83,9 +83,24 @@ function errorEnvelope(raw) {
  * @param {object} candidate normalized observation from the port
  * @returns {{diffs: Array, notes: Array}}
  */
-export function diffObservations(reference, candidate) {
+/**
+ * `options.statusOnly` compares the status and any explicitly-requested headers,
+ * and nothing else.
+ *
+ * This exists for ONE declared exception and should stay that way: Express's
+ * fall-through 404 body. We deliberately do not reproduce it — it interpolates the
+ * attacker-controlled request path, so porting it creates reflected XSS on every
+ * unknown route of an API that also serves authenticated JSON. Nothing parses a 404
+ * body, so the status is the only difference a client can observe. See
+ * `docs/KERNEL.md` §2.2.1 and `docs/RESUME.md` for the arbitration.
+ *
+ * Reach for this only when a diff is unfixable AND unobservable by a client.
+ * Anything else is a real failure and belongs red.
+ */
+export function diffObservations(reference, candidate, options = {}) {
   const diffs = [];
   const notes = [];
+  const statusOnly = options.statusOnly === true;
 
   if (reference.status !== candidate.status) {
     diffs.push({
@@ -94,6 +109,20 @@ export function diffObservations(reference, candidate) {
       reference: String(reference.status),
       candidate: String(candidate.status),
     });
+  }
+
+  if (statusOnly) {
+    notes.push(
+      'statusOnly: body and content-type deliberately not compared (declared exception — see docs/KERNEL.md §2.2.1)',
+    );
+    for (const name of Object.keys(reference.extraHeaders ?? {})) {
+      const a = reference.extraHeaders[name] ?? null;
+      const b = (candidate.extraHeaders ?? {})[name] ?? null;
+      if (a !== b) {
+        diffs.push({ path: `header.${name}`, kind: 'header', reference: preview(a), candidate: preview(b) });
+      }
+    }
+    return { diffs: diffs.slice(0, MAX_DIFFS), truncated: diffs.length >= MAX_DIFFS, notes };
   }
 
   const refCt = reference.contentType ?? null;
