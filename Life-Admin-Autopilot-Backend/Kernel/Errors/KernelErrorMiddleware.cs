@@ -129,13 +129,36 @@ public sealed class KernelErrorMiddleware
     public static ErrorEnvelope Envelope(string code, string message, object? details = null) =>
         new() { Error = new ErrorEnvelopeBody { Code = code, Message = message, Details = details } };
 
+    /// <summary>
+    /// Renders the envelope the way Express's error handler does: it replaces the
+    /// <b>body</b>, not the headers.
+    ///
+    /// <para>
+    /// <b>Deliberately NOT <c>Response.Clear()</c>.</b> Clear wipes every header set
+    /// before the throw, which is wrong on three counts, each verified against the
+    /// reference: it strips helmet's twelve security headers off every error response;
+    /// it strips the 429's <c>Retry-After</c> and the <c>RateLimit-Policy/Limit/</c>
+    /// <c>Remaining/Reset</c> family, which the rate limiter sets immediately before
+    /// throwing its <c>AppException</c>; and it drops the CORS <c>Vary</c> /
+    /// <c>Access-Control-Allow-Credentials</c> pair, so a browser cannot even read the
+    /// error it was sent. In Node all of those survive, because <c>res.json()</c> only
+    /// sets status, content-type and length.
+    /// </para>
+    ///
+    /// <para>
+    /// The three headers <c>res.json()</c> DOES overwrite are handled explicitly below.
+    /// <c>Content-Length</c> is nulled rather than computed so Kestrel recalculates it
+    /// for the envelope — leaving a stale length from a handler that set one before
+    /// throwing would truncate or hang the response.
+    /// </para>
+    /// </summary>
     public static async Task WriteAsync(HttpContext context, int status, ErrorEnvelope envelope)
     {
-        context.Response.Clear();
         context.Response.StatusCode = status;
 
         // Express's res.json() charset, byte for byte.
         context.Response.ContentType = "application/json; charset=utf-8";
+        context.Response.ContentLength = null;
 
         await JsonSerializer.SerializeAsync(context.Response.Body, envelope, KernelJson.Lenient);
     }

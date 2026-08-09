@@ -102,7 +102,7 @@ Mirrors `middleware/errorHandler.ts`. An earlier branch shadows a later one.
 
 ---
 
-## 2. The five cross-cutting edge cases
+## 2. The seven cross-cutting edge cases
 
 These are all verified live. A "correct" implementation breaks parity.
 
@@ -269,6 +269,70 @@ no shared store.
 
 ---
 
+### 2.6 Only `application/json` bodies are parsed at all
+
+`app.ts` calls `express.json({ limit: '256kb' })` with no `type` option, so
+body-parser matches the single pattern `application/json`. Any other content type is
+skipped entirely — `req.body` stays `{}` and the route's own validators report the
+fields as missing.
+
+Measured on `POST /auth/signup` with a payload that is valid as JSON:
+
+| `Content-Type` | Parsed? | Status |
+| --- | --- | --- |
+| `application/json` | yes | 201 |
+| `application/json; charset=utf-8` | **yes** — parameters never affect the match | 201 |
+| `APPLICATION/JSON` | yes — media types are case-insensitive | 201 |
+| *(absent)* | no | 400 |
+| `text/plain` | no | 400 |
+| `application/x-www-form-urlencoded` | no | 400 |
+| `application/vnd.api+json`, `application/json-patch+json` | **no** — a `+json` suffix is not `application/json` | 400 |
+
+Handled for you by `KernelBody` (§4); `KernelBody.IsJsonContentType` is the predicate
+if you need it directly.
+
+**The gate runs BEFORE the body is read**, which is load-bearing rather than an
+implementation detail: body-parser never touches the stream of a request it skips, so
+neither the 256kb ceiling nor a JSON syntax error can fire on one. The same malformed
+or 300kb body is a **500** as `application/json` and a plain **400** as `text/plain`.
+A gate applied after reading gets both of those backwards.
+
+**This is also a security control.** `text/plain` is a CORS *simple* request — a
+cross-origin page can send one with no preflight. The content-type gate is what stops
+such a request carrying a JSON body into a state-changing endpoint.
+
+**Trap when you write tests.** `new StringContent(json)` defaults to
+`text/plain; charset=utf-8`, so it now yields an EMPTY body and your route reports its
+fields as missing. Always pass the media type:
+`new StringContent(json, Encoding.UTF8, "application/json")`. Every existing call site
+in the repo already does.
+
+**Raw upload routes are NOT affected.** `me.voiceNotes`, `me.documentScans` and
+`/ai/voice/transcribe` use `express.raw({ type: [...] })` with their own per-route MIME
+allowlists, which is a different matcher from `express.json()`'s. `RawBodyReader` is
+unchanged and each of those slices owns its own allowlist.
+
+### 2.7 Twelve security headers on EVERY response, error paths included
+
+`app.use(helmet())` (helmet 8.1.0, no options) puts its full default set on every
+response, and Express's error handler replaces the **body**, not the headers — so a
+200, a 400, a 429 and a 500 all carry the same twelve. `app.disable('x-powered-by')`
+means no server-identity header at all; the kernel matches by setting
+`KestrelServerOptions.AddServerHeader = false`, so no `Server: Kestrel` either.
+
+Installed by `HelmetHeadersMiddleware` in `UseKernel()`, ahead of CORS. `Defaults` on
+that class is the authoritative list — assert against it rather than re-typing
+literals. Two values a port tends to "improve" and must not:
+`X-XSS-Protection: 0` (helmet disables the legacy auditor deliberately) and a CSP
+whose directives are joined with `;` and **no** following space.
+
+**Consequence for anything that sets a header then throws:** the error middleware
+must not call `Response.Clear()`. It no longer does. That is also what keeps the
+429's `Retry-After` and the `RateLimit-Policy/Limit/Remaining/Reset` family — set by
+the limiter immediately before it throws — and the CORS `Vary` /
+`Access-Control-Allow-Credentials` pair on the response. If you add a middleware that
+rewrites error responses, preserve this property.
+
 ## 3. CORS
 
 Configured from `Kernel:Cors:Origins`, falling back to the `CORS_ORIGINS`
@@ -306,9 +370,12 @@ In the Node source that is: the `me.tasks` body schemas, and the `me.tasks` /
 `me.notifications`, `ai`, `clarifications`, `me.voiceNotes`, `me.documentScans`,
 `me.icsFeeds` are all lenient.
 
-Behaviour: an empty body deserializes as `{}` (express sets `req.body = {}`, and the
-route's own schema then decides); malformed JSON and >256kb are 500 (§2.1); a strict
-violation is `400 {code}` with `formErrors: ["Unrecognized key(s) in object: 'x'"]`.
+Behaviour: a body whose `Content-Type` is not `application/json` is not read at all
+and deserializes as `{}` (§2.6); an empty body likewise deserializes as `{}` (express
+sets `req.body = {}`, and the route's own schema then decides); malformed JSON and
+>256kb are 500 (§2.1) — but **only when the content type made it JSON in the first
+place**; a strict violation is `400 {code}` with
+`formErrors: ["Unrecognized key(s) in object: 'x'"]`.
 
 ### Query strings — `QueryReader`
 
@@ -813,7 +880,7 @@ the wrong environment while you wait on the port you asked for. Always pass
 ```bash
 cd Life-Admin-Autopilot-Backend
 ASPNETCORE_ENVIRONMENT=Production \
-ASPNETCORE_URLS=http://127.0.0.1:<your port> \
+ASPNETCORE_URLS='http://[::]:<your port>' \
 MongoDbSettings__ConnectionString=mongodb://127.0.0.1:27018 \
 MongoDbSettings__DatabaseName=kitto_parity_dotnet_<slice> \
 Kernel__Jwt__AccessSecret=<same secret the harness mints tokens with> \
@@ -824,6 +891,27 @@ dotnet run --no-build --no-launch-profile
 
 `RateLimit`/`Workers` disabled mirrors the `:4200` reference. Turn limiters back ON
 (and compare against `:4100`) when the thing under test is a 429.
+
+**Bind `[::]`, and dial `localhost` on BOTH sides.** This used to read
+`http://127.0.0.1:<port>`, which is wrong: that is an IPv4-**only** listener, while
+Node's `server.listen(port)` binds `::` in dual-stack mode. The two then disagree
+about the peer address for an environment reason that has nothing to do with your
+code, and any row echoing `req.ip` — today `sessions[].ip`, and anything else that
+records a client address later — fails on a port that is actually correct.
+
+Measured on both servers, once the candidate binds `[::]`:
+
+| Dialled as | Node `:4200` | .NET `[::]` | .NET `127.0.0.1` (the old, wrong bind) |
+| --- | --- | --- | --- |
+| `http://127.0.0.1:<port>` | `::ffff:127.0.0.1` | `::ffff:127.0.0.1` | `127.0.0.1` — **mismatch** |
+| `http://localhost:<port>` | `::1` | `::1` | connection refused over `::1` |
+
+A dual-stack listener reports an IPv4 peer in IPv4-mapped form, which is exactly
+what Node reports. Keep the dial host identical on both sides too — `localhost` and
+`127.0.0.1` produce *different* (both legitimate) peer addresses, so mixing them
+across the two servers reintroduces the same false failure from the other end. It
+also matters for rate limiting: the limiters key on the raw socket IP, so `::1` and
+`::ffff:127.0.0.1` are separate buckets.
 
 Ignore the alarming-looking `Server=(localdb)\mssqllocaldb;…` default in
 `appsettings.json` — LocalDB is Windows-only and unreachable here, but nothing opens
