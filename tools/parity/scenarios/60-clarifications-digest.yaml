@@ -1,0 +1,95 @@
+name: clarifications-digest
+description: >-
+  Clarifications, the daily digest, notifications and upcoming reminders.
+  NOTE ON DEPTH: a Clarification row can only be created by the AI chat tool
+  runner or the voice-note transcriber, and both are hard-gated on
+  isAiConfigured(). With no key the list is provably always empty, so resolve
+  / defer / drop are reachable only through their 404 branch. That is a real
+  coverage limit, not an oversight — see README.
+tags: [tasks, core]
+user: fresh
+
+steps:
+  - name: clarifications-empty
+    op: clarList
+    method: GET
+    path: /me/clarifications
+    expect: { status: 200 }
+
+  - name: clarifications-with-before-cursor
+    op: clarList
+    method: GET
+    path: /me/clarifications
+    query: { before: '2026-08-09T00:00:00.000Z' }
+    expect: { status: 200 }
+
+  - name: clarification-resolve-unknown
+    op: clarResolve
+    method: POST
+    path: /me/clarifications/6a78c437aa461ae1dc64ffff/resolve
+    body: { answer: { type: 'option', index: 0 } }
+    expect: { status: 404 }
+
+  - name: clarification-defer-unknown
+    op: clarDefer
+    method: POST
+    path: /me/clarifications/6a78c437aa461ae1dc64ffff/defer
+    expect: { status: 404 }
+
+  - name: clarification-drop-unknown
+    op: clarDrop
+    method: POST
+    path: /me/clarifications/6a78c437aa461ae1dc64ffff/drop
+    expect: { status: 404 }
+
+  - name: seed-task-for-digest
+    op: taskCreate
+    method: POST
+    path: /me/tasks
+    body: { title: 'Pay council tax', domain: 'finance', priority: 'high' }
+    expect: { status: 201 }
+
+  - name: digest
+    op: taskDigest
+    method: GET
+    path: /me/digest
+    query: { tz: 'Africa/Cairo' }
+    expect: { status: 200 }
+    # `digest.localDate` is a plain YYYY-MM-DD derived from the zone, so it is
+    # NOT masked and is compared literally. The only way it can differ between
+    # the two sides is a genuine timezone bug (or a run that straddles local
+    # midnight — see README).
+
+  - name: digest-unknown-query-param
+    op: taskDigest
+    method: GET
+    path: /me/digest
+    query: { tz: 'UTC', bogus: '1' }
+    expect: { status: 400 }
+
+  - name: notifications
+    op: taskNotificationsList
+    method: GET
+    path: /me/notifications
+    expect: { status: 200 }
+
+  - name: notifications-mark-all-read
+    op: taskNotificationsMarkRead
+    method: POST
+    path: /me/notifications/read
+    body: {}
+    expect: { status: 200 }
+
+  - name: notifications-mark-ids-read
+    op: taskNotificationsMarkRead
+    method: POST
+    path: /me/notifications/read
+    body: { ids: ['6a78c437aa461ae1dc64ffff', 'not-an-object-id'] }
+    expect: { status: 200 }
+    # Non-ObjectId entries are silently filtered, not rejected.
+
+  - name: reminders-upcoming
+    op: taskRemindersUpcoming
+    method: GET
+    path: /me/reminders/upcoming
+    expect: { status: 200 }

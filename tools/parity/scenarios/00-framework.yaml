@@ -1,0 +1,52 @@
+name: framework
+description: >-
+  Framework-level behaviour that sits underneath every route: the health probe,
+  Express' default HTML 404 (NOT the JSON envelope), and the two flavours of
+  401. Costs no auth rate-limit budget, so it is the cheapest smoke test.
+tags: [core, cheap]
+user: none
+
+steps:
+  - name: health
+    op: authHealth
+    method: GET
+    path: /health
+    expect: { status: 200 }
+
+  - name: unknown-route-is-html-404
+    frameworkProbe: true
+    method: GET
+    path: /nope
+    expect: { status: 404 }
+    # Express has no catch-all JSON 404 handler. The body is an HTML page and
+    # the content-type is text/html — a port that returns the JSON envelope
+    # here is wrong even though the status code matches.
+
+  - name: unknown-method-on-known-path-is-html-404
+    frameworkProbe: true
+    method: PUT
+    path: /health
+    expect: { status: 404 }
+
+  - name: unauthenticated-is-missing-token
+    op: taskList
+    method: GET
+    path: /me/tasks
+    auth: false
+    expect: { status: 401 }
+
+  - name: garbage-bearer-is-invalid-token
+    op: authMe
+    method: GET
+    path: /auth/me
+    auth: 'Bearer not-a-real-token'
+    expect: { status: 401 }
+
+  - name: lowercase-bearer-is-missing-token
+    op: authMe
+    method: GET
+    path: /auth/me
+    auth: 'bearer not-a-real-token'
+    expect: { status: 401 }
+    # Only the exact literal "Bearer " prefix counts; anything else never
+    # reaches token verification and reports missing_token.

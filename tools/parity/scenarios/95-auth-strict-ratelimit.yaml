@@ -1,0 +1,72 @@
+name: auth-strict-ratelimit
+description: >-
+  The eight operations behind strictAuthLimiter (5 requests per HOUR per IP).
+  Running this scenario costs 8 slots per side, so it CANNOT fit the budget on
+  a server with rate limiting on — it is skipped by default and the matrix
+  reports its operations as SKIPPED rather than pretending they are covered.
+
+  Run it with:  node tools/parity/run.mjs --include-strict --only auth-strict
+  against a reference whose strict limiter has a fresh hour, and expect to
+  wait an hour between attempts.
+tags: [auth, strict-ratelimit]
+user: fresh
+
+steps:
+  - name: forgot-password
+    op: authForgotPassword
+    method: POST
+    path: /auth/forgot-password
+    auth: false
+    body: { email: '{{email}}' }
+    expect: { status: 204 }
+    # Deliberately indistinguishable from the unknown-address case: both 204.
+
+  - name: reset-password-invalid-token
+    op: authResetPassword
+    method: POST
+    path: /auth/reset-password
+    auth: false
+    body: { token: 'not-a-real-reset-token', newPassword: '{{newPassword}}' }
+    expect: { status: 400 }
+
+  - name: magic-link
+    op: authMagicLinkRequest
+    method: POST
+    path: /auth/magic-link
+    auth: false
+    body: { email: '{{email}}' }
+    expect: { status: 204 }
+
+  - name: verify-email-send-code
+    op: authVerifyEmailSendCode
+    method: POST
+    path: /auth/verify-email/send-code
+
+  - name: verify-email-confirm-bad-code
+    op: authVerifyEmailConfirmCode
+    method: POST
+    path: /auth/verify-email/confirm-code
+    body: { code: '000000' }
+    expect: { status: 400 }
+
+  - name: change-email-request
+    op: authChangeEmailRequest
+    method: POST
+    path: /auth/change-email
+    body: { newEmail: '{{email2}}', password: '{{password}}' }
+
+  - name: change-email-confirm-bad-code
+    op: authChangeEmailConfirm
+    method: POST
+    path: /auth/change-email/confirm
+    body: { code: '000000' }
+    expect: { status: 400 }
+
+  - name: change-password
+    op: authChangePassword
+    method: POST
+    path: /auth/change-password
+    body: { currentPassword: '{{password}}', newPassword: '{{newPassword}}', refreshToken: '{{refreshToken}}' }
+    expect: { status: 204 }
+    # Last: it rotates the password and revokes every session but the one
+    # named by refreshToken.

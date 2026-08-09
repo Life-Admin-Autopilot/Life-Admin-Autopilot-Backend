@@ -1,0 +1,158 @@
+name: document-scans
+description: >-
+  Raw-byte document upload with x-document-scan-* headers, then the whole
+  lifecycle. SLOW BY NATURE: with no AI key the extractor throws a 503, the
+  retry classifier treats 503 as transient, and the worker burns four attempts
+  with backoff before settling on `failed` — about 20 seconds. The GET step
+  polls to that terminal state so the two sides cannot race each other.
+tags: [integrations, slow]
+user: fresh
+
+steps:
+  - name: set-timezone
+    op: authUpdateMe
+    method: PATCH
+    path: /me
+    body: { timezone: 'Africa/Cairo' }
+    expect: { status: 200 }
+
+  - name: quota-before
+    op: scanReadQuota
+    method: GET
+    path: /me/document-scans/quota
+    expect: { status: 200 }
+
+  - name: list-empty
+    op: scanListDocuments
+    method: GET
+    path: /me/document-scans
+    expect: { status: 200 }
+
+  - name: upload
+    op: scanUploadDocument
+    method: POST
+    path: /me/document-scans
+    rawFixture: pdf.min
+    contentType: application/pdf
+    headers:
+      x-document-scan-captured-at: '2026-08-09T10:00:00.000Z'
+      x-document-scan-source: 'pdf'
+      x-document-scan-timezone: 'Africa/Cairo'
+    expect: { status: 202 }
+    capture: { scanId: $.scannedDocument.id }
+    # clientCapturedAt / timezone are scenario literals and therefore compared
+    # exactly, not masked: the port must echo the header values it was given.
+
+  - name: upload-missing-captured-at
+    op: scanUploadDocument
+    method: POST
+    path: /me/document-scans
+    rawFixture: pdf.min
+    contentType: application/pdf
+    expect: { status: 400 }
+
+  - name: upload-bad-timezone
+    op: scanUploadDocument
+    method: POST
+    path: /me/document-scans
+    rawFixture: pdf.min
+    contentType: application/pdf
+    headers:
+      x-document-scan-captured-at: '2026-08-09T10:00:00.000Z'
+      x-document-scan-timezone: 'Not/AZone'
+    expect: { status: 400 }
+
+  - name: upload-empty-body
+    op: scanUploadDocument
+    method: POST
+    path: /me/document-scans
+    rawFixture: empty
+    contentType: application/pdf
+    headers:
+      x-document-scan-captured-at: '2026-08-09T10:00:00.000Z'
+    expect: { status: 400 }
+
+  - name: get-until-settled
+    op: scanGetDocument
+    method: GET
+    path: /me/document-scans/{{scanId}}
+    poll:
+      until: $.scannedDocument.status
+      in: [failed, ready, needs_review]
+      timeoutMs: 60000
+      intervalMs: 1500
+    expect: { status: 200 }
+
+  - name: get-unknown
+    op: scanGetDocument
+    method: GET
+    path: /me/document-scans/6a78c437aa461ae1dc64ffff
+    expect: { status: 404 }
+
+  - name: list-after-settle
+    op: scanListDocuments
+    method: GET
+    path: /me/document-scans
+    expect: { status: 200 }
+
+  - name: fetch-original-file
+    op: scanGetDocumentFile
+    method: GET
+    path: /me/document-scans/{{scanId}}/file
+    expect: { status: 200 }
+    # Binary response: normalised to { bytes, sha256 }, so the port has to
+    # hand back the exact bytes it was given, under the same content-type.
+
+  - name: fetch-file-unknown
+    op: scanGetDocumentFile
+    method: GET
+    path: /me/document-scans/6a78c437aa461ae1dc64ffff/file
+    expect: { status: 404 }
+
+  - name: review-before-ready
+    op: scanReviewDocument
+    method: POST
+    path: /me/document-scans/{{scanId}}/review
+    body: {}
+    expect: { status: 400 }
+
+  # Reprocess is deliberately idempotent: when status is anything other than
+  # 'failed' it is a no-op and returns 200, NOT 409 and NOT 202. 202 is only
+  # returned when a genuinely failed scan is re-queued. This scan is still
+  # 'pending' (the extraction worker cannot advance it without an AI key, and
+  # is disabled outright under NODE_ENV=test), so 200 is the correct assertion.
+  # COVERAGE GAP: the 202 re-queue path and 400 document_scan_retry_exhausted
+  # both need a scan in 'failed' state with a controlled manualRetries count.
+  # Reaching those requires seeding the scanneddocuments collection directly.
+  - name: reprocess-noop
+    op: scanReprocessDocument
+    method: POST
+    path: /me/document-scans/{{scanId}}/reprocess
+    expect: { status: 200 }
+
+  - name: quota-after
+    op: scanReadQuota
+    method: GET
+    path: /me/document-scans/quota
+    expect: { status: 200 }
+
+  - name: delete
+    op: scanDeleteDocument
+    method: DELETE
+    path: /me/document-scans/{{scanId}}
+    expect: { status: 204 }
+
+  - name: delete-unknown-well-formed-id
+    op: scanDeleteDocument
+    method: DELETE
+    path: /me/document-scans/6a78c437aa461ae1dc64ffff
+    expect: { status: 204 }
+    # Not a 404. deleteOne is idempotent here, so an id that simply matches
+    # nothing still reports success. The contract's 404 for this operation is
+    # the CastError branch below, not this one.
+
+  - name: delete-malformed-id
+    op: scanDeleteDocument
+    method: DELETE
+    path: /me/document-scans/not-an-object-id
+    expect: { status: 404 }

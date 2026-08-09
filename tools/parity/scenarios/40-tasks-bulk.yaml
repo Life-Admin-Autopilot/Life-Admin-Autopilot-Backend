@@ -1,0 +1,141 @@
+name: tasks-bulk
+description: Bulk preview / apply / undo, by explicit ids and by filter.
+tags: [tasks, core]
+user: fresh
+
+steps:
+  - name: seed-alpha
+    op: taskCreate
+    method: POST
+    path: /me/tasks
+    body: { title: 'Alpha', domain: 'home' }
+    expect: { status: 201 }
+    capture: { idA: $.task.id }
+
+  - name: seed-beta
+    op: taskCreate
+    method: POST
+    path: /me/tasks
+    body: { title: 'Beta', domain: 'home', priority: 'high' }
+    expect: { status: 201 }
+    capture: { idB: $.task.id }
+
+  - name: seed-gamma
+    op: taskCreate
+    method: POST
+    path: /me/tasks
+    body: { title: 'Gamma', domain: 'finance' }
+    expect: { status: 201 }
+    capture: { idC: $.task.id }
+
+  - name: preview-by-ids
+    op: taskBulkPreview
+    method: POST
+    path: /me/tasks/bulk/preview
+    body: { ids: ['{{idA}}', '{{idB}}'], action: 'complete' }
+    expect: { status: 200 }
+
+  - name: preview-neither-ids-nor-filter
+    op: taskBulkPreview
+    method: POST
+    path: /me/tasks/bulk/preview
+    body: { action: 'complete' }
+    expect: { status: 400 }
+
+  - name: preview-both-ids-and-filter
+    op: taskBulkPreview
+    method: POST
+    path: /me/tasks/bulk/preview
+    body: { ids: ['{{idA}}'], filter: { domain: 'home' }, action: 'complete' }
+    expect: { status: 400 }
+
+  - name: preview-by-filter
+    op: taskBulkPreview
+    method: POST
+    path: /me/tasks/bulk/preview
+    body: { filter: { domain: 'home' }, action: 'complete' }
+    expect: { status: 200 }
+
+  - name: apply-by-ids
+    op: taskBulkApply
+    method: POST
+    path: /me/tasks/bulk
+    body: { ids: ['{{idA}}', '{{idB}}'], action: 'complete', label: 'parity bulk complete' }
+    expect: { status: 200 }
+    capture: { undoToken: $.undoToken }
+
+  - name: list-after-bulk
+    op: taskList
+    method: GET
+    path: /me/tasks
+    query: { status: 'done', sort: 'title-asc' }
+    expect: { status: 200 }
+
+  - name: undo-bulk
+    op: taskUndo
+    method: POST
+    path: /me/tasks/undo/{{undoToken}}
+    expect: { status: 200 }
+
+  - name: list-after-undo
+    op: taskList
+    method: GET
+    path: /me/tasks
+    query: { status: 'open', sort: 'title-asc' }
+    expect: { status: 200 }
+
+  - name: apply-by-filter-matching-nothing
+    op: taskBulkApply
+    method: POST
+    path: /me/tasks/bulk
+    body: { filter: { domain: 'pets' }, action: 'complete' }
+    expect: { status: 200 }
+    # affected 0 => undoToken is null rather than absent. Omit-vs-null again.
+
+  - name: apply-add-tags
+    op: taskBulkApply
+    method: POST
+    path: /me/tasks/bulk
+    body: { ids: ['{{idA}}'], action: 'addTags', tags: ['Bulk Tagged'] }
+    expect: { status: 200 }
+
+  - name: apply-set-domain
+    op: taskBulkApply
+    method: POST
+    path: /me/tasks/bulk
+    body: { filter: { domain: 'home' }, action: 'setDomain', domain: 'car' }
+    expect: { status: 200 }
+
+  - name: apply-snooze
+    op: taskBulkApply
+    method: POST
+    path: /me/tasks/bulk
+    body: { ids: ['{{idB}}'], action: 'snooze', until: '2026-12-24T09:00:00.000Z' }
+    expect: { status: 200 }
+
+  - name: apply-unknown-action
+    op: taskBulkApply
+    method: POST
+    path: /me/tasks/bulk
+    body: { ids: ['{{idA}}'], action: 'incinerate' }
+    expect: { status: 400 }
+
+  - name: apply-snooze-without-until
+    op: taskBulkApply
+    method: POST
+    path: /me/tasks/bulk
+    body: { ids: ['{{idA}}'], action: 'snooze' }
+    expect: { status: 400 }
+
+  - name: apply-by-filter-delete
+    op: taskBulkApply
+    method: POST
+    path: /me/tasks/bulk
+    body: { filter: { domain: 'finance' }, action: 'delete' }
+    expect: { status: 200 }
+
+  - name: trash-after-bulk-delete
+    op: taskTrashList
+    method: GET
+    path: /me/tasks/trash
+    expect: { status: 200 }

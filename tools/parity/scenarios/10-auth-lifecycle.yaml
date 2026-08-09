@@ -1,0 +1,141 @@
+name: auth-lifecycle
+description: >-
+  Signup through signout, including refresh-token rotation and the session
+  register. Runs with `user: none` because it provisions its own account —
+  that is the point of the scenario.
+tags: [auth, core]
+user: none
+
+steps:
+  - name: signup
+    op: authSignup
+    method: POST
+    path: /auth/signup
+    auth: false
+    body: { email: '{{email}}', password: '{{password}}' }
+    expect: { status: 201 }
+    capture:
+      accessToken: $.tokens.accessToken
+      refreshToken: $.tokens.refreshToken
+      userId: $.user.id
+
+  - name: signup-duplicate-email
+    op: authSignup
+    method: POST
+    path: /auth/signup
+    auth: false
+    body: { email: '{{email}}', password: '{{password}}' }
+    expect: { status: 409 }
+
+  - name: signup-validation-error
+    op: authSignup
+    method: POST
+    path: /auth/signup
+    auth: false
+    body: { email: 'not-an-email', password: 'short' }
+    expect: { status: 400 }
+
+  - name: me
+    op: authMe
+    method: GET
+    path: /auth/me
+    expect: { status: 200 }
+
+  - name: sessions-list-one
+    op: authSessionsList
+    method: POST
+    path: /auth/sessions/list
+    body: { refreshToken: '{{refreshToken}}' }
+    expect: { status: 200 }
+    # `ip` and `userAgent` are echoed here. The harness pins User-Agent for
+    # every request so it is comparable; `ip` is left literal on purpose (see
+    # README, "Debatable decisions") — pass --mask-ip if the two servers sit
+    # behind different loopback families.
+
+  - name: refresh-rotates
+    op: authRefresh
+    method: POST
+    path: /auth/refresh
+    auth: false
+    body: { refreshToken: '{{refreshToken}}' }
+    expect: { status: 200 }
+    capture:
+      accessToken: $.tokens.accessToken
+      refreshToken: $.tokens.refreshToken
+
+  - name: refresh-with-rotated-out-token
+    op: authRefresh
+    method: POST
+    path: /auth/refresh
+    auth: false
+    body: { refreshToken: 'not-a-real-refresh-token' }
+    expect: { status: 401 }
+
+  - name: signin-second-session
+    op: authSignin
+    method: POST
+    path: /auth/signin
+    auth: false
+    body: { email: '{{email}}', password: '{{password}}' }
+    expect: { status: 200 }
+    capture:
+      accessToken: $.tokens.accessToken
+      signinRefresh: $.tokens.refreshToken
+
+  - name: sessions-list-two
+    op: authSessionsList
+    method: POST
+    path: /auth/sessions/list
+    body: { refreshToken: '{{signinRefresh}}' }
+    expect: { status: 200 }
+
+  - name: revoke-others
+    op: authSessionsRevokeOthers
+    method: POST
+    path: /auth/sessions/revoke-others
+    body: { refreshToken: '{{signinRefresh}}' }
+    expect: { status: 204 }
+
+  - name: sessions-list-after-revoke-others
+    op: authSessionsList
+    method: POST
+    path: /auth/sessions/list
+    body: { refreshToken: '{{signinRefresh}}' }
+    expect: { status: 200 }
+    capture:
+      sessionId: '$.sessions[0].id'
+
+  - name: revoke-current-session
+    op: authSessionRevoke
+    method: DELETE
+    path: /auth/sessions/{{sessionId}}
+    expect: { status: 204 }
+
+  - name: revoke-unknown-session
+    op: authSessionRevoke
+    method: DELETE
+    path: /auth/sessions/6a78c437aa461ae1dc64ffff
+    expect: { status: 404 }
+
+  - name: signout
+    op: authSignout
+    method: POST
+    path: /auth/signout
+    body: { refreshToken: '{{signinRefresh}}' }
+    expect: { status: 204 }
+
+  - name: verify-email-invalid-token
+    op: authVerifyEmailToken
+    method: POST
+    path: /auth/verify-email
+    auth: false
+    body: { token: 'not-a-real-verification-token' }
+    expect: { status: 400 }
+
+  - name: magic-consume-invalid-token
+    op: authMagicConsume
+    method: POST
+    path: /auth/magic-consume
+    auth: false
+    body: { token: 'not-a-real-magic-token' }
+    expect: { status: 400 }

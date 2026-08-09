@@ -1,0 +1,123 @@
+name: voice-notes
+description: >-
+  Raw-byte audio upload with x-voice-note-* headers. Same background-worker
+  shape as document scans, so the read polls to a terminal state. Also covers
+  the friendly 5MB cap, which is a 400 — distinct from the body-parser
+  ceiling above it, which is a 500.
+tags: [integrations, slow]
+user: fresh
+
+steps:
+  - name: upload
+    op: voiceUploadNote
+    method: POST
+    path: /me/voice-notes
+    rawFixture: audio.min
+    contentType: audio/m4a
+    headers:
+      x-voice-note-duration-ms: '1200'
+      x-voice-note-captured-at: '2026-08-09T10:00:00.000Z'
+      x-voice-note-source: 'app'
+      x-voice-note-timezone: 'Africa/Cairo'
+    expect: { status: 202 }
+    capture: { noteId: $.voiceNote.id }
+
+  - name: upload-missing-headers
+    op: voiceUploadNote
+    method: POST
+    path: /me/voice-notes
+    rawFixture: audio.min
+    contentType: audio/m4a
+    expect: { status: 400 }
+
+  - name: upload-empty-body
+    op: voiceUploadNote
+    method: POST
+    path: /me/voice-notes
+    rawFixture: empty
+    contentType: audio/m4a
+    headers:
+      x-voice-note-duration-ms: '1200'
+      x-voice-note-captured-at: '2026-08-09T10:00:00.000Z'
+    expect: { status: 400 }
+
+  - name: upload-over-friendly-cap
+    op: voiceUploadNote
+    method: POST
+    path: /me/voice-notes
+    rawFixture: { bytes: 6291456, repeat: 'a' }
+    contentType: audio/m4a
+    headers:
+      x-voice-note-duration-ms: '1200'
+      x-voice-note-captured-at: '2026-08-09T10:00:00.000Z'
+    expect: { status: 400 }
+    timeoutMs: 60000
+    # 6 MiB > VOICE_NOTE_MAX_BYTES (5 MiB) but under the body-parser ceiling
+    # (10 MiB), so this is the friendly 400 payload_too_large branch.
+
+  - name: upload-over-body-parser-ceiling
+    op: voiceUploadNote
+    method: POST
+    path: /me/voice-notes
+    rawFixture: { bytes: 11534336, repeat: 'a' }
+    contentType: audio/m4a
+    headers:
+      x-voice-note-duration-ms: '1200'
+      x-voice-note-captured-at: '2026-08-09T10:00:00.000Z'
+    expect: { status: 500 }
+    timeoutMs: 90000
+    # 11 MiB is past the raw parser's own ceiling (2x the friendly cap), so the
+    # request never reaches the handler. body-parser's PayloadTooLargeError is
+    # not recognised by the error handler and falls through to the generic
+    # 500 — NOT a 413. Same surprise as malformed JSON on PATCH /me.
+
+  - name: get-until-settled
+    op: voiceGetNote
+    method: GET
+    path: /me/voice-notes/{{noteId}}
+    poll:
+      until: $.voiceNote.status
+      in: [failed, ready, needs_review]
+      timeoutMs: 60000
+      intervalMs: 1500
+    expect: { status: 200 }
+
+  - name: get-unknown
+    op: voiceGetNote
+    method: GET
+    path: /me/voice-notes/6a78c437aa461ae1dc64ffff
+    expect: { status: 404 }
+
+  - name: list
+    op: voiceListNotes
+    method: GET
+    path: /me/voice-notes
+    expect: { status: 200 }
+
+  - name: extract-tasks-before-transcript
+    op: voiceExtractTasks
+    method: POST
+    path: /me/voice-notes/{{noteId}}/extract-tasks
+    body: {}
+    expect: { status: 400 }
+
+  - name: extract-tasks-bad-timezone
+    op: voiceExtractTasks
+    method: POST
+    path: /me/voice-notes/{{noteId}}/extract-tasks
+    body: { timezone: 'Not/AZone' }
+    expect: { status: 400 }
+
+  - name: review
+    op: voiceReviewNote
+    method: POST
+    path: /me/voice-notes/{{noteId}}/review
+    body: {}
+    expect: { status: 200 }
+
+  - name: review-unknown
+    op: voiceReviewNote
+    method: POST
+    path: /me/voice-notes/6a78c437aa461ae1dc64ffff/review
+    body: {}
+    expect: { status: 404 }

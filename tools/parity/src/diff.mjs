@@ -1,0 +1,158 @@
+// Structural differ. Reports the JSON path of each disagreement rather than
+// dumping two blobs and leaving the reader to spot the delta.
+
+const MAX_DIFFS = 25;
+
+function kindOf(value) {
+  if (value === null) return 'null';
+  if (Array.isArray(value)) return 'array';
+  return typeof value;
+}
+
+function preview(value) {
+  if (typeof value === 'string') return JSON.stringify(value.length > 120 ? value.slice(0, 117) + '...' : value);
+  if (value === undefined) return '(absent)';
+  const text = JSON.stringify(value);
+  if (text === undefined) return String(value);
+  return text.length > 160 ? text.slice(0, 157) + '...' : text;
+}
+
+function walk(a, b, jsonPath, out) {
+  if (out.length >= MAX_DIFFS) return;
+
+  const ka = kindOf(a);
+  const kb = kindOf(b);
+
+  if (a === undefined || b === undefined) {
+    out.push({
+      path: jsonPath,
+      kind: a === undefined ? 'missing-on-reference' : 'missing-on-candidate',
+      reference: preview(a),
+      candidate: preview(b),
+    });
+    return;
+  }
+
+  if (ka !== kb) {
+    out.push({ path: jsonPath, kind: 'type', reference: `${ka} ${preview(a)}`, candidate: `${kb} ${preview(b)}` });
+    return;
+  }
+
+  if (ka === 'array') {
+    if (a.length !== b.length) {
+      out.push({ path: jsonPath, kind: 'array-length', reference: String(a.length), candidate: String(b.length) });
+    }
+    const n = Math.min(a.length, b.length);
+    for (let i = 0; i < n; i += 1) walk(a[i], b[i], `${jsonPath}[${i}]`, out);
+    return;
+  }
+
+  if (ka === 'object') {
+    const keys = [...new Set([...Object.keys(a), ...Object.keys(b)])].sort();
+    for (const key of keys) {
+      const childPath = `${jsonPath}.${key}`;
+      if (!(key in a)) {
+        out.push({ path: childPath, kind: 'extra-key-on-candidate', reference: '(absent)', candidate: preview(b[key]) });
+        continue;
+      }
+      if (!(key in b)) {
+        out.push({ path: childPath, kind: 'missing-key-on-candidate', reference: preview(a[key]), candidate: '(absent)' });
+        continue;
+      }
+      walk(a[key], b[key], childPath, out);
+    }
+    return;
+  }
+
+  if (a !== b) {
+    out.push({ path: jsonPath, kind: 'value', reference: preview(a), candidate: preview(b) });
+  }
+}
+
+function errorEnvelope(raw) {
+  if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const err = raw.error;
+  if (err === null || typeof err !== 'object' || Array.isArray(err)) return null;
+  return err;
+}
+
+/**
+ * Compare one step's two observations.
+ *
+ * @param {object} reference normalized observation from the reference server
+ * @param {object} candidate normalized observation from the port
+ * @returns {{diffs: Array, notes: Array}}
+ */
+export function diffObservations(reference, candidate) {
+  const diffs = [];
+  const notes = [];
+
+  if (reference.status !== candidate.status) {
+    diffs.push({
+      path: 'status',
+      kind: 'status',
+      reference: String(reference.status),
+      candidate: String(candidate.status),
+    });
+  }
+
+  const refCt = reference.contentType ?? null;
+  const candCt = candidate.contentType ?? null;
+  if (refCt !== candCt) {
+    diffs.push({ path: 'header.content-type', kind: 'header', reference: preview(refCt), candidate: preview(candCt) });
+  }
+
+  for (const name of Object.keys(reference.extraHeaders ?? {})) {
+    const a = reference.extraHeaders[name] ?? null;
+    const b = (candidate.extraHeaders ?? {})[name] ?? null;
+    if (a !== b) {
+      diffs.push({ path: `header.${name}`, kind: 'header', reference: preview(a), candidate: preview(b) });
+    }
+  }
+
+  // The error envelope is compared on the RAW text: literal `code` and
+  // `message` are part of this contract, punctuation and all.
+  const refErr = errorEnvelope(reference.rawJson);
+  const candErr = errorEnvelope(candidate.rawJson);
+  if (refErr || candErr) {
+    if (!refErr || !candErr) {
+      diffs.push({
+        path: '$.error',
+        kind: 'error-envelope',
+        reference: refErr ? 'error envelope' : 'no error envelope',
+        candidate: candErr ? 'error envelope' : 'no error envelope',
+      });
+    } else {
+      for (const field of ['code', 'message']) {
+        if (refErr[field] !== candErr[field]) {
+          diffs.push({
+            path: `$.error.${field}`,
+            kind: 'error-literal',
+            reference: preview(refErr[field]),
+            candidate: preview(candErr[field]),
+          });
+        }
+      }
+    }
+  }
+
+  // The structural walk would rediscover error.code / error.message that the
+  // literal check above already reported; keep the literal version, which
+  // compares the unmasked text.
+  const alreadyReported = new Set(diffs.filter((d) => d.kind === 'error-literal').map((d) => d.path));
+  const structural = [];
+  walk(reference.body, candidate.body, '$', structural);
+  diffs.push(...structural.filter((d) => !alreadyReported.has(d.path)));
+
+  if (reference.keyOrder && candidate.keyOrder && reference.keyOrder !== candidate.keyOrder) {
+    notes.push('JSON key order differs (informational; object key order is not part of the contract)');
+  }
+  if (reference.pretty !== candidate.pretty) {
+    notes.push(
+      `response body whitespace differs: reference ${reference.pretty ? 'pretty-printed' : 'compact'}, candidate ${candidate.pretty ? 'pretty-printed' : 'compact'}`,
+    );
+  }
+
+  const truncated = diffs.length >= MAX_DIFFS;
+  return { diffs: diffs.slice(0, MAX_DIFFS), truncated, notes };
+}
