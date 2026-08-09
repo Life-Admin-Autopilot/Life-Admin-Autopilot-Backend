@@ -1,0 +1,289 @@
+using Life_Admin_Autopilot.BLL.Kernel.Tasks;
+using Life_Admin_Autopilot.DAL.Features.Tasks;
+using Life_Admin_Autopilot.DAL.Kernel.Documents;
+using Life_Admin_Autopilot.DAL.Kernel.Errors;
+using MongoDB.Bson;
+
+namespace Life_Admin_Autopilot.BLL.Features.Tasks;
+
+/// <summary>
+/// A Mongoose document-level validation failure.
+///
+/// <para>
+/// <b>Deliberately NOT an <see cref="AppException"/>.</b> Node's error handler
+/// recognises its own <c>AppError</c> and zod's <c>ZodError</c>; a Mongoose
+/// <c>ValidationError</c> matches neither, so it falls through to the generic
+/// handler and the client sees <b>500 <c>internal_error</c></b>. Both reachable
+/// 500s in this slice arrive here, and both are pinned by the contract — see
+/// <see cref="TaskWriteService"/>.
+/// </para>
+/// </summary>
+public sealed class TaskDocumentInvalidException : Exception
+{
+    public TaskDocumentInvalidException(string message)
+        : base(message)
+    {
+    }
+}
+
+/// <summary>Validated create payload, already normalised by the route.</summary>
+public sealed record TaskCreateInput(
+    string Title,
+    string Domain,
+    string? Kind,
+    string? Priority,
+    IReadOnlyList<string>? Tags,
+    DateTime? DueAt,
+    string? Notes,
+    TaskEstimateDocument? Estimate,
+    ObjectId? SourceVoiceNoteId);
+
+/// <summary>
+/// Single-task writes: create, patch, and the three subtask mutations.
+///
+/// <para>Multi-task work is NOT here — it goes through the kernel's
+/// <c>BulkService</c>, the only journaled write path.</para>
+/// </summary>
+public sealed class TaskWriteService
+{
+    private readonly TaskRepository _tasks;
+
+    public TaskWriteService(TaskRepository tasks)
+    {
+        _tasks = tasks;
+    }
+
+    // ---- Create -----------------------------------------------------------
+
+    public async Task<TaskDocument> CreateAsync(
+        ObjectId userId,
+        TaskCreateInput input,
+        DateTime? at = null,
+        CancellationToken cancellationToken = default)
+    {
+        var now = at ?? DateTime.UtcNow;
+
+        // Derive when unspecified: a DATED manual task fires (reminder), a dateless
+        // one is a passive list item. Mirrors the chat tool's derivation.
+        var kind = input.Kind ?? (input.DueAt.HasValue ? "reminder" : "list");
+
+        var task = new TaskDocument
+        {
+            Id = ObjectId.GenerateNewId(),
+            UserId = userId,
+            Title = input.Title,
+            Domain = input.Domain,
+            Kind = kind,
+            Status = "open",
+            Priority = input.Priority ?? "normal",
+            Subtasks = new List<SubtaskDocument>(),
+            Tags = input.Tags?.ToList() ?? new List<string>(),
+            DueAt = input.DueAt,
+            Notes = input.Notes,
+            Estimate = input.Estimate,
+            SourceVoiceNoteId = input.SourceVoiceNoteId,
+            Reminders = new List<ReminderEntryDocument>(),
+            RescheduleCount = 0,
+            CreatedAt = now,
+            UpdatedAt = now,
+        };
+
+        EnforceReminderHasDue(task);
+
+        await _tasks.InsertAsync(task, cancellationToken).ConfigureAwait(false);
+        return task;
+    }
+
+    // ---- Patch ------------------------------------------------------------
+
+    /// <summary>
+    /// Apply a sparse patch.
+    /// </summary>
+    /// <param name="patch">
+    /// Only the keys the request actually carried. A BSON <b>null</b> value means
+    /// the caller sent an explicit <c>null</c> and the field must be
+    /// <c>$unset</c>; a key that is simply absent is not touched. This is the same
+    /// convention <c>BulkService.ToMongoOps</c> reads, which is why the translation
+    /// is shared rather than rewritten here.
+    /// </param>
+    public async Task<TaskDocument?> PatchAsync(
+        ObjectId userId,
+        ObjectId id,
+        BsonDocument patch,
+        DateTime? at = null,
+        CancellationToken cancellationToken = default)
+    {
+        var now = at ?? DateTime.UtcNow;
+
+        var existing = await _tasks.FindLiveAsync(userId, id, cancellationToken).ConfigureAwait(false);
+        if (existing is null)
+        {
+            return null;
+        }
+
+        var effective = new BsonDocument(patch);
+
+        // Track the completion timestamp on a status transition.
+        if (effective.TryGetValue("status", out var status) && !status.IsBsonNull)
+        {
+            effective["completedAt"] = status.AsString == "done" ? now : BsonNull.Value;
+        }
+
+        // Mongoose's `timestamps: true` stamps updatedAt on findOneAndUpdate too —
+        // including for an empty patch, which is why PATCH {} still bumps it.
+        effective["updatedAt"] = now;
+
+        var ops = BulkService.ToMongoOps(effective);
+
+        // The count only pushes BACK. Pulling a task forward is the user taking it
+        // seriously; shunting it later is the slip signal that drives "what's
+        // slipping" and the reminder-fatigue nudge.
+        if (patch.TryGetValue("dueAt", out var raw)
+            && !raw.IsBsonNull
+            && existing.DueAt.HasValue
+            && raw.ToUniversalTime() > existing.DueAt.Value)
+        {
+            ops["$inc"] = new BsonDocument("rescheduleCount", 1);
+        }
+
+        return await _tasks.UpdateLiveAsync(userId, id, ops, cancellationToken).ConfigureAwait(false);
+    }
+
+    // ---- Subtasks ---------------------------------------------------------
+
+    /// <summary>
+    /// Every subtask endpoint returns the WHOLE parent task, and every one of them
+    /// goes through <c>task.save()</c> in Node — which is what makes them the three
+    /// endpoints that break forever on a reminder whose <c>dueAt</c> was cleared.
+    /// </summary>
+    public async Task<TaskDocument> AddSubtaskAsync(
+        ObjectId userId,
+        ObjectId id,
+        string text,
+        DateTime? at = null,
+        CancellationToken cancellationToken = default)
+    {
+        var now = at ?? DateTime.UtcNow;
+        var task = await RequireLiveAsync(userId, id, cancellationToken).ConfigureAwait(false);
+
+        if (task.Subtasks.Count >= TaskVocabulary.MaxSubtasks)
+        {
+            throw AppException.BadRequest(
+                "subtask_limit",
+                $"This task already has {TaskVocabulary.MaxSubtasks} subtasks — remove some before adding more.");
+        }
+
+        var subtasks = task.Subtasks.ToList();
+        subtasks.Add(new SubtaskDocument
+        {
+            Id = ObjectId.GenerateNewId(),
+            Text = text,
+            Done = false,
+            CreatedAt = now,
+        });
+
+        return await SaveSubtasksAsync(userId, id, task, subtasks, now, cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task<TaskDocument> UpdateSubtaskAsync(
+        ObjectId userId,
+        ObjectId id,
+        ObjectId subtaskId,
+        string? text,
+        bool? done,
+        DateTime? at = null,
+        CancellationToken cancellationToken = default)
+    {
+        var now = at ?? DateTime.UtcNow;
+        var task = await RequireLiveAsync(userId, id, cancellationToken).ConfigureAwait(false);
+
+        var subtasks = task.Subtasks.ToList();
+        var index = subtasks.FindIndex(s => s.Id == subtaskId);
+        if (index < 0)
+        {
+            throw AppException.NotFound("subtask_not_found", "Subtask no longer exists.");
+        }
+
+        var target = subtasks[index];
+        subtasks[index] = new SubtaskDocument
+        {
+            Id = target.Id,
+            Text = text ?? target.Text,
+            Done = done ?? target.Done,
+            CreatedAt = target.CreatedAt,
+        };
+
+        return await SaveSubtasksAsync(userId, id, task, subtasks, now, cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task<TaskDocument> DeleteSubtaskAsync(
+        ObjectId userId,
+        ObjectId id,
+        ObjectId subtaskId,
+        DateTime? at = null,
+        CancellationToken cancellationToken = default)
+    {
+        var now = at ?? DateTime.UtcNow;
+        var task = await RequireLiveAsync(userId, id, cancellationToken).ConfigureAwait(false);
+
+        var subtasks = task.Subtasks.Where(s => s.Id != subtaskId).ToList();
+        if (subtasks.Count == task.Subtasks.Count)
+        {
+            throw AppException.NotFound("subtask_not_found", "Subtask no longer exists.");
+        }
+
+        return await SaveSubtasksAsync(userId, id, task, subtasks, now, cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task<TaskDocument> SaveSubtasksAsync(
+        ObjectId userId,
+        ObjectId id,
+        TaskDocument task,
+        List<SubtaskDocument> subtasks,
+        DateTime now,
+        CancellationToken cancellationToken)
+    {
+        // This is `task.save()`, so the document-level validators run — the ones
+        // findOneAndUpdate skips. A reminder whose dueAt was cleared by
+        // `PATCH {"dueAt": null}` fails here, every time, forever.
+        EnforceReminderHasDue(task);
+
+        var saved = await _tasks
+            .ReplaceSubtasksAsync(userId, id, subtasks, now, cancellationToken)
+            .ConfigureAwait(false);
+
+        if (saved is null)
+        {
+            throw AppException.NotFound("task_not_found", "Task no longer exists.");
+        }
+
+        return saved;
+    }
+
+    private async Task<TaskDocument> RequireLiveAsync(
+        ObjectId userId,
+        ObjectId id,
+        CancellationToken cancellationToken)
+    {
+        var task = await _tasks.FindLiveAsync(userId, id, cancellationToken).ConfigureAwait(false);
+        return task ?? throw AppException.NotFound("task_not_found", "Task no longer exists.");
+    }
+
+    /// <summary>
+    /// The reminder invariant from <c>TaskSchema.pre('validate')</c>: a matter that
+    /// exists to FIRE must have a moment to fire at. A dateless reminder is a
+    /// silently-broken promise.
+    ///
+    /// <para>
+    /// Runs on create and on save — NOT on <c>findOneAndUpdate</c>, which is
+    /// precisely the gap that lets <c>PATCH {"dueAt": null}</c> poison a reminder.
+    /// </para>
+    /// </summary>
+    private static void EnforceReminderHasDue(TaskDocument task)
+    {
+        if (task.Kind == "reminder" && !task.DueAt.HasValue)
+        {
+            throw new TaskDocumentInvalidException("Task validation failed: dueAt: A reminder must have a dueAt.");
+        }
+    }
+}
