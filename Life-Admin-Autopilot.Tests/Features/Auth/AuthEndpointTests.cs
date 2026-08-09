@@ -408,7 +408,7 @@ public sealed class AuthEndpointTests : IClassFixture<AuthWebApplicationFactory>
         Assert.Equal(HttpStatusCode.NoContent, unknown.StatusCode);
 
         // 204 must carry no body and no content type.
-        Assert.Equal(0, (await unknown.Content.ReadAsByteArrayAsync()).Length);
+        Assert.Empty(await unknown.Content.ReadAsByteArrayAsync());
         Assert.Null(unknown.Content.Headers.ContentType);
     }
 
