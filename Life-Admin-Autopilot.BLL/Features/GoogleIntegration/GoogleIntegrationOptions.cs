@@ -1,3 +1,4 @@
+using Life_Admin_Autopilot.BLL.Kernel.Auth;
 using Microsoft.Extensions.Configuration;
 
 namespace Life_Admin_Autopilot.BLL.Features.GoogleIntegration;
@@ -57,13 +58,10 @@ public sealed class GoogleIntegrationOptions
             ?? Truthy(configuration["APP_DEEP_LINK_SCHEME"])
             ?? "kitto",
 
-        // The same three-key chain KERNEL.md §13 gives for the JWT secret. Inlined
-        // rather than reusing another slice's reader, so this slice compiles on its
-        // own branch.
-        AccessSecret = configuration["Kernel:Jwt:AccessSecret"]
-            ?? configuration["JWT_ACCESS_SECRET"]
-            ?? configuration["Jwt:Key"]
-            ?? string.Empty,
+        // KERNEL.md §13's three-key chain. This was inlined during the port so the
+        // slice compiled on its own branch without depending on the auth slice; it
+        // now shares the kernel resolver, which belongs to neither slice.
+        AccessSecret = JwtSecretResolver.Resolve(configuration),
     };
 
     private static string? Truthy(string? value) => string.IsNullOrEmpty(value) ? null : value;

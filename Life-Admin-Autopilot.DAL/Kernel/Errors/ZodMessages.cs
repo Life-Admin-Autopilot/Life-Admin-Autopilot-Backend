@@ -27,6 +27,16 @@ public static class ZodMessages
     /// <summary><c>z.string().max(n)</c>.</summary>
     public static string TooLong(int max) => $"String must contain at most {max} character(s)";
 
+    /// <summary>
+    /// <c>z.array(...).max(n)</c>. Note it is <c>element(s)</c>, not
+    /// <c>character(s)</c> — the array and string forms differ by that one word and
+    /// are easy to cross-wire.
+    /// </summary>
+    public static string ArrayTooBig(int max) => $"Array must contain at most {max} element(s)";
+
+    /// <summary><c>z.array(...).min(n)</c>.</summary>
+    public static string ArrayTooSmall(int min) => $"Array must contain at least {min} element(s)";
+
     /// <summary><c>z.number().min(n)</c> on an integer.</summary>
     public static string NumberTooSmall(int min) => $"Number must be greater than or equal to {min}";
 

@@ -301,13 +301,13 @@ public sealed class BodyFields
 
         if (items.Count > arrayMax)
         {
-            AddIssue(field, $"Array must contain at most {arrayMax} element(s)");
+            AddIssue(field, ZodMessages.ArrayTooBig(arrayMax));
             return null;
         }
 
         if (arrayMin > 0 && items.Count < arrayMin)
         {
-            AddIssue(field, $"Array must contain at least {arrayMin} element(s)");
+            AddIssue(field, ZodMessages.ArrayTooSmall(arrayMin));
             return null;
         }
 

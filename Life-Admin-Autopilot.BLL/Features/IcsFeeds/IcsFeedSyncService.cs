@@ -1,3 +1,4 @@
+using Life_Admin_Autopilot.BLL.Kernel.Integrations;
 using Life_Admin_Autopilot.DAL.Features.IcsFeeds;
 using Microsoft.Extensions.Logging;
 
@@ -23,7 +24,9 @@ public readonly record struct SyncFeedResult(
 /// reconcile it into matters.
 ///
 /// <para>
-/// The reconcile rules live in <see cref="IcsMatterReconciler"/>. What is here is
+/// The reconcile rules live in <see cref="ExternalMatterReconciler"/>, shared with
+/// the Google importers — the reference inlines them here instead, which is
+/// behaviourally identical for this caller (see that type's remarks). What is here is
 /// the feed-health state machine: which outcome sets which status, when the failure
 /// counter moves, and when the cache validators are replaced.
 /// </para>
@@ -40,13 +43,13 @@ public sealed class IcsFeedSyncService
 
     private readonly FeedFetcher _fetcher;
     private readonly IcsFeedRepository _feeds;
-    private readonly IcsMatterReconciler _reconciler;
+    private readonly ExternalMatterReconciler _reconciler;
     private readonly ILogger<IcsFeedSyncService> _logger;
 
     public IcsFeedSyncService(
         FeedFetcher fetcher,
         IcsFeedRepository feeds,
-        IcsMatterReconciler reconciler,
+        ExternalMatterReconciler reconciler,
         ILogger<IcsFeedSyncService> logger)
     {
         _fetcher = fetcher;

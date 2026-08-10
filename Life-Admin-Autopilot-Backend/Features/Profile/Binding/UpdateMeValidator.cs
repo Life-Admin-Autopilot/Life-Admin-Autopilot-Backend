@@ -314,7 +314,7 @@ public static class UpdateMeValidator
         {
             issues.Add(ValidationIssue.At(
                 Field,
-                $"Array must contain at most {UserVocabulary.MaxOnboardingAnswers} element(s)"));
+                ZodMessages.ArrayTooBig(UserVocabulary.MaxOnboardingAnswers)));
             return;
         }
 

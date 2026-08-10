@@ -51,92 +51,6 @@ public sealed class IcsMatterRepository : MongoRepositoryBase<TaskDocument>
         return new BsonRegularExpression($"^{feedId}::");
     }
 
-    public Task<TaskDocument?> FindByExternalIdAsync(
-        ObjectId userId,
-        string externalId,
-        CancellationToken cancellationToken = default) =>
-        Collection
-            .Find(Filter.And(
-                UserScoped(userId),
-                Filter.Eq(t => t.ExternalSource, IcsFeedVocabulary.ExternalSource),
-                Filter.Eq(t => t.ExternalId, externalId)))
-            .FirstOrDefaultAsync(cancellationToken)!;
-
-    public async Task InsertAsync(TaskDocument task, DateTime now, CancellationToken cancellationToken = default)
-    {
-        if (task.Id == ObjectId.Empty)
-        {
-            task.Id = ObjectId.GenerateNewId();
-        }
-
-        task.CreatedAt = now;
-        task.UpdatedAt = now;
-
-        await Collection.InsertOneAsync(task, cancellationToken: cancellationToken).ConfigureAwait(false);
-    }
-
-    /// <summary>
-    /// Rule 3 of the reconcile contract: a poll writes TIMING ONLY. Title, notes and
-    /// domain belong to the user the moment the matter exists — rewriting them would
-    /// silently undo "rename this to something I understand".
-    /// </summary>
-    public async Task UpdateTimingAsync(
-        TaskDocument task,
-        DateTime now,
-        CancellationToken cancellationToken = default)
-    {
-        task.UpdatedAt = now;
-
-        await Collection
-            .UpdateOneAsync(
-                Filter.Eq(t => t.Id, task.Id),
-                Update
-                    .Set(t => t.DueAt, task.DueAt)
-                    .Set(t => t.Kind, task.Kind)
-                    .Set(t => t.TimePrecision, task.TimePrecision)
-                    .Set(t => t.Confidence, task.Confidence)
-                    .Set(t => t.UpdatedAt, now),
-                cancellationToken: cancellationToken)
-            .ConfigureAwait(false);
-    }
-
-    /// <summary>
-    /// Completion propagating IN from the source. One direction only — the source
-    /// can close a matter, never reopen one.
-    /// </summary>
-    public async Task SetCompletedAsync(
-        TaskDocument task,
-        DateTime now,
-        CancellationToken cancellationToken = default)
-    {
-        task.UpdatedAt = now;
-
-        await Collection
-            .UpdateOneAsync(
-                Filter.Eq(t => t.Id, task.Id),
-                Update
-                    .Set(t => t.Status, task.Status)
-                    .Set(t => t.CompletedAt, task.CompletedAt)
-                    .Set(t => t.UpdatedAt, now),
-                cancellationToken: cancellationToken)
-            .ConfigureAwait(false);
-    }
-
-    /// <summary>
-    /// Overwrite the reminder schedule. Used only to strip Kitto's at-due nudge when
-    /// the source alerts at the deadline itself.
-    /// </summary>
-    public async Task SetRemindersAsync(
-        TaskDocument task,
-        List<ReminderEntryDocument> reminders,
-        CancellationToken cancellationToken = default) =>
-        await Collection
-            .UpdateOneAsync(
-                Filter.Eq(t => t.Id, task.Id),
-                Update.Set(t => t.Reminders, reminders),
-                cancellationToken: cancellationToken)
-            .ConfigureAwait(false);
-
     /// <summary>
     /// Retire this subscription's FUTURE OPEN matters. "Stop this calendar" plainly
     /// means "stop these reminders".
@@ -164,7 +78,15 @@ public sealed class IcsMatterRepository : MongoRepositoryBase<TaskDocument>
                     Filter.Eq(t => t.Status, "open"),
                     Filter.Gt(t => t.DueAt, now),
                     NotDeleted()),
-                Update.Set(t => t.DeletedAt, now),
+                // `updatedAt` is set BY HAND. The reference is
+                // `Task.updateMany(..., { $set: { deletedAt: now } })`
+                // (routes/me.icsFeeds.ts:147) on a `timestamps: true` model, so
+                // Mongoose adds `updatedAt` to that same `$set` itself and the Node
+                // source never names the field. The .NET driver does not — see
+                // KERNEL.md §7.
+                Update
+                    .Set(t => t.DeletedAt, now)
+                    .Set(t => t.UpdatedAt, now),
                 cancellationToken: cancellationToken)
             .ConfigureAwait(false);
 

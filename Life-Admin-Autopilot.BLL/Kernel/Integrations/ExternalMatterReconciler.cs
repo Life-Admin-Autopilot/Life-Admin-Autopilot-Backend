@@ -1,10 +1,10 @@
 using Life_Admin_Autopilot.BLL.Kernel.Reminders;
 using Life_Admin_Autopilot.DAL.Kernel.Documents;
 using Life_Admin_Autopilot.DAL.Kernel.Mongo;
-using MongoDB.Bson;
 using MongoDB.Driver;
+using MongoDB.Bson;
 
-namespace Life_Admin_Autopilot.BLL.Features.GoogleIntegration;
+namespace Life_Admin_Autopilot.BLL.Kernel.Integrations;
 
 /// <param name="ExternalId">Stable per-item id from the source. Must not change between polls.</param>
 /// <param name="Kind">
@@ -49,12 +49,12 @@ public readonly record struct ReconcileOutcome(bool Created, bool Updated, strin
 ///     blind insert is how one appointment becomes a matter every hour.
 ///   </item>
 ///   <item>
-///     <b>A matter the user deleted stays deleted.</b> Task soft-deletes, so an
+///     <b>A matter the user deleted STAYS deleted.</b> Task soft-deletes, so an
 ///     importer that ignored <c>deletedAt</c> would resurrect everything the user
 ///     swept away — and they would have to sweep it again after every poll.
 ///   </item>
 ///   <item>
-///     <b>Updates touch timing only.</b> Once a matter exists the user owns its
+///     <b>Updates touch TIMING only.</b> Once a matter exists the user owns its
 ///     title, notes and domain; rewriting them would silently undo "rename this to
 ///     something I understand". The source stays authoritative for WHEN, the user
 ///     for WHAT.
@@ -62,11 +62,24 @@ public readonly record struct ReconcileOutcome(bool Created, bool Updated, strin
 /// </list>
 ///
 /// <para>
-/// <b>DUPLICATED WITH SLICE F (ICS) ON PURPOSE.</b> Both importers need these
-/// rules and neither branch can consume the other's uncommitted work, so each
-/// carries its own copy inside its own feature folder rather than putting a shared
-/// type in <c>Kernel/</c>. Consolidate at merge — a divergence between two copies is
-/// a user-visible bug, not a style issue.
+/// <b>Shared by both importers — this is the only copy.</b> The ICS and Google
+/// slices were built in parallel and each shipped its own, because neither branch
+/// could consume the other's uncommitted work. They were consolidated here on the
+/// merge: a divergence between two copies of these rules is a user-visible bug, not
+/// a style issue, and shared integration logic with two consumers is what
+/// <c>Kernel/</c> is for.
+/// </para>
+///
+/// <para>
+/// <b>On the reference's ICS path.</b> In Node this module is imported only by the
+/// two Google importers — <c>ics/syncFeed.ts</c> does NOT call it, it inlines the
+/// same three rules (verified: <c>grep reconcileMatter</c> across
+/// <c>server/src</c> matches only <c>google/syncGoogleCalendar.ts</c> and
+/// <c>google/syncGoogleTasks.ts</c>). The inlined copy is behaviourally identical to
+/// driving this one with <c>Completed</c> and <c>SourceHasOwnAlerts</c> both false:
+/// its guard <c>!(movedBy &gt; 60_000 || existing.kind !== kind)</c> is exactly
+/// <see cref="SameMoment"/> plus the kind check, and the two branches those flags
+/// gate are unreachable. So the ICS sync drives this shared copy and stays faithful.
 /// </para>
 /// </summary>
 public sealed class ExternalMatterReconciler
@@ -76,7 +89,7 @@ public sealed class ExternalMatterReconciler
     /// re-plan on every poll would clear <c>firedAt</c> and re-fire nudges the user
     /// has already had.
     /// </summary>
-    private static readonly TimeSpan SameMoment = TimeSpan.FromMinutes(1);
+    private static readonly TimeSpan SameMoment = TimeSpan.FromMilliseconds(60_000);
 
     private readonly IMongoCollection<TaskDocument> _tasks;
     private readonly ReminderPlanner _reminders;
@@ -92,6 +105,8 @@ public sealed class ExternalMatterReconciler
         DateTime now,
         CancellationToken cancellationToken = default)
     {
+        // Rule 1. All THREE parts of the key — a reconciler shared by two sources
+        // must not assume its own.
         var filter = Builders<TaskDocument>.Filter.And(
             Builders<TaskDocument>.Filter.Eq(t => t.UserId, input.UserId),
             Builders<TaskDocument>.Filter.Eq(t => t.ExternalSource, input.ExternalSource),
@@ -99,7 +114,7 @@ public sealed class ExternalMatterReconciler
 
         var existing = await _tasks.Find(filter).FirstOrDefaultAsync(cancellationToken).ConfigureAwait(false);
 
-        // Rule 2.
+        // Rule 2. The user threw this away; leave it thrown.
         if (existing?.DeletedAt is not null)
         {
             return new ReconcileOutcome(false, false, "user_deleted");
@@ -140,7 +155,7 @@ public sealed class ExternalMatterReconciler
 
             await _tasks.InsertOneAsync(task, cancellationToken: cancellationToken).ConfigureAwait(false);
             await _reminders.SetRulesRemindersAsync(task, now, cancellationToken).ConfigureAwait(false);
-            await DropDuplicateDueNudgeAsync(task, input, cancellationToken).ConfigureAwait(false);
+            await DropDuplicateDueNudgeAsync(task, input, now, cancellationToken).ConfigureAwait(false);
             return new ReconcileOutcome(true, false);
         }
 
@@ -152,7 +167,17 @@ public sealed class ExternalMatterReconciler
             existing.Status = "done";
             existing.CompletedAt = now;
             existing.UpdatedAt = now;
-            await ReplaceAsync(existing, cancellationToken).ConfigureAwait(false);
+
+            await _tasks
+                .UpdateOneAsync(
+                    Builders<TaskDocument>.Filter.Eq(t => t.Id, existing.Id),
+                    Builders<TaskDocument>.Update
+                        .Set(t => t.Status, existing.Status)
+                        .Set(t => t.CompletedAt, existing.CompletedAt)
+                        .Set(t => t.UpdatedAt, now),
+                    cancellationToken: cancellationToken)
+                .ConfigureAwait(false);
+
             return new ReconcileOutcome(false, true);
         }
 
@@ -171,9 +196,24 @@ public sealed class ExternalMatterReconciler
         existing.TimePrecision = input.TimePrecision;
         existing.Confidence = input.Confidence;
         existing.UpdatedAt = now;
-        await ReplaceAsync(existing, cancellationToken).ConfigureAwait(false);
+
+        await _tasks
+            .UpdateOneAsync(
+                Builders<TaskDocument>.Filter.Eq(t => t.Id, existing.Id),
+                Builders<TaskDocument>.Update
+                    .Set(t => t.DueAt, existing.DueAt)
+                    .Set(t => t.Kind, existing.Kind)
+                    .Set(t => t.TimePrecision, existing.TimePrecision)
+                    .Set(t => t.Confidence, existing.Confidence)
+                    .Set(t => t.UpdatedAt, now),
+                cancellationToken: cancellationToken)
+            .ConfigureAwait(false);
+
+        // Re-plan ONLY because the deadline actually moved — the planner clears
+        // firedAt, so calling it on an unchanged task would re-fire nudges the user
+        // already received.
         await _reminders.SetRulesRemindersAsync(existing, now, cancellationToken).ConfigureAwait(false);
-        await DropDuplicateDueNudgeAsync(existing, input, cancellationToken).ConfigureAwait(false);
+        await DropDuplicateDueNudgeAsync(existing, input, now, cancellationToken).ConfigureAwait(false);
         return new ReconcileOutcome(false, true);
     }
 
@@ -186,6 +226,7 @@ public sealed class ExternalMatterReconciler
     private async Task DropDuplicateDueNudgeAsync(
         TaskDocument task,
         ExternalMatterInput input,
+        DateTime now,
         CancellationToken cancellationToken)
     {
         if (!input.SourceHasOwnAlerts)
@@ -200,18 +241,25 @@ public sealed class ExternalMatterReconciler
         }
 
         task.Reminders = kept;
+        task.UpdatedAt = now;
+
+        // `updatedAt` set BY HAND, for the reason in KERNEL.md §7.0: the reference
+        // reaches this through `task.save()` on a `timestamps: true` model, so
+        // Mongoose stamps it and the Node source never names the field.
+        //
+        // Honest note: here it is DEFENSIVE, not a fix for an observable bug. This
+        // helper only ever runs immediately after the insert or the timing update
+        // above, both of which already set `UpdatedAt` to this same `now` — so
+        // omitting it, as both slice copies did, changed nothing you could read
+        // back. It is written anyway so the method is correct in isolation, because
+        // the next caller added to it will not be preceded by a write.
         await _tasks
             .UpdateOneAsync(
                 Builders<TaskDocument>.Filter.Eq(t => t.Id, task.Id),
-                Builders<TaskDocument>.Update.Set(t => t.Reminders, kept),
+                Builders<TaskDocument>.Update
+                    .Set(t => t.Reminders, kept)
+                    .Set(t => t.UpdatedAt, now),
                 cancellationToken: cancellationToken)
             .ConfigureAwait(false);
     }
-
-    private Task ReplaceAsync(TaskDocument task, CancellationToken cancellationToken) =>
-        _tasks.ReplaceOneAsync(
-            Builders<TaskDocument>.Filter.Eq(t => t.Id, task.Id),
-            task,
-            new ReplaceOptions(),
-            cancellationToken);
 }
