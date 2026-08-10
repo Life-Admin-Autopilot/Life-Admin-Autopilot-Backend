@@ -29,3 +29,6 @@ Thumbs.db
 # Runtime blob storage for voice notes and document scans.
 uploads/
 **/uploads/
+
+# Purged: carried a live Mistral key and a signed JWT (task #35).
+langflow/planning-agent.v3.baseline.json

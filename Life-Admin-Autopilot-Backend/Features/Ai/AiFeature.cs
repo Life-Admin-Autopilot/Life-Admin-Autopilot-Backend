@@ -38,6 +38,7 @@ public static class AiFeature
 
         if (langflow.IsConfigured)
         {
+            services.TryAddSingleton(LangflowInputBinding.FromConfiguration(configuration));
             services.AddHttpClient(LangflowOptions.HttpClientName);
             services.TryAddScoped<IAiProvider, LangflowAiProvider>();
         }

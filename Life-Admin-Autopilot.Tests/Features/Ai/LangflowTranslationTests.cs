@@ -257,8 +257,50 @@ public sealed class LangflowTranslationTests
     [InlineData("UpdateTaskTool", "updateTask")]
     [InlineData("createTask", "createTask")]
     [InlineData("deleteAllTasks", "deleteAllTasks")]
+    // The v4 flow's node ids, read out of langflow/planning-agent.v4.json.
+    [InlineData("CreateTaskTool-v4", "createTask")]
+    [InlineData("DeleteAllTasksTool-v4", "deleteAllTasks")]
+    [InlineData("HoldForClarificationTool-v4", "holdForClarification")]
+    [InlineData("ToggleSubtaskTool-v4", "toggleSubtask")]
+    // A future revision must keep mapping without anyone editing the table.
+    [InlineData("DeleteAllTasksTool-v12", "deleteAllTasks")]
     public void maps_langflow_component_names_onto_contract_tool_names(string langflow, string expected) =>
         Assert.Equal(expected, LangflowToolNames.ToContractName(langflow));
+
+    [Fact]
+    public void maps_every_tool_component_the_v4_flow_registers()
+    {
+        // Read from langflow/planning-agent.v4.json. An unmapped one is not an
+        // outage — the pill just shows the raw component id — which is exactly why
+        // it needs a test rather than being noticed in the UI six weeks later.
+        string[] v4Nodes =
+        {
+            "CreateTaskTool-v4", "UpdateTaskTool-v4", "CompleteTaskTool-v4", "DeleteTaskTool-v4",
+            "DeleteAllTasksTool-v4", "SnoozeTaskTool-v4", "QueryTasksTool-v4", "AddSubtaskTool-v4",
+            "ToggleSubtaskTool-v4", "RemoveSubtaskTool-v4", "HoldForClarificationTool-v4",
+        };
+
+        Assert.All(v4Nodes, node =>
+            Assert.True(
+                AiToolCatalog.IsKnownTool(LangflowToolNames.ToContractName(node)),
+                $"{node} does not map onto a contract tool name"));
+    }
+
+    [Fact]
+    public void marks_the_v4_bulk_wipe_component_as_needing_confirmation()
+    {
+        var translator = new LangflowEventTranslator();
+
+        var call = Single(translator.Accept(Frame(
+            "tool_call",
+            """{"callId":"c","name":"DeleteAllTasksTool-v4","args":{}}""")));
+
+        // The alias table is load-bearing for SAFETY here, not just for labels: an
+        // unmapped bulk-wipe name would report needsConfirmation:false and the card
+        // that gates the one irreversible action would never appear.
+        Assert.Equal(AiToolCatalog.DeleteAllTasks, call.Payload["name"]);
+        Assert.Equal(true, call.Payload["needsConfirmation"]);
+    }
 
     // ---- sequence and errors ------------------------------------------------
 

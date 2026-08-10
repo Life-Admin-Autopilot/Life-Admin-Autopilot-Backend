@@ -12,7 +12,27 @@ public readonly record struct AiTranscriptionRequest(byte[] Bytes, string MimeTy
 /// <param name="UserId">Owner, as the 24-hex string the Node service passes around.</param>
 /// <param name="Question">Already trimmed and length-checked.</param>
 /// <param name="Timezone">IANA zone anchoring relative phrases. UTC when absent.</param>
-public readonly record struct AiAskRequest(string UserId, string Question, string? Timezone);
+public readonly record struct AiAskRequest(string UserId, string Question, string? Timezone)
+{
+    /// <summary>
+    /// The caller's own bearer token, verbatim and without the <c>Bearer </c> prefix.
+    ///
+    /// <para>
+    /// <b>Added as an init-only property, deliberately not a fourth positional
+    /// parameter</b>, so every existing construction site keeps compiling — this is an
+    /// extension of the seam, not a redesign of it.
+    /// </para>
+    ///
+    /// <para>
+    /// It exists because an agent that runs tools by calling this API back needs to
+    /// act AS the user; the alternative is a service credential with authority over
+    /// every account, which is strictly worse. A provider that does not call back
+    /// (Gemini, and Langflow flows whose tools talk to Mongo directly) simply ignores
+    /// it. Null when the route could not read one.
+    /// </para>
+    /// </summary>
+    public string? AccessToken { get; init; }
+}
 
 /// <summary>Inputs for the post-confirmation continuation of a turn.</summary>
 public readonly record struct AiContinuationRequest(
@@ -22,7 +42,11 @@ public readonly record struct AiContinuationRequest(
     object? ToolArgs,
     object? ToolResult,
     string? ToolError,
-    string? Timezone);
+    string? Timezone)
+{
+    /// <summary>See <see cref="AiAskRequest.AccessToken"/>. Same value, same reasons.</summary>
+    public string? AccessToken { get; init; }
+}
 
 /// <summary>
 /// <b>The one seam Gemini sits behind.</b>

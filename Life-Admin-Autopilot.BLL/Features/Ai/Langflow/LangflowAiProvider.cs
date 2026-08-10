@@ -48,16 +48,22 @@ public sealed class LangflowAiProvider : IAiProvider
 
     private readonly IHttpClientFactory _clients;
     private readonly LangflowOptions _options;
+    private readonly LangflowInputBinding _binding;
     private readonly AiConversationRepository _conversations;
+    private readonly TimeProvider _time;
 
     public LangflowAiProvider(
         IHttpClientFactory clients,
         LangflowOptions options,
-        AiConversationRepository conversations)
+        LangflowInputBinding binding,
+        AiConversationRepository conversations,
+        TimeProvider? time = null)
     {
         _clients = clients;
         _options = options;
+        _binding = binding;
         _conversations = conversations;
+        _time = time ?? TimeProvider.System;
     }
 
     /// <summary>
@@ -97,6 +103,7 @@ public sealed class LangflowAiProvider : IAiProvider
         RunTurnAsync(
             ObjectId.Parse(request.UserId),
             request.Question,
+            request.AccessToken,
             persistUserTurn: true,
             cancellationToken);
 
@@ -116,6 +123,7 @@ public sealed class LangflowAiProvider : IAiProvider
         RunTurnAsync(
             ObjectId.Parse(request.UserId),
             ContinuationPrompt(request),
+            request.AccessToken,
             persistUserTurn: false,
             cancellationToken);
 
@@ -145,6 +153,7 @@ public sealed class LangflowAiProvider : IAiProvider
     private async IAsyncEnumerable<AiStreamEvent> RunTurnAsync(
         ObjectId userId,
         string prompt,
+        string? accessToken,
         bool persistUserTurn,
         [EnumeratorCancellation] CancellationToken cancellationToken)
     {
@@ -164,7 +173,8 @@ public sealed class LangflowAiProvider : IAiProvider
         var translator = new LangflowEventTranslator();
         yield return translator.Start();
 
-        await foreach (var frame in ReadFramesAsync(userId, prompt, cancellationToken).ConfigureAwait(false))
+        await foreach (var frame in ReadFramesAsync(userId, prompt, accessToken, cancellationToken)
+                           .ConfigureAwait(false))
         {
             foreach (var translated in translator.Accept(frame))
             {
@@ -199,12 +209,13 @@ public sealed class LangflowAiProvider : IAiProvider
     private async IAsyncEnumerable<LangflowFrame> ReadFramesAsync(
         ObjectId userId,
         string prompt,
+        string? accessToken,
         [EnumeratorCancellation] CancellationToken cancellationToken)
     {
         using var client = _clients.CreateClient(LangflowOptions.HttpClientName);
         client.Timeout = _options.Timeout;
 
-        using var request = BuildRequest(userId, prompt);
+        using var request = BuildRequest(userId, prompt, accessToken);
 
         HttpResponseMessage response;
         try
@@ -254,16 +265,20 @@ public sealed class LangflowAiProvider : IAiProvider
         }
     }
 
-    private HttpRequestMessage BuildRequest(ObjectId userId, string prompt)
+    private HttpRequestMessage BuildRequest(ObjectId userId, string prompt, string? accessToken)
     {
-        var payload = new LangflowRunRequest
-        {
-            InputValue = prompt,
+        // WHERE the prompt goes is LangflowInputBinding's business, not this file's —
+        // a flow with no ChatInput takes it as a tweak instead, and which is which is
+        // configuration. See that type for why posting input_value to the wrong flow
+        // fails silently rather than loudly.
+        var payload = _binding.BuildRequest(
+            prompt,
 
             // The user's own id, so Langflow's per-session memory never crosses
             // accounts. The conversation of record is still ours, in Mongo.
-            SessionId = userId.ToString(),
-        };
+            sessionId: userId.ToString(),
+            accessToken,
+            _time.GetUtcNow());
 
         var request = new HttpRequestMessage(HttpMethod.Post, _options.RunUri)
         {
@@ -342,24 +357,4 @@ public sealed class LangflowAiProvider : IAiProvider
             ? value.ValueKind == JsonValueKind.Object ? parsed : parsed["value"]
             : BsonNull.Value;
     }
-}
-
-/// <summary>
-/// The request body Langflow's run endpoint takes. Four keys, snake_case — Langflow
-/// does not camelCase its API, so the property names are set explicitly rather than
-/// left to the serializer's policy.
-/// </summary>
-internal sealed class LangflowRunRequest
-{
-    [System.Text.Json.Serialization.JsonPropertyName("input_value")]
-    public string InputValue { get; init; } = string.Empty;
-
-    [System.Text.Json.Serialization.JsonPropertyName("input_type")]
-    public string InputType { get; init; } = "chat";
-
-    [System.Text.Json.Serialization.JsonPropertyName("output_type")]
-    public string OutputType { get; init; } = "chat";
-
-    [System.Text.Json.Serialization.JsonPropertyName("session_id")]
-    public string SessionId { get; init; } = string.Empty;
 }

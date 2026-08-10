@@ -30,6 +30,11 @@ namespace Life_Admin_Autopilot.BLL.Features.Ai.Langflow;
 /// </summary>
 public static class LangflowToolNames
 {
+    /// <summary>
+    /// Keyed on the NORMALISED name — see <see cref="Normalize"/>. One entry per tool
+    /// component the flows register, covering both the v3 baseline's
+    /// <c>SaveTaskTool</c> naming and the v4 <c>*Tool-v4</c> naming.
+    /// </summary>
     private static readonly IReadOnlyDictionary<string, string> Aliases =
         new Dictionary<string, string>(StringComparer.Ordinal)
         {
@@ -39,8 +44,11 @@ public static class LangflowToolNames
             ["completetasktool"] = "completeTask",
             ["deletetasktool"] = "deleteTask",
             ["deletealltaskstool"] = AiToolCatalog.DeleteAllTasks,
-            ["querytaskstool"] = "queryTasks",
             ["snoozetasktool"] = "snoozeTask",
+            ["querytaskstool"] = "queryTasks",
+            ["addsubtasktool"] = "addSubtask",
+            ["togglesubtasktool"] = "toggleSubtask",
+            ["removesubtasktool"] = "removeSubtask",
             ["holdforclarificationtool"] = "holdForClarification",
         };
 
@@ -62,6 +70,34 @@ public static class LangflowToolNames
         return Aliases.TryGetValue(Normalize(langflowName), out var mapped) ? mapped : langflowName;
     }
 
-    private static string Normalize(string value) =>
-        string.Concat(value.Where(char.IsLetterOrDigit)).ToLowerInvariant();
+    /// <summary>
+    /// Lower-case, letters and digits only, with a trailing flow-version suffix
+    /// removed.
+    ///
+    /// <para>
+    /// <b>The version suffix is the part that is easy to miss.</b> Langflow node ids
+    /// carry the flow revision — <c>DeleteAllTasksTool-v4</c>, and <c>-v5</c> the day
+    /// someone bumps it. Without stripping it, every alias silently stops matching on
+    /// the next revision and every pill in the chat quietly starts showing the raw
+    /// component id instead of the action. Nothing fails; it just gets worse.
+    /// </para>
+    /// </summary>
+    private static string Normalize(string value)
+    {
+        var compact = string.Concat(value.Where(char.IsLetterOrDigit)).ToLowerInvariant();
+
+        var trimmed = compact.AsSpan();
+        var digits = 0;
+        while (digits < trimmed.Length && char.IsAsciiDigit(trimmed[^(digits + 1)]))
+        {
+            digits++;
+        }
+
+        // Only a `v` immediately before the trailing digits is a version marker — so
+        // `deletealltaskstoolv4` loses its suffix and a hypothetical `sha256tool`
+        // keeps its name intact.
+        return digits > 0 && trimmed.Length > digits + 1 && trimmed[^(digits + 1)] == 'v'
+            ? trimmed[..^(digits + 1)].ToString()
+            : compact;
+    }
 }
