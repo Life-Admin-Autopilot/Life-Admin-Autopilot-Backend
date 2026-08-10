@@ -121,9 +121,14 @@ public static class ClarificationEndpoints
             // The task already exists — it was created when the question was raised.
             // If it has since been deleted the question is moot: close it out rather
             // than resurrecting work the user threw away.
-            var existing = doc.TaskId == ObjectId.Empty
+            // A legacy row predating the required constraint has no taskId at all,
+            // which now reads as null rather than a zero id. Both are treated as
+            // "no task": close the question out instead of resurrecting work.
+            var taskId = doc.TaskId is { } linked && linked != ObjectId.Empty ? linked : (ObjectId?)null;
+
+            var existing = taskId is null
                 ? null
-                : await tasks.FindLiveAsync(caller.Id, doc.TaskId, cancellationToken).ConfigureAwait(false);
+                : await tasks.FindLiveAsync(caller.Id, taskId.Value, cancellationToken).ConfigureAwait(false);
 
             if (existing is null)
             {
@@ -144,8 +149,9 @@ public static class ClarificationEndpoints
 
             var (patch, answerLabel) = BuildPatch(doc, answer, ai);
 
+            // Non-null here: a null taskId returned above via the `existing is null` path.
             var task = await updater
-                .RunUpdateAsync(caller.Id, doc.TaskId, patch, now, cancellationToken)
+                .RunUpdateAsync(caller.Id, taskId!.Value, patch, now, cancellationToken)
                 .ConfigureAwait(false);
 
             await clarifications
