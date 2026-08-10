@@ -239,16 +239,24 @@ public sealed class KernelHardeningTests : IClassFixture<KernelHardeningTests.Fa
     }
 
     /// <summary>
-    /// A 404 from the method-mismatch rewrite is still a response, and Express still
-    /// sends helmet on it.
+    /// A 404 from the method-mismatch rewrite keeps helmet's headers — EXCEPT the
+    /// CSP, which Express's <c>finalhandler</c> writes itself as
+    /// <c>default-src 'none'</c>, replacing the app-wide policy.
+    ///
+    /// <para>This test originally asserted the full app CSP here. That expectation
+    /// was written before anyone measured the header, and the reference disagrees:
+    /// <c>curl -X PUT :4100/health</c> answers <c>default-src 'none'</c>, while a
+    /// ROUTE-level 404 such as <c>task_not_found</c> — which never reaches
+    /// finalhandler — keeps the full policy. Both were checked live.</para>
     /// </summary>
     [Fact]
-    public async Task the_method_mismatch_404_carries_every_helmet_default()
+    public async Task the_method_mismatch_404_carries_helmet_but_finalhandlers_own_csp()
     {
         var response = await _factory.CreateApiClient().PutAsync("/health", TextContent("", "text/plain"));
 
         Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
-        AssertHelmetDefaults(response);
+        AssertHelmetDefaults(response, expectFinalHandlerCsp: true);
+        Assert.Equal("default-src 'none'", Assert.Single(response.Headers.GetValues("Content-Security-Policy")));
     }
 
     /// <summary>
@@ -278,11 +286,22 @@ public sealed class KernelHardeningTests : IClassFixture<KernelHardeningTests.Fa
 
     // ---------------------------------------------------------------------
 
-    private static void AssertHelmetDefaults(HttpResponseMessage response)
+    /// <param name="expectFinalHandlerCsp">
+    /// Set for the fall-through 404s only. Express's finalhandler replaces the
+    /// app-wide CSP with its own on those, so the caller asserts that value
+    /// separately and this helper skips it.
+    /// </param>
+    private static void AssertHelmetDefaults(HttpResponseMessage response, bool expectFinalHandlerCsp = false)
     {
         foreach (var (name, expected) in HelmetHeadersMiddleware.Defaults)
         {
             Assert.True(response.Headers.Contains(name), $"missing security header: {name}");
+
+            if (expectFinalHandlerCsp && name == "Content-Security-Policy")
+            {
+                continue;
+            }
+
             Assert.Equal(expected, Assert.Single(response.Headers.GetValues(name)));
         }
 
