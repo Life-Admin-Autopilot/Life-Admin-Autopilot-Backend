@@ -76,8 +76,15 @@ public sealed class AiConversationToolCallDocument
 
     public string Name { get; set; } = string.Empty;
 
-    /// <summary><c>Schema.Types.Mixed</c> — an arbitrary JSON object.</summary>
-    public BsonDocument Args { get; set; } = new();
+    /// <summary>
+    /// <c>Schema.Types.Mixed</c>, required. In practice always an object — the tool
+    /// schemas are zod objects — but typed as <see cref="BsonValue"/> rather than
+    /// <c>BsonDocument</c> to match what the storage layer actually permits, the way
+    /// <see cref="Result"/> does. A narrower type would make one oddly-shaped stored
+    /// value throw during deserialization of the WHOLE conversation, turning every
+    /// read of that user's history into a 500.
+    /// </summary>
+    public BsonValue Args { get; set; } = new BsonDocument();
 
     public string Status { get; set; } = AiConversationVocabulary.PendingConfirmation;
 

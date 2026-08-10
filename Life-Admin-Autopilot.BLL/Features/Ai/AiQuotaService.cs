@@ -166,6 +166,15 @@ public sealed class AiQuotaService
     /// <summary>
     /// Hands a reserved slot back. Call at most once per <see cref="AdmitAsync"/>,
     /// and only when the work produced no result.
+    ///
+    /// <para>
+    /// The bucket's limit is filled in from the free tier and is <b>deliberately not
+    /// a parameter</b>: only <c>TryAdmitAsync</c>'s guard filter reads
+    /// <c>UsageQuotaBucket.Limit</c>; release and record are plain <c>$inc</c>s
+    /// against the identity key. If the store ever starts consulting the limit on
+    /// these two paths, this call and <see cref="RecordAsync"/> need the caller's
+    /// real tier threaded through.
+    /// </para>
     /// </summary>
     public Task ReleaseAsync(
         ObjectId userId,
