@@ -117,6 +117,7 @@ internal static class AiStreamTurns
         string callId,
         string toolName,
         IReadOnlyDictionary<string, object?> toolArgs,
+        string? accessToken,
         CancellationToken cancellationToken)
     {
         var sse = new AiSseWriter(context.Response);
@@ -155,7 +156,10 @@ internal static class AiStreamTurns
                 }
 
                 var continuation = new AiContinuationRequest(
-                    caller.IdString, callId, toolName, toolArgs, result, error, null);
+                    caller.IdString, callId, toolName, toolArgs, result, error, null)
+                {
+                    AccessToken = accessToken,
+                };
 
                 await foreach (var value in ai.ContinueAfterConfirmAsync(continuation, cancellationToken)
                                    .WithCancellation(cancellationToken)

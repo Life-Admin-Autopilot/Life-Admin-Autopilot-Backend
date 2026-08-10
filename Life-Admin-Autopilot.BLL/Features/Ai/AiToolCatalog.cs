@@ -80,7 +80,7 @@ public static class AiToolCatalog
         var fieldErrors = new Dictionary<string, List<string>>(StringComparer.Ordinal);
 
         var domain = ReadOptionalEnum(supplied, "domain", TaskVocabulary.Domains, fieldErrors);
-        var status = ReadOptionalEnum(supplied, "status", TaskVocabulary.Statuses, fieldErrors);
+        var status = ReadOptionalEnum(supplied, StatusFields, TaskVocabulary.Statuses, fieldErrors);
 
         if (fieldErrors.Count > 0)
         {
@@ -119,13 +119,58 @@ public static class AiToolCatalog
         return JsonSerializer.Serialize(flattened, AiStreamJson.Frame);
     }
 
+    /// <summary>
+    /// The names <c>deleteAllTasks</c>'s status narrowing can arrive under, newest
+    /// first.
+    ///
+    /// <para>
+    /// <b>This is a silent-destruction guard, not tidiness.</b> Langflow 1.11.2
+    /// refuses a component input called <c>status</c> — it collides with
+    /// <c>Component.status</c> — so the flow puts <c>status_filter</c> on the wire
+    /// (measured live on 1.11.2 by the n-flowfix worktree; not reproduced here, since
+    /// no Langflow was reachable from this one). Reading only <c>status</c> meant the
+    /// unknown key was stripped by the same unknown-key stripping that removes the
+    /// display-only <c>count</c> — and a confirmed "delete all my DONE tasks" would
+    /// have executed as "delete EVERY task", with the confirmation card still showing
+    /// the narrow wording the user agreed to.
+    /// </para>
+    ///
+    /// <para>
+    /// Both names are accepted because the two must interoperate: a pending record
+    /// written before the flow changed is confirmed by a server running after it.
+    /// The first name present wins, and the validated output is always the canonical
+    /// <c>status</c>.
+    /// </para>
+    /// </summary>
+    private static readonly string[] StatusFields = { "status", "status_filter" };
+
     private static string? ReadOptionalEnum(
         BsonDocument args,
         string field,
         IReadOnlyList<string> allowed,
+        IDictionary<string, List<string>> fieldErrors) =>
+        ReadOptionalEnum(args, new[] { field }, allowed, fieldErrors);
+
+    private static string? ReadOptionalEnum(
+        BsonDocument args,
+        IReadOnlyList<string> fields,
+        IReadOnlyList<string> allowed,
         IDictionary<string, List<string>> fieldErrors)
     {
-        if (!args.TryGetValue(field, out var value) || value.IsBsonNull)
+        var field = fields[0];
+        BsonValue? found = null;
+
+        foreach (var candidate in fields)
+        {
+            if (args.TryGetValue(candidate, out var value) && !value.IsBsonNull)
+            {
+                field = candidate;
+                found = value;
+                break;
+            }
+        }
+
+        if (found is not { } present)
         {
             // `.optional()` accepts an absent key. A stored explicit null is treated
             // as absent too: it is what Mongo hands back for a field the agent chose
@@ -133,13 +178,13 @@ public static class AiToolCatalog
             return null;
         }
 
-        if (value.BsonType != BsonType.String)
+        if (present.BsonType != BsonType.String)
         {
-            Add(fieldErrors, field, $"Expected {Quoted(allowed)}, received {JsTypeName(value)}");
+            Add(fieldErrors, field, $"Expected {Quoted(allowed)}, received {JsTypeName(present)}");
             return null;
         }
 
-        var text = value.AsString;
+        var text = present.AsString;
         if (!allowed.Contains(text, StringComparer.Ordinal))
         {
             Add(fieldErrors, field, $"Invalid enum value. Expected {Quoted(allowed)}, received '{text}'");

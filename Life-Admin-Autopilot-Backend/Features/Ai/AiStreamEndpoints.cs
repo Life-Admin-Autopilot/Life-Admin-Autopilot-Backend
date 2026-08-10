@@ -11,20 +11,26 @@ namespace Life_Admin_Autopilot_Backend.Features.Ai;
 /// <c>/ai/tools/confirm/{callId}</c> and <c>/ai/voice/transcribe</c>.
 ///
 /// <para>
-/// <b>Everything before the model is real and ported; the streaming half is
-/// deliberately not built.</b> On the parity target <c>IAiProvider.IsConfigured</c>
-/// is false, so <c>/ai/ask</c> and <c>/ai/voice/transcribe</c> answer 503 and
-/// <c>/ai/tools/confirm</c> answers 404 — the stream is never opened and the
-/// contract for these three routes is entirely pre-stream. Inference, and with it
-/// SSE, belong to the Langflow phase; the seam is <see cref="IAiProvider"/> and
-/// nothing else in this file needs to change when it lands.
+/// <b>This file is the PRE-STREAM half, and only that.</b> Auth, body validation,
+/// the availability gate, the durable-record lookup, the argument re-validation and
+/// the atomic quota reserve all live here, because all of them must be able to
+/// answer with a real HTTP status. The moment the headers flush the turn belongs to
+/// <see cref="AiStreamTurns"/>, which cannot fail with a status code any more.
 /// </para>
 ///
 /// <para>
-/// <b>THE RULE that governs the deferred half:</b> a failure BEFORE the stream
-/// opens is an ordinary JSON HTTP error with a real status code; a failure AFTER it
-/// opens is a <c>{"type":"error"}</c> frame inside a 200 <c>text/event-stream</c>.
-/// The status line is committed the moment the headers flush.
+/// <b>THE RULE, and it is the whole reason for that split:</b> a failure BEFORE the
+/// stream opens is an ordinary JSON HTTP error with a real status code; a failure
+/// AFTER it opens is a <c>{"type":"error"}</c> frame inside a 200
+/// <c>text/event-stream</c>. The status line is committed the moment the headers
+/// flush, and clients branch on <c>Content-Type</c>.
+/// </para>
+///
+/// <para>
+/// On the parity target <c>IAiProvider.IsConfigured</c> is false, so <c>/ai/ask</c>
+/// and <c>/ai/voice/transcribe</c> answer 503 and <c>/ai/tools/confirm</c> answers
+/// 404 without ever opening a stream — every line below the gates is unreachable and
+/// the three routes stay byte-identical to the reference.
 /// </para>
 ///
 /// <para>
@@ -100,7 +106,10 @@ public static class AiStreamEndpoints
                     ai,
                     quota,
                     tier,
-                    new AiAskRequest(caller.IdString, question!, timezone),
+                    new AiAskRequest(caller.IdString, question!, timezone)
+                    {
+                        AccessToken = BearerTokenOf(context),
+                    },
                     cancellationToken)
                 .ConfigureAwait(false);
 
@@ -176,6 +185,7 @@ public static class AiStreamEndpoints
                     callId,
                     call.Name,
                     toolArgs,
+                    BearerTokenOf(context),
                     cancellationToken)
                 .ConfigureAwait(false);
 
@@ -253,6 +263,25 @@ public static class AiStreamEndpoints
         })
         .RequireAuthorization()
         .RateLimited(KernelRateLimiters.AiVoice);
+
+    /// <summary>
+    /// The caller's raw bearer token, for a provider whose tools call this API back
+    /// as the user. Null when the header is absent or not a bearer — the request has
+    /// already passed <c>[Authorize]</c> by this point, so that only happens under a
+    /// non-bearer scheme, and a provider that does not need one ignores it anyway.
+    ///
+    /// <para>Deliberately read here rather than inside a provider: a BLL service
+    /// reaching for <c>IHttpContextAccessor</c> to find a credential is how ambient
+    /// authority creeps in.</para>
+    /// </summary>
+    private static string? BearerTokenOf(HttpContext context)
+    {
+        var header = context.Request.Headers.Authorization.ToString();
+
+        return header.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase)
+            ? header["Bearer ".Length..].Trim() is { Length: > 0 } token ? token : null
+            : null;
+    }
 
     /// <summary>
     /// Would <c>express.raw({ type: [...] })</c> consume this body? Anything else —
