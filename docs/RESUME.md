@@ -104,6 +104,27 @@ and each now has one in `Life-Admin-Autopilot.Tests/Kernel/KernelHardeningTests.
    dialling `localhost` on both sides. Measured: with `[::]`, an IPv4 peer is recorded as
    `::ffff:127.0.0.1` and a `localhost` peer as `::1` — matching Node exactly on both.
 
+## AI phase — Langflow (started, interrupted)
+
+The product decision: **everything converges on one planning agent** — chat, voice transcripts and documents all route into it, and it asks clarifying questions and calls tools. Two design forks were settled deliberately:
+
+- **Chat gets its own mode on the same agent**, rather than being fed into the task extractor. The shipped chat has 11 tools and 7 of them act on *existing* tasks; routing "what's due next week?" into an extractor would create a task called "due next week".
+- **Documents still produce reviewable candidates**, not prose. Prose cannot carry a CitationChip, and `docs/features.md` names that chip the mitigation for the product's biggest risk.
+- **Streaming is preserved** via an adapter that translates Langflow's stream into the frontend's existing 7-event SSE contract, so the frontend changes nothing.
+
+On `slice/m-langflow` (`42a7f6d`), state is uneven:
+
+| Artifact | State |
+|---|---|
+| `langflow/planning-agent.v4.json` | **Done, validated** — 15 nodes, 14 edges, 0 dangling, all 11 frontend tools |
+| `langflow/document-agent.json` | **Done, validated** — 4 nodes, 3 edges, 0 dangling |
+| `PLANNING-AGENT.md`, `DOCUMENT-AGENT.md` | Done |
+| .NET SSE adapter (`Features/Ai/`) | **Incomplete, 4 compile errors** — fix the build first |
+
+Neither flow embeds a secret or a hardcoded host. The supplied baseline (`Steward/langflow/langflow.json`) carries a live Mistral key, a signed JWT, `verify=False`, and two `localhost:7276` endpoints — see task #35.
+
+**Nothing here has run against a live Langflow.** None is installed on this machine (nothing on `:7860`), so every flow behaviour is authored-blind. Standing one up is the next real gate: the vocabulary rewrite in particular needs one real run to confirm the model obeys the frontend's enums (`health|home|car|finance|family|pets`, `low|normal|high|urgent`) rather than the abandoned branch's.
+
 ## Interrupted mid-work — WIP is committed, NOT verified
 
 A session limit terminated both remaining slice agents mid-task. Their work was uncommitted on disk; I committed it to their own branches so it could not be lost. **Neither was built, tested, or parity-checked. Treat both as untrusted drafts — amend or reset freely.**
