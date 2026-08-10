@@ -86,8 +86,9 @@ public static class AiStreamEndpoints
             }
 
             // 5. ATOMIC RESERVE, before any expensive work and before the headers
-            //    flush, so the 402 lands as an ordinary JSON error. The slot is
-            //    refunded by the streaming half if the turn never reaches `done`.
+            //    flush, so the 402 lands as an ordinary JSON error rather than an
+            //    error frame. Whoever consumes the slot owes exactly one release if
+            //    the turn never reaches `done` — see below.
             var tier = AiQuotaService.ResolveTier();
             await quota.AdmitAsync(caller.Id, tier, cancellationToken: cancellationToken).ConfigureAwait(false);
 
@@ -101,9 +102,10 @@ public static class AiStreamEndpoints
             //    on requests that never produced an answer.
             await quota.ReleaseAsync(caller.Id, cancellationToken: cancellationToken).ConfigureAwait(false);
 
-            _ = new AiAskRequest(caller.IdString, question!, timezone);
             throw new NotSupportedException(
-                "POST /ai/ask streaming is deferred to the Langflow phase. Reached only with a configured provider.");
+                $"POST /ai/ask streaming is deferred to the Langflow phase — reached only with a configured " +
+                $"provider (question {question!.Length} chars, timezone {timezone ?? "UTC"}). Implement " +
+                $"{nameof(IAiProvider)}.{nameof(IAiProvider.AskAsync)} and the SSE writer here.");
         })
         .RequireAuthorization()
         .RateLimited(KernelRateLimiters.AiAsk);
