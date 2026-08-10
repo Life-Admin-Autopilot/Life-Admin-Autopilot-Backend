@@ -26,8 +26,7 @@ namespace Life_Admin_Autopilot.Tests.Features.Ai;
 /// <para>
 /// <b>OPT-IN, and silent by default.</b> It runs only when
 /// <c>LANGFLOW_SMOKE_BASE_URL</c> and <c>LANGFLOW_SMOKE_FLOW_ID</c> are set, so it
-/// never fails a normal run. <b>A green suite is therefore NOT evidence that this
-/// ran</b> — see the known gap in the body:
+/// never fails a normal run and never pretends to have checked anything:
 /// </para>
 ///
 /// <code>
@@ -38,9 +37,11 @@ namespace Life_Admin_Autopilot.Tests.Features.Ai;
 /// </code>
 ///
 /// <para>
-/// <b>Executed and passing</b> against live Langflow 1.11.2 (12s — a real round
-/// trip, not a silent skip), and verified to FAIL against a bogus flow id, so the
-/// connection has teeth rather than only the assertions.
+/// <b>NOT YET EXECUTED.</b> Written from a worktree with no Langflow reachable, so
+/// the live path has never run once. The assertions below are the same invariants
+/// <c>LangflowProviderTests</c> checks against a stub, and those do run — but until
+/// someone points this at a real instance, treat it as unproven scaffolding rather
+/// than as coverage. A skipping test that is quietly broken is worse than no test.
 /// </para>
 ///
 /// <para>
@@ -59,15 +60,11 @@ public sealed class LangflowSmokeTests
         var options = SmokeOptions();
         var database = TryGetDatabase();
 
-        // KNOWN GAP: this returns rather than skipping, so an unconfigured run
-        // reports as PASSED in 111ms. That is the same false-green this test exists
-        // to prevent, one level up — on the day the credentials stop being injected
-        // the summary still reads green and nobody notices the boundary went
-        // unchecked. xunit 2.9.3 has no dynamic skip (`Assert.Skip` binds to
-        // AsyncEnumerable.Skip); fixing it properly needs Xunit.SkippableFact or
-        // xunit v3. Until then the mitigation is that LangflowTurnInvariants also
-        // runs against the stubbed turn in LangflowProviderTests, so the assertions
-        // are always exercised — only the live connection can go silently unrun.
+        // Partial configuration is ALWAYS a failure, never a silent pass. A base URL
+        // with no flow id means someone meant to run this and the wiring broke — the
+        // exact case where returning early would hide the problem.
+        AssertConfigurationIsUsable(options, database);
+
         if (options is null || database is null)
         {
             return;
@@ -75,9 +72,9 @@ public sealed class LangflowSmokeTests
 
         var provider = new LangflowAiProvider(
             new SmokeHttpClientFactory(),
-            options!,
+            options,
             SmokeBinding(),
-            new AiConversationRepository(database!));
+            new AiConversationRepository(database));
 
         var events = new List<AiStreamEvent>();
         var request = new AiAskRequest(
@@ -92,6 +89,60 @@ public sealed class LangflowSmokeTests
 
         LangflowTurnInvariants.AssertTurnShape(events);
     }
+
+    /// <summary>
+    /// The honesty guard, and the reason this test does not simply return early.
+    ///
+    /// <para>
+    /// <b>The failure mode being defended against</b> is a CI summary reporting a
+    /// pass for a test that did nothing, on the day the credentials stop being
+    /// injected — nobody reads a green line. A real "skipped" result would say so,
+    /// but <c>Assert.Skip</c> and <c>SkipTestWithoutData</c> are both xUnit v3, and
+    /// this suite is on 2.9.3 where <c>Skip</c> is a compile-time constant. Both were
+    /// checked rather than assumed. Adding a skip package to the shared Tests project
+    /// mid-merge is a poor trade for one opt-in test.
+    /// </para>
+    ///
+    /// <para>
+    /// So the protection is put where it actually bites, and it is arguably stronger
+    /// than a skip: any pipeline that MEANS to run this sets
+    /// <c>LANGFLOW_SMOKE_REQUIRED=1</c>, and the day the rest of the environment goes
+    /// missing the test FAILS instead of quietly passing. Half-configured fails the
+    /// same way, because that is always a mistake. Only a completely unconfigured
+    /// developer machine returns early.
+    /// </para>
+    ///
+    /// <para>If this suite ever moves to xUnit v3, replace all of this with
+    /// <c>Assert.Skip</c> and delete the environment variable.</para>
+    /// </summary>
+    private static void AssertConfigurationIsUsable(LangflowOptions? options, IMongoDatabase? database)
+    {
+        var required = Environment.GetEnvironmentVariable("LANGFLOW_SMOKE_REQUIRED") == "1";
+        var baseUrl = Environment.GetEnvironmentVariable("LANGFLOW_SMOKE_BASE_URL");
+        var flowId = Environment.GetEnvironmentVariable("LANGFLOW_SMOKE_FLOW_ID");
+        var anySet = !string.IsNullOrWhiteSpace(baseUrl) || !string.IsNullOrWhiteSpace(flowId);
+
+        if (required)
+        {
+            Assert.True(
+                options is not null,
+                "LANGFLOW_SMOKE_REQUIRED=1 but LANGFLOW_SMOKE_BASE_URL / LANGFLOW_SMOKE_FLOW_ID are missing or "
+                + "unusable — this run would have reported a pass without contacting Langflow at all.");
+            Assert.True(
+                database is not null,
+                "LANGFLOW_SMOKE_REQUIRED=1 but the parity Mongo is unreachable, so the turn could not be "
+                + "persisted and the test would have reported a pass without running.");
+            return;
+        }
+
+        Assert.False(
+            anySet && options is null,
+            $"Langflow smoke configuration is incomplete: BASE_URL={Describe(baseUrl)}, "
+            + $"FLOW_ID={Describe(flowId)}. Set both (and an absolute URL), or neither.");
+    }
+
+    private static string Describe(string? value) =>
+        string.IsNullOrWhiteSpace(value) ? "<unset>" : "<set>";
 
     // ---- opt-in configuration ----------------------------------------------
 
