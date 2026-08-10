@@ -68,6 +68,15 @@ namespace Life_Admin_Autopilot.BLL.Features.Ai.Langflow;
 /// assembling open clarifications for the user, which is the clarifications slice's
 /// data, not this one's.
 /// </para>
+///
+/// <para>
+/// <b>That slice will also need <c>mode</c> to become caller-supplied.</b>
+/// <see cref="BuildRequest"/> defaults it to <see cref="ChatMode"/> because
+/// <c>/ai/ask</c> is the chat surface and has no other mode to report; clarification
+/// mode is only entered when <c>mode=clarification</c> arrives, so a route that knows
+/// the user is answering questions has to pass it in. The parameter is already there
+/// — nothing calls it with anything else yet.
+/// </para>
 /// </summary>
 public sealed class LangflowInputBinding
 {

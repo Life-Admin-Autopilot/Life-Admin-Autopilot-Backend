@@ -421,6 +421,49 @@ public sealed class LangflowProviderTests
     }
 
     [Fact]
+    public async Task a_gated_call_is_still_pending_after_a_full_turn_with_the_output_redelivery()
+    {
+        if (Database is null)
+        {
+            return;
+        }
+
+        // The regression, end to end: translator → provider → Mongo. Langflow
+        // redelivers the bulk-wipe row with its DRY-RUN output inside the same turn,
+        // and the persisted record must survive that as `pending_confirmation` —
+        // otherwise the confirm route 404s and the card the user is looking at can
+        // never be actioned. Asserting on the stored document rather than on frames,
+        // because the stored status is what the confirm route reads.
+        var userId = ObjectId.GenerateNewId();
+        var repository = new AiConversationRepository(Database);
+
+        // ONE physical line per frame — this is NDJSON, and a raw string literal
+        // spanning two lines silently splits the frame in half.
+        const string row =
+            """{"event":"add_message","data":{"id":"bb209266-1f6e-4a3f-9d21-6f0f9e2a1c77","content_blocks":[{"contents":[{"type":"tool_use","name":"DeleteAllTasksTool-v4","tool_input":{"status_filter":"done"}__OUT__}]}]}}""";
+
+        var handler = Handler(Ndjson(
+            row.Replace("__OUT__", string.Empty, StringComparison.Ordinal),
+            row.Replace(
+                "__OUT__",
+                ""","output":{"executed":false,"requiresConfirmation":true}""",
+                StringComparison.Ordinal),
+            """{"event":"end","data":{}}"""));
+
+        await DrainAsync(Provider(handler, conversations: repository), userId);
+
+        var call = await repository.FindToolCallAsync(
+            userId, AiConversationVocabulary.PersonalScope, "bb209266-1f6e-4a3f-9d21-6f0f9e2a1c77#0");
+
+        Assert.NotNull(call);
+        Assert.Equal(AiConversationVocabulary.PendingConfirmation, call!.Status);
+        Assert.Equal(AiToolCatalog.DeleteAllTasks, call.Name);
+
+        // And the narrowing the user agreed to is intact for re-validation.
+        Assert.Equal("done", call.Args.AsBsonDocument["status_filter"].AsString);
+    }
+
+    [Fact]
     public async Task declines_a_pending_call_that_outlived_the_stale_window()
     {
         var database = Database;

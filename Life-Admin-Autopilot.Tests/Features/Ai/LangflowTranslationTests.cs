@@ -271,6 +271,67 @@ public sealed class LangflowTranslationTests
     }
 
     [Fact]
+    public void keeps_a_gated_call_pending_when_langflow_redelivers_it_with_output()
+    {
+        // MEASURED regression: Langflow runs the tool's DRY RUN and redelivers the
+        // row with `output` populated in the same turn — the payload literally says
+        // `"executed": false, "requiresConfirmation": true`. Treating that as an
+        // outcome flipped the record to `executed`, and every confirmation then 404'd
+        // because RequirePendingToolCallAsync only accepts `pending_confirmation`.
+        // The user got a card whose button could never work.
+        var translator = new LangflowEventTranslator();
+
+        translator.Accept(Frame("add_message", GatedToolUse(output: null))).ToList();
+        var afterOutput = translator.Accept(Frame("add_message", GatedToolUse(
+            output: """{"executed":false,"requiresConfirmation":true,"count":2}"""))).ToList();
+
+        Assert.Empty(afterOutput);
+        Assert.Equal("pending_confirmation", Assert.Single(translator.ToolCalls).Status);
+    }
+
+    [Fact]
+    public void emits_no_tool_result_frame_for_a_gated_call()
+    {
+        // The confirm route emits its own tool_result once the user has actually
+        // decided. Two results for one call renders two outcomes for one action —
+        // which is also exactly what Node does: its loop yields tool_call for a
+        // deferred tool and continues without a result.
+        var translator = new LangflowEventTranslator();
+
+        var frames = translator.Accept(Frame("add_message", GatedToolUse(
+            output: """{"executed":false,"requiresConfirmation":true}"""))).ToList();
+
+        Assert.Equal(AiStreamEvents.ToolCallKind, Assert.Single(frames).Kind);
+    }
+
+    [Fact]
+    public void ignores_an_explicit_tool_result_event_for_a_gated_call_too()
+    {
+        // The rule is a property of the call, not of the frame that carried it, so it
+        // holds on the explicit tool_result path as well.
+        var translator = new LangflowEventTranslator();
+        translator.Accept(Frame("tool_call", """{"callId":"c","name":"deleteAllTasks","args":{}}""")).ToList();
+
+        var resolved = translator.Accept(Frame("tool_result", """{"callId":"c","result":{"executed":false}}"""));
+
+        Assert.Empty(resolved);
+        Assert.Equal("pending_confirmation", translator.ToolCalls[0].Status);
+    }
+
+    [Fact]
+    public void still_resolves_an_inline_tool_that_reports_output()
+    {
+        // The gate must not swallow ordinary results — only deleteAllTasks defers.
+        var translator = new LangflowEventTranslator();
+
+        translator.Accept(Frame("add_message", ToolUse("c1", "queryTasks", output: null))).ToList();
+        var resolved = translator.Accept(Frame("add_message", ToolUse("c1", "queryTasks", output: """{"count":3}""")));
+
+        Assert.Equal(AiStreamEvents.ToolResultKind, Single(resolved).Kind);
+        Assert.Equal("executed", translator.ToolCalls[0].Status);
+    }
+
+    [Fact]
     public void records_a_confirmable_call_as_pending_and_an_inline_one_as_executed()
     {
         var translator = new LangflowEventTranslator();
@@ -531,6 +592,18 @@ public sealed class LangflowTranslationTests
         """
             .Replace("__ID__", messageId is null ? string.Empty : $"\"id\":\"{messageId}\",", StringComparison.Ordinal)
             .Replace("__NAME__", name, StringComparison.Ordinal);
+
+    /// <summary>
+    /// The bulk-wipe row as live Langflow sends it: a stable message id, no block id,
+    /// and — once the dry run has run — an <c>output</c> that is a PREVIEW rather than
+    /// an execution.
+    /// </summary>
+    private static string GatedToolUse(string? output) =>
+        """
+        {"id":"bb209266-1f6e-4a3f-9d21-6f0f9e2a1c77","content_blocks":[{"contents":[
+        {"type":"tool_use","name":"DeleteAllTasksTool-v4","tool_input":{"status_filter":"done"}__OUT__}]}]}
+        """
+            .Replace("__OUT__", output is null ? string.Empty : $",\"output\":{output}", StringComparison.Ordinal);
 
     private static string ToolUse(string id, string name, string? output) =>
         $$"""

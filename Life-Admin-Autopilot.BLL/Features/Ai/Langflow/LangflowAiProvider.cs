@@ -253,14 +253,12 @@ public sealed class LangflowAiProvider : IAiProvider
 
             string? pendingEventName = null;
 
-            while (!reader.EndOfStream)
+            // Loop on ReadLineAsync's own null-at-EOF rather than checking
+            // EndOfStream: that property BLOCKS to fill the buffer, which on a stream
+            // deliberately held open between tokens is a synchronous wait on the
+            // network inside an async read (CA2024).
+            while (await reader.ReadLineAsync(cancellationToken).ConfigureAwait(false) is { } line)
             {
-                var line = await reader.ReadLineAsync(cancellationToken).ConfigureAwait(false);
-                if (line is null)
-                {
-                    break;
-                }
-
                 if (LangflowWireContract.TryParseLine(line, ref pendingEventName, out var frame))
                 {
                     yield return frame;

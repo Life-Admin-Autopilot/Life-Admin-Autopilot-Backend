@@ -281,14 +281,47 @@ public sealed class LangflowEventTranslator
         yield return AiStreamEvents.ToolCall(callId, name, args, needsConfirmation);
     }
 
+    /// <summary>
+    /// Settle a call the stream reported an outcome for.
+    ///
+    /// <para>
+    /// <b>A confirmation-gated call is NEVER resolved from the stream.</b> Langflow
+    /// runs the tool's dry run and redelivers the row with <c>output</c> populated
+    /// inside the same turn — but that payload is a preview, and it says so:
+    /// <c>"executed": false, "requiresConfirmation": …</c>. Treating it as an outcome
+    /// flipped the stored record from <c>pending_confirmation</c> to <c>executed</c>,
+    /// and <c>RequirePendingToolCallAsync</c> then 404'd every single confirmation.
+    /// The user got a card whose button could never work.
+    /// </para>
+    ///
+    /// <para>
+    /// Suppressing the <c>tool_result</c> frame along with the status is not a
+    /// side effect, it is the same rule: Node's tool loop yields <c>tool_call</c> for
+    /// a deferred tool and then <c>continue</c>s without a result, because the real
+    /// result belongs to the confirm route — which emits its own <c>tool_result</c>
+    /// once the user has actually decided. Two results for one call would render two
+    /// outcomes for one action.
+    /// </para>
+    /// </summary>
     private IEnumerable<AiStreamEvent> Resolve(string callId, JsonElement? result, string? error)
     {
-        if (!_announcedCalls.Contains(callId) || !_resolvedCalls.Add(callId))
+        if (!_announcedCalls.Contains(callId))
         {
             yield break;
         }
 
         var index = _toolCalls.FindIndex(c => c.CallId == callId);
+
+        if (index >= 0 && AiToolCatalog.RequiresConfirmation(_toolCalls[index].Name))
+        {
+            yield break;
+        }
+
+        if (!_resolvedCalls.Add(callId))
+        {
+            yield break;
+        }
+
         if (index >= 0)
         {
             _toolCalls[index] = _toolCalls[index] with
