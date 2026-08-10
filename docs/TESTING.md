@@ -145,3 +145,24 @@ Use `:4100` (dev mode) not `:4200` (`NODE_ENV=test`) for anything worker-depende
   ```
 
   Anything whose cwd is not this repo or `Steward/server` should not be running.
+
+## Before every merge: scan for credentials
+
+```bash
+./tools/dev/scan-secrets.sh          # working tree
+./tools/dev/scan-secrets.sh <rev>    # a specific commit
+```
+
+**Before every MERGE, not just before a push.** A redaction is a *deletion*, and
+a deletion loses a merge against any branch that still holds the original. That
+is exactly how a live Mistral key got back into `langflow/PLANNING-AGENT.md` and
+onto the remote: it was redacted on one slice, and the merge resolved that line
+in favour of a WIP commit predating the redaction.
+
+The scan that missed it required the secret to be quoted — true in JSON, false in
+Markdown prose. This one matches unquoted forms, prints file and line but never
+the value, and gates its 32-char rule on entropy plus the presence of a digit, so
+long C# method names do not drown the signal.
+
+**Re-redacting the tip is not remediation.** Anything already pushed stays in
+history and must be ROTATED at the provider.
