@@ -1,6 +1,7 @@
 using System.IdentityModel.Tokens.Jwt;
 using System.Security.Claims;
 using System.Text;
+using Life_Admin_Autopilot.BLL.Kernel.Auth;
 using Life_Admin_Autopilot.DAL.Features.Auth;
 using Life_Admin_Autopilot.DAL.Kernel.Documents;
 using Microsoft.Extensions.Configuration;
@@ -210,10 +211,7 @@ public static class AuthJwtConfiguration
 {
     public static AuthJwtOptions Read(IConfiguration configuration) => new()
     {
-        AccessSecret = configuration["Kernel:Jwt:AccessSecret"]
-            ?? configuration["JWT_ACCESS_SECRET"]
-            ?? configuration["Jwt:Key"]
-            ?? string.Empty,
+        AccessSecret = JwtSecretResolver.Resolve(configuration),
         AccessTtl = ParseTtl(configuration["JWT_ACCESS_TTL"], AuthTtl.AccessToken),
         RefreshTtl = ParseTtl(configuration["JWT_REFRESH_TTL"], AuthTtl.RefreshToken),
     };

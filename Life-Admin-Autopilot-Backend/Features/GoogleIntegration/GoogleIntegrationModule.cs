@@ -49,7 +49,9 @@ public static class GoogleIntegrationFeature
         services.AddScoped<IIntegrationRepository, IntegrationRepository>();
         services.AddScoped<IGoogleImportProfileReader, GoogleImportProfileReader>();
         services.AddScoped<IGoogleConnectionService, GoogleConnectionService>();
-        services.AddScoped<ExternalMatterReconciler>();
+
+        // ExternalMatterReconciler is a kernel type registered by AddKernelBusiness()
+        // and shared with the ICS importer — not registered here.
         services.AddScoped<IGoogleCalendarSyncService, GoogleCalendarSyncService>();
         services.AddScoped<IGoogleTasksSyncService, GoogleTasksSyncService>();
 

@@ -25,13 +25,8 @@ namespace Life_Admin_Autopilot.BLL.Features.Notifications;
 /// </summary>
 public static class NotificationsReadRequest
 {
-    /// <summary>zod's <c>.max(100)</c> on an array. Not in <c>ZodMessages</c> — see the note in this file's slice report.</summary>
+    /// <summary>zod's <c>.max(100)</c> on an array.</summary>
     public const int MaxIds = 100;
-
-    /// <summary>
-    /// <c>z.array(...).max(n)</c>. Captured live from <c>:4200</c> with 101 entries.
-    /// </summary>
-    public static string ArrayTooBig(int max) => $"Array must contain at most {max} element(s)";
 
     /// <summary>
     /// Parse the body root.
@@ -81,7 +76,7 @@ public static class NotificationsReadRequest
         // 101-entry array whose first element was a number.
         if (length > MaxIds)
         {
-            issues.Add(ValidationIssue.At("ids", ArrayTooBig(MaxIds)));
+            issues.Add(ValidationIssue.At("ids", ZodMessages.ArrayTooBig(MaxIds)));
         }
 
         var parsed = new List<ObjectId>();

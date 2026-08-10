@@ -19,7 +19,9 @@ public static class IcsFeedsFeature
         services.TryAddScoped<IcsFeedRepository>();
         services.TryAddScoped<IcsMatterRepository>();
         services.TryAddScoped<IcsImportContextReader>();
-        services.TryAddScoped<IcsMatterReconciler>();
+
+        // ExternalMatterReconciler is a kernel type registered by AddKernelBusiness()
+        // and shared with the Google importers — not registered here.
         services.TryAddScoped<IcsFeedSyncService>();
         services.TryAddScoped<FeedFetcher>();
 

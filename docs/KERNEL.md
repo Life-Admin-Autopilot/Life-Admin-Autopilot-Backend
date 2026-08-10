@@ -250,6 +250,16 @@ Use `ZodMessages` (`DAL/Kernel/Errors/ZodMessages.cs`) for the message text —
 `"Unrecognized key(s) in object: 'bogus'"`, `"must not be empty"`, and so on. Add a
 constant only after seeing the real output on port 4100.
 
+**Array sizes are in there too, and they are not the string ones.** `ArrayTooBig(n)`
+/ `ArrayTooSmall(n)` render `"Array must contain at most {n} element(s)"` — note
+**`element(s)`**, where the string forms say `character(s)`. The two differ by one
+word and are easy to cross-wire. This message was captured live but spent the port
+duplicated across three slice files and one slice-local helper; it is now in
+`ZodMessages` and every call site uses it. **If you find yourself writing a zod
+message literal inline, that is the signal it belongs here** — a message that exists
+in two places is a message that will eventually disagree with itself, and these
+strings are part of the byte-level contract.
+
 ### 2.4 Validation order is observable
 
 Use `NodeFieldRules` (`DAL/Kernel/Validation/NodeFieldRules.cs`). Do not hand-roll.
@@ -290,6 +300,24 @@ Measured on `POST /auth/signup` with a payload that is valid as JSON:
 
 Handled for you by `KernelBody` (§4); `KernelBody.IsJsonContentType` is the predicate
 if you need it directly.
+
+**The gate is NOT inherited — it lives in `KernelBody.ReadAsync<T>`, not in the
+pipeline.** Two slices hit this independently, which is why it is called out here.
+If your route reads its body any other way — a hand-rolled `JsonSerializer` call over
+`ctx.Request.Body`, a custom binder, a field-by-field reader over a `JsonDocument` —
+it does **not** get the gate, and it will happily parse a `text/plain` body that the
+reference ignores. That is both a parity break (your route 201s where Node 400s) and
+the CORS-simple-request hole described below. Call `KernelBody.IsJsonContentType(ctx)`
+yourself and treat a false as an empty body:
+
+```csharp
+if (!KernelBody.IsJsonContentType(ctx)) { /* body is {} — let the validators speak */ }
+```
+
+The one deliberate exception is `RawBodyReader`, which is **not** gated and must not
+be: upload routes match `express.raw({ type: [...] })` with their own per-route MIME
+allowlists, a different matcher from `express.json()`'s. See the note at the end of
+this section.
 
 **The gate runs BEFORE the body is read**, which is load-bearing rather than an
 implementation detail: body-parser never touches the stream of a request it skips, so
@@ -478,7 +506,17 @@ collection. A standalone transform over an existing kernel document counts:
   deletions are the whole point.**
 - Nullable members carry `[JsonIgnore(WhenWritingNull)]` — Mongoose never stores an
   unset optional, so it never appears in the JSON.
-- Declare properties in Mongoose schema order, with `id` and derived fields last.
+- Declare properties in **first-set order**, with `id` and derived fields last.
+  Schema order is the right answer only for a document written in one shot, and
+  saying "schema order" here was wrong. BSON preserves *insertion* order, and
+  Mongoose emits keys in the order the document actually acquired them — so for a
+  document written in **phases**, the fields a later phase adds land wherever they
+  were first set, which is **after** `createdAt`/`updatedAt`, not in their schema
+  position. A scan row that a worker later stamps with `rawExtractedText` and
+  `notifiedAt` is the standard case: those keys trail the timestamps in the stored
+  document and in `GET /me/export`, no matter where the schema declares them. Port
+  the order a live document actually has — read one back — rather than the order
+  the `.ts` file lists.
 - Timestamps use `JsIsoDateTimeConverter` (registered globally): always three
   fractional digits and a `Z`, matching `Date#toISOString()`. STJ's default trims
   `.600` to `.6`, which is a parity break.
@@ -511,6 +549,95 @@ but the transforms are non-obvious, so here they are verbatim:
 ---
 
 ## 7. Data access
+
+### 7.0 `updatedAt` — Mongoose writes it for you, the .NET driver does not
+
+**Read this before you port a single write.** It is the one trap in this document
+that no harness row can catch, and it has already cost several slices real time.
+
+Every Mongoose model in the reference declares `timestamps: true`. That option makes
+Mongoose **inject `updatedAt` into the `$set` of the update it sends** — on
+`updateOne`, `updateMany`, `findOneAndUpdate`, `replaceOne`, `bulkWrite` and
+`doc.save()` alike. The MongoDB .NET driver does nothing of the kind.
+
+The consequence is the nasty part:
+
+```ts
+// Node — routes/me.icsFeeds.ts:147. Nowhere does this mention updatedAt.
+await Task.updateMany(filter, { $set: { deletedAt: now } })
+// ...but the wire carries { $set: { deletedAt: now, updatedAt: now } }
+```
+
+So the Node route body **never names the field**. A faithful, careful,
+line-by-line port reproduces exactly what it sees and silently leaves the row's
+`updatedAt` stale. There is nothing in the source to notice you have missed.
+
+**Why no harness row catches it.** The write returns the status and body the
+reference returns, so the response under test is identical. The divergence only
+surfaces when a *later* request reads the row back — and the two servers hold
+independent databases seeded by independent request sequences, so their `updatedAt`
+values are never comparable anyway and every row that echoes one has to normalise it.
+The bug is real, user-visible through `GET /me/export` and any `sort: updatedAt`, and
+structurally invisible to the harness. Only reading the port against the reference
+finds it.
+
+**The rule.** Any Mongoose write you port against a `timestamps: true` model must set
+`updatedAt` **by hand**, in the same `$set`:
+
+```csharp
+Update.Set(t => t.DeletedAt, now)
+      .Set(t => t.UpdatedAt, now)     // Mongoose does this itself. You must not forget.
+```
+
+Two qualifications worth knowing:
+
+- **`createdAt` too, on insert** — but that one is usually caught, because a missing
+  `createdAt` is visible on the very first read.
+- **`$setOnInsert`-only upserts still bump it on the matched path.** Mongoose adds
+  `$set: { updatedAt }` alongside a dollar-keyed update even when your only operator
+  is `$setOnInsert`, so a worker re-run over an already-created row touches
+  `updatedAt` in Node and does not in a naive port.
+- **Check the model before "fixing" one.** `timestamps: { createdAt: true,
+  updatedAt: false }` means the field does not exist and writing it is its own
+  parity break. In the reference exactly one schema does this — `SubtaskSchema`
+  (`models/Task.ts:281`), an embedded subdocument. The `Task` **model** itself
+  (`models/Task.ts:357`) is plain `timestamps: true`, and so is every other model.
+
+**Known unfixed sites, as of this slice.** An audit of every `UpdateOneAsync` /
+`UpdateManyAsync` / `FindOneAndUpdateAsync` / `BulkWriteAsync` in the tree against
+its Node counterpart found the following still missing `UpdatedAt`. They are listed
+so each slice owner can fix their own — fixing twenty-odd call sites across six
+slices in one commit is not a reviewable change, and each needs its own check against
+the reference.
+
+The consolidation slice fixed exactly one of them:
+`IcsMatterRepository.RetireFutureOpenAsync`, pinned by
+`IcsMatterRepositoryTests.retiring_a_feed_stamps_updated_at_as_mongoose_would`
+(confirmed to fail without the fix). **Note the shape of that one**, because it is
+the shape that matters: a *standalone* `updateMany` with no other write on the path,
+so the stale timestamp is genuinely readable afterwards.
+
+By contrast the reconciler's own `DropDuplicateDueNudgeAsync` — which both slice
+copies also got "wrong" — turned out **not** to be observable: it only ever runs
+immediately after an insert or a timing update that already stamped the same `now`.
+It was corrected anyway for correctness-in-isolation, but it is worth knowing that
+not every missing `UpdatedAt` is a live bug. **Before fixing one from the table
+below, check whether something else on the path already writes it** — otherwise you
+will churn code and tests for no observable change.
+
+| Owner | Call site |
+| --- | --- |
+| kernel | `BLL/Kernel/Reminders/ReminderPlanner.cs` — `SetRulesRemindersAsync`, `SetSnoozeReminderAsync`, `RefineWithAiAsync` |
+| kernel | `BLL/Kernel/Tasks/ClarificationCascade.cs` — `DropForTasksAsync`, `DropOpenAsync` |
+| kernel | `BLL/Kernel/Tasks/BulkService.cs` — `ApplyAsync` / `UndoAsync` bulkWrites, and the `undone` mark on `taskbulkops` |
+| kernel | `DAL/Kernel/Quota/MongoUsageQuotaStore.cs` — five `$inc` sites across the three usage counters (**exported** by `GET /me/export`) |
+| C tasks | `DAL/Features/Tasks/TaskRepository.cs` — `RestoreAsync` (Node echoes the `{new:true}` document, so this one is **directly observable**) |
+| C tasks | `BLL/Features/Tasks/CategorizeService.cs` — the apply bulkWrite |
+| D notify | `DAL/Features/Notifications/ReminderTaskRepository.cs` — `TryClaimReminderAsync` |
+| D notify | `DAL/Features/Notifications/ReminderWorkerSupport.cs` — `StaleClarificationSettler.SettleStaleAsync` |
+| E scans | `DAL/Features/DocumentScans/ScannedDocumentRepository.cs` — `ClaimNextAsync`; `BLL/.../DocumentScanReviewService.cs` re-run path |
+| I AI | `DAL/Features/Ai/AiConversationRepository.cs` — `ExpireStalePendingToolCallsAsync` |
+| L voice | `DAL/Features/VoiceNotes/VoiceNoteRepository.cs` — `ClaimNextAsync`; `BLL/.../VoiceNoteTaskPersistence.cs` and `VoiceClarificationStaging.cs` re-run paths |
 
 ### Repository base — `MongoRepositoryBase<TDocument>`
 
@@ -962,6 +1089,17 @@ machine without it.
 | `Database:Provider` | — | `SqlServer` | `SqlServer` \| `Sqlite` — see §13.1 |
 | `Database:EnsureCreated` | — | `true` on SQLite, **never** on SQL Server | |
 | `ConnectionStrings:SqliteConnection` | — | `Data Source=life-admin-autopilot.db` | |
+
+**Resolve the JWT secret through `BLL/Kernel/Auth/JwtSecretResolver.Resolve()`, not
+by hand.** The three-key chain in the table above existed as three identical inline
+copies during the port — the auth slice's reader, the Google slice's options reader
+(which inlined it rather than take a dependency on another slice mid-port), and the
+PL kernel's options `PostConfigure`. The first two now call the resolver. The third
+is deliberately left alone and is not a fourth copy waiting to drift: it runs *after*
+the options binder has already consulted `Kernel:Jwt:AccessSecret` and guards on
+`IsNullOrWhiteSpace` rather than null, so routing it through the resolver would
+change what a whitespace-only secret does. If you add a fourth key, edit the resolver
+and that `PostConfigure` together.
 
 ### 13.1 The Identity SQL provider seam
 

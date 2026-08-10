@@ -15,6 +15,8 @@ State as of the last working session. Read this first; it is the handoff.
 | Frontend | `/Users/mina/Documents/Mina/Steward` |
 | Slice worktrees | `/Users/mina/Documents/Mina/backend-slices/{a-account,b-auth,c-tasks}` |
 | Kernel contract for slice authors | `docs/KERNEL.md` |
+| Deliberate non-matches, each argued | `docs/DIVERGENCES.md` |
+| Reference bugs reproduced on purpose | `docs/NODE-BUGS.md` — decision doc; a fix must land on BOTH servers at once |
 | Frozen API contract (87 ops) | `docs/contract/*.yaml` |
 | Parity harness | `tools/parity/` |
 
@@ -210,7 +212,7 @@ Full list in `docs/KERNEL.md` §2. The ones that bite hardest:
 - `renewsAt`/`canceledAt` are **absent keys** when unset, never `null`.
 - Timestamps use the 3-digit JS ISO form (`.600`, not `.6`).
 - `i18n` leaks on every task-returning endpoint except `GET /me/tasks` and `GET /me/tasks/{id}`.
-- Subtask text is never translated (the overlay keys on `sub._id` after `toJSON` renamed it to `id`, so the key is the literal string `"undefined"`). **Frozen bug — port as-is.**
+- Subtask text is never translated (the overlay keys on `sub._id` after `toJSON` renamed it to `id`, so the key is the literal string `"undefined"`). **Frozen bug — port as-is.** Eight of these reference bugs are now written up with evidence and a fix-or-keep call in `docs/NODE-BUGS.md`.
 - Two reachable 500s are part of the contract: `POST /me/tasks` with `kind:"reminder"` and no `dueAt`; and `PATCH {"dueAt":null}` on a reminder, which then makes all three subtask endpoints 500 forever.
 - Undo restores the task but does **not** un-drop its clarification.
 - `ai_not_configured` carries **six** different literal messages; `undo_not_found` two; `invalid_credentials` three.
