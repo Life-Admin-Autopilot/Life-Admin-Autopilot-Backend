@@ -325,18 +325,25 @@ public sealed class LangflowEventTranslator
             yield break;
         }
 
+        // Strip Langflow's `content`/`artifact` and our tool's `value` wrappers, so
+        // what reaches the client is the tool's own {ok, task} object. The card reads
+        // `result.task`; wrapped, that is undefined and a created matter renders as a
+        // bare ledger row instead of a card. Persisted unwrapped too, so reopening the
+        // conversation shows the same cards as the live turn.
+        var unwrapped = LangflowToolResult.Unwrap(result);
+
         if (index >= 0)
         {
             _toolCalls[index] = _toolCalls[index] with
             {
                 Status = string.IsNullOrEmpty(error) ? "executed" : "failed",
-                Result = result,
+                Result = unwrapped,
                 Error = error,
             };
         }
 
         // BOTH keys, always — the unused one explicitly null.
-        yield return AiStreamEvents.ToolResult(callId, result, string.IsNullOrEmpty(error) ? null : error);
+        yield return AiStreamEvents.ToolResult(callId, unwrapped, string.IsNullOrEmpty(error) ? null : error);
     }
 
     private void RememberFallback(string? text)
