@@ -180,7 +180,12 @@ public sealed class LangflowTranslationTests
         foreach (var name in AiToolCatalog.ToolNames)
         {
             var translator = new LangflowEventTranslator();
-            var call = Single(translator.Accept(Frame("tool_call", $$"""{"callId":"c","name":"{{name}}","args":{}}""")));
+            // Non-interpolated raw string plus Replace: the JSON's own `}}` runs
+            // collide with $$-interpolation's closing delimiter, and bumping to $$$
+            // just moves the collision to the `}}}` further along.
+            var call = Single(translator.Accept(Frame(
+                "tool_call",
+                """{"callId":"c","name":"__NAME__","args":{}}""".Replace("__NAME__", name, StringComparison.Ordinal))));
 
             Assert.Equal(
                 name == AiToolCatalog.DeleteAllTasks,
@@ -344,7 +349,8 @@ public sealed class LangflowTranslationTests
     private static JsonElement Parse(string json) => JsonDocument.Parse(json).RootElement.Clone();
 
     private static string EndWithText(string text) =>
-        $$"""{"result":{"outputs":[{"outputs":[{"results":{"message":{"text":{{JsonSerializer.Serialize(text)}}}}}]}]}}""";
+        """{"result":{"outputs":[{"outputs":[{"results":{"message":{"text":__TEXT__}}}]}]}}"""
+            .Replace("__TEXT__", JsonSerializer.Serialize(text), StringComparison.Ordinal);
 
     private static string ToolUse(string id, string name, string? output) =>
         $$"""
