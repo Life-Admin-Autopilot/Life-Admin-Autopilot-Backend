@@ -88,24 +88,23 @@ public static class AiStreamEndpoints
             // 5. ATOMIC RESERVE, before any expensive work and before the headers
             //    flush, so the 402 lands as an ordinary JSON error rather than an
             //    error frame. Whoever consumes the slot owes exactly one release if
-            //    the turn never reaches `done` — see below.
+            //    the turn never reaches `done` — AiStreamTurns owns that.
             var tier = AiQuotaService.ResolveTier();
             await quota.AdmitAsync(caller.Id, tier, cancellationToken: cancellationToken).ConfigureAwait(false);
 
-            // 6. Headers flush — from here on, only frames. Not built: see the class
-            //    remarks and the SSE protocol note in the slice report.
-            //
-            //    The turn cannot reach `done`, so the reserved slot is handed back
-            //    first. Node refunds in the same situation (its `finally` releases
-            //    whenever `reachedDone` is false); skipping it here would let a
-            //    configured-but-unwired deployment burn a user's whole day of quota
-            //    on requests that never produced an answer.
-            await quota.ReleaseAsync(caller.Id, cancellationToken: cancellationToken).ConfigureAwait(false);
+            // 6. Headers flush — from here on, only frames.
+            await AiStreamTurns
+                .RunAskAsync(
+                    context,
+                    caller,
+                    ai,
+                    quota,
+                    tier,
+                    new AiAskRequest(caller.IdString, question!, timezone),
+                    cancellationToken)
+                .ConfigureAwait(false);
 
-            throw new NotSupportedException(
-                $"POST /ai/ask streaming is deferred to the Langflow phase — reached only with a configured " +
-                $"provider (question {question!.Length} chars, timezone {timezone ?? "UTC"}). Implement " +
-                $"{nameof(IAiProvider)}.{nameof(IAiProvider.AskAsync)} and the SSE writer here.");
+            return Results.Empty;
         })
         .RequireAuthorization()
         .RateLimited(KernelRateLimiters.AiAsk);
@@ -116,7 +115,10 @@ public static class AiStreamEndpoints
         endpoints.MapPost("/ai/tools/confirm/{callId}", async (
             string callId,
             HttpContext context,
+            IAiProvider ai,
+            AiQuotaService quota,
             AiConversationService conversations,
+            AiConfirmedToolRunner tools,
             CancellationToken cancellationToken) =>
         {
             var caller = context.RequireUser();
@@ -142,12 +144,42 @@ public static class AiStreamEndpoints
                 .RequirePendingToolCallAsync(caller.Id, callId, cancellationToken)
                 .ConfigureAwait(false);
 
-            // Reachable only once a provider stages pending calls. The tool runner,
-            // the cross-user cache check, the args re-validation and the stream all
-            // belong to the Langflow phase.
-            _ = action;
-            throw new NotSupportedException(
-                $"POST /ai/tools/confirm/{{callId}} dispatch is deferred to the Langflow phase (tool '{call.Name}').");
+            // RE-VALIDATE ON RECOVERY. These args came back out of the database —
+            // possibly written by an older build, possibly an hour and a deploy ago —
+            // and they are about to drive a destructive dispatch. Re-parsing here is
+            // defence in depth, and it is deliberately BEFORE the flush so a stale
+            // record is an ordinary 400 rather than an error frame nobody reads.
+            //
+            // It also strips the display-only `count` the confirmation card carries,
+            // which must never reach the bulk filter.
+            var toolArgs = AiToolCatalog.ValidateArgs(call.Name, call.Args);
+
+            // Node ALSO peeks an in-memory map here, for two things: a cross-user
+            // ownership check, and the caller's timezone, which the record does not
+            // carry. Neither is modelled.
+            //
+            // The 403 `cross_user_confirm` is unreachable even in Node — the durable
+            // lookup above is already user-scoped, so another user's callId 404s
+            // before the map is consulted. The timezone is simply lost, exactly as it
+            // is on the reference after any restart; the record is the source of
+            // truth and a cache that survives nothing is not one.
+            await AiStreamTurns
+                .RunConfirmAsync(
+                    context,
+                    caller,
+                    ai,
+                    quota,
+                    conversations,
+                    tools,
+                    AiQuotaService.ResolveTier(),
+                    action!,
+                    callId,
+                    call.Name,
+                    toolArgs,
+                    cancellationToken)
+                .ConfigureAwait(false);
+
+            return Results.Empty;
         })
         .RequireAuthorization()
         .RateLimited(KernelRateLimiters.AiConfirm);

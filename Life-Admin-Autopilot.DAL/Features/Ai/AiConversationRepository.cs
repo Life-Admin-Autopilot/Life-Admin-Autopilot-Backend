@@ -138,6 +138,93 @@ public sealed class AiConversationRepository
     }
 
     /// <summary>
+    /// <c>recentTurns</c> — the last <paramref name="count"/> messages, capped at the
+    /// document's own <c>MaxTurns</c> so a future bug cannot ask for an unbounded
+    /// slice. Returns an empty list when no conversation exists yet; it does NOT
+    /// upsert, unlike <see cref="LoadAsync"/>.
+    /// </summary>
+    public async Task<IReadOnlyList<AiConversationMessageDocument>> RecentTurnsAsync(
+        ObjectId userId,
+        string scope,
+        int count = 10,
+        string? scopeId = null,
+        CancellationToken cancellationToken = default)
+    {
+        var capped = Math.Max(1, Math.Min(count, AiConversationVocabulary.MaxTurns));
+
+        var document = await _conversations
+            .Find(KeyFilter(userId, scope, scopeId))
+            .Project<AiConversationDocument>(
+                new BsonDocument("messages", new BsonDocument("$slice", -capped)))
+            .FirstOrDefaultAsync(cancellationToken)
+            .ConfigureAwait(false);
+
+        return document?.Messages ?? new List<AiConversationMessageDocument>();
+    }
+
+    /// <summary>
+    /// <c>expireStalePendingToolCalls</c> — flip every <c>pending_confirmation</c>
+    /// call older than <paramref name="maxAge"/> to <c>declined</c>.
+    ///
+    /// <para>
+    /// <b>This is what stops a durable pending record from becoming immortal.</b> The
+    /// confirm route treats the stored record as the source of truth precisely so a
+    /// confirmation survives a restart; without a sweep the same property would let a
+    /// "Delete everything?" card from last month still be confirmable. One hour is
+    /// the window Node uses, and the sweep is idempotent — a second run changes
+    /// nothing, because the status is no longer pending.
+    /// </para>
+    ///
+    /// <para>Returns the number of calls flipped.</para>
+    /// </summary>
+    public async Task<long> ExpireStalePendingToolCallsAsync(
+        ObjectId userId,
+        string scope,
+        TimeSpan maxAge,
+        DateTime? at = null,
+        string? scopeId = null,
+        CancellationToken cancellationToken = default)
+    {
+        var cutoff = (at ?? DateTime.UtcNow) - maxAge;
+
+        var filter = Builders<AiConversationDocument>.Filter.And(
+            KeyFilter(userId, scope, scopeId),
+            Builders<AiConversationDocument>.Filter.ElemMatch(
+                c => c.Messages,
+                Builders<AiConversationMessageDocument>.Filter.And(
+                    Builders<AiConversationMessageDocument>.Filter.Lt(m => m.CreatedAt, cutoff),
+                    Builders<AiConversationMessageDocument>.Filter.ElemMatch(
+                        m => m.ToolCalls!,
+                        Builders<AiConversationToolCallDocument>.Filter.Eq(
+                            t => t.Status, AiConversationVocabulary.PendingConfirmation)))));
+
+        var update = new BsonDocumentUpdateDefinition<AiConversationDocument>(
+            new BsonDocument(
+                "$set",
+                new BsonDocument("messages.$[msg].toolCalls.$[call].status", "declined")));
+
+        var options = new UpdateOptions
+        {
+            ArrayFilters = new ArrayFilterDefinition[]
+            {
+                new BsonDocumentArrayFilterDefinition<BsonDocument>(new BsonDocument
+                {
+                    ["msg.createdAt"] = new BsonDocument("$lt", cutoff),
+                    ["msg.toolCalls"] = new BsonDocument("$type", "array"),
+                }),
+                new BsonDocumentArrayFilterDefinition<BsonDocument>(
+                    new BsonDocument("call.status", AiConversationVocabulary.PendingConfirmation)),
+            },
+        };
+
+        var result = await _conversations
+            .UpdateOneAsync(filter, update, options, cancellationToken)
+            .ConfigureAwait(false);
+
+        return result.ModifiedCount;
+    }
+
+    /// <summary>
     /// <c>findPendingToolCall</c> — the DURABLE record is the source of truth for
     /// <c>POST /ai/tools/confirm/{callId}</c>. The in-memory map Node also keeps is
     /// a cache that does not survive a restart; a confirmation that outlived a

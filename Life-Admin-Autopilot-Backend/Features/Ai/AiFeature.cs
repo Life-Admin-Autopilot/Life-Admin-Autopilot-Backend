@@ -1,4 +1,5 @@
 using Life_Admin_Autopilot.BLL.Features.Ai;
+using Life_Admin_Autopilot.BLL.Features.Ai.Langflow;
 using Life_Admin_Autopilot.DAL.Features.Ai;
 using Life_Admin_Autopilot.DAL.Kernel;
 using Life_Admin_Autopilot_Backend.Kernel.Modules;
@@ -19,11 +20,31 @@ public static class AiFeature
         services.TryAddScoped<AiConversationRepository>();
         services.TryAddScoped<AiConversationService>();
         services.TryAddScoped<AiQuotaService>();
+        services.TryAddScoped<AiConfirmedToolRunner>();
 
-        // THE SEAM. `TryAdd` rather than `Replace`, so the Langflow phase can register
-        // a real provider ahead of this call and win without editing this file — and
-        // so a second slice asking for an IAiProvider gets the same one.
-        services.TryAddScoped<IAiProvider, NotConfiguredAiProvider>();
+        // THE SEAM, and the ONE line that decides which side of it you are on.
+        //
+        // Selection is on CONFIGURATION PRESENCE, not on a feature flag: a Langflow
+        // base URL and flow id together mean "there is an agent to talk to", and
+        // their absence keeps NotConfiguredAiProvider — which is what holds the
+        // parity target, since Node with no GEMINI_API_KEY is exactly a server whose
+        // isAiConfigured() is false. A deployment that sets neither behaves as it did
+        // before this slice existed, byte for byte.
+        //
+        // Still `TryAdd`, so a test or a later slice can register its own provider
+        // ahead of this call and win without editing this file.
+        var langflow = LangflowOptions.FromConfiguration(configuration);
+        services.TryAddSingleton(langflow);
+
+        if (langflow.IsConfigured)
+        {
+            services.AddHttpClient(LangflowOptions.HttpClientName);
+            services.TryAddScoped<IAiProvider, LangflowAiProvider>();
+        }
+        else
+        {
+            services.TryAddScoped<IAiProvider, NotConfiguredAiProvider>();
+        }
 
         // This slice owns two collections, so it owns both erasures. The registry is
         // what lets slice K delete an account without a hardcoded collection list.

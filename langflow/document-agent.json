@@ -1,0 +1,1192 @@
+{
+  "data": {
+    "edges": [
+      {
+        "animated": false,
+        "className": "",
+        "data": {
+          "sourceHandle": {
+            "dataType": "DocumentScanInput",
+            "id": "CustomComponent-Dci01",
+            "name": "scan_request",
+            "output_types": [
+              "Data"
+            ]
+          },
+          "targetHandle": {
+            "fieldName": "scan_request",
+            "id": "CustomComponent-Dvx01",
+            "inputTypes": [
+              "Data"
+            ],
+            "type": "other"
+          }
+        },
+        "id": "xy-edge__CustomComponent-Dci01{œdataTypeœ:œDocumentScanInputœ,œidœ:œCustomComponent-Dci01œ,œnameœ:œscan_requestœ,œoutput_typesœ:[œDataœ]}-CustomComponent-Dvx01{œfieldNameœ:œscan_requestœ,œidœ:œCustomComponent-Dvx01œ,œinputTypesœ:[œDataœ],œtypeœ:œotherœ}",
+        "selected": false,
+        "source": "CustomComponent-Dci01",
+        "sourceHandle": "{œdataTypeœ:œDocumentScanInputœ,œidœ:œCustomComponent-Dci01œ,œnameœ:œscan_requestœ,œoutput_typesœ:[œDataœ]}",
+        "target": "CustomComponent-Dvx01",
+        "targetHandle": "{œfieldNameœ:œscan_requestœ,œidœ:œCustomComponent-Dvx01œ,œinputTypesœ:[œDataœ],œtypeœ:œotherœ}"
+      },
+      {
+        "animated": false,
+        "className": "",
+        "data": {
+          "sourceHandle": {
+            "dataType": "DocumentVisionExtractor",
+            "id": "CustomComponent-Dvx01",
+            "name": "extraction",
+            "output_types": [
+              "Data"
+            ]
+          },
+          "targetHandle": {
+            "fieldName": "extraction",
+            "id": "CustomComponent-Dch01",
+            "inputTypes": [
+              "Data"
+            ],
+            "type": "other"
+          }
+        },
+        "id": "xy-edge__CustomComponent-Dvx01{œdataTypeœ:œDocumentVisionExtractorœ,œidœ:œCustomComponent-Dvx01œ,œnameœ:œextractionœ,œoutput_typesœ:[œDataœ]}-CustomComponent-Dch01{œfieldNameœ:œextractionœ,œidœ:œCustomComponent-Dch01œ,œinputTypesœ:[œDataœ],œtypeœ:œotherœ}",
+        "selected": false,
+        "source": "CustomComponent-Dvx01",
+        "sourceHandle": "{œdataTypeœ:œDocumentVisionExtractorœ,œidœ:œCustomComponent-Dvx01œ,œnameœ:œextractionœ,œoutput_typesœ:[œDataœ]}",
+        "target": "CustomComponent-Dch01",
+        "targetHandle": "{œfieldNameœ:œextractionœ,œidœ:œCustomComponent-Dch01œ,œinputTypesœ:[œDataœ],œtypeœ:œotherœ}"
+      },
+      {
+        "animated": false,
+        "className": "",
+        "data": {
+          "sourceHandle": {
+            "dataType": "CandidateHardener",
+            "id": "CustomComponent-Dch01",
+            "name": "document_scan_json",
+            "output_types": [
+              "Message"
+            ]
+          },
+          "targetHandle": {
+            "fieldName": "input_value",
+            "id": "ChatOutput-Dco01",
+            "inputTypes": [
+              "Data",
+              "JSON",
+              "DataFrame",
+              "Table",
+              "Message"
+            ],
+            "type": "other"
+          }
+        },
+        "id": "xy-edge__CustomComponent-Dch01{œdataTypeœ:œCandidateHardenerœ,œidœ:œCustomComponent-Dch01œ,œnameœ:œdocument_scan_jsonœ,œoutput_typesœ:[œMessageœ]}-ChatOutput-Dco01{œfieldNameœ:œinput_valueœ,œidœ:œChatOutput-Dco01œ,œinputTypesœ:[œDataœ,œJSONœ,œDataFrameœ,œTableœ,œMessageœ],œtypeœ:œotherœ}",
+        "selected": false,
+        "source": "CustomComponent-Dch01",
+        "sourceHandle": "{œdataTypeœ:œCandidateHardenerœ,œidœ:œCustomComponent-Dch01œ,œnameœ:œdocument_scan_jsonœ,œoutput_typesœ:[œMessageœ]}",
+        "target": "ChatOutput-Dco01",
+        "targetHandle": "{œfieldNameœ:œinput_valueœ,œidœ:œChatOutput-Dco01œ,œinputTypesœ:[œDataœ,œJSONœ,œDataFrameœ,œTableœ,œMessageœ],œtypeœ:œotherœ}"
+      }
+    ],
+    "nodes": [
+      {
+        "data": {
+          "id": "CustomComponent-Dci01",
+          "node": {
+            "base_classes": [
+              "Data"
+            ],
+            "beta": false,
+            "conditional_paths": [],
+            "custom_fields": {},
+            "description": "Entry point for the Document Agent. Takes document text and/or page images plus the host's context, composes the extraction prompt, and emits one payload for the rest of the flow.",
+            "display_name": "Document Scan Input",
+            "documentation": "",
+            "edited": true,
+            "field_order": [
+              "document_text",
+              "page_images_json",
+              "page_count",
+              "current_date",
+              "timezone",
+              "locale",
+              "document_id",
+              "max_candidates",
+              "extraction_instructions"
+            ],
+            "frozen": false,
+            "icon": "file-text",
+            "legacy": false,
+            "lf_version": "1.10.0",
+            "metadata": {
+              "dependencies": {
+                "dependencies": [
+                  {
+                    "name": "langflow",
+                    "version": null
+                  }
+                ],
+                "total_dependencies": 1
+              },
+              "module": "custom_components.DocumentScanInput"
+            },
+            "minimized": false,
+            "output_types": [],
+            "outputs": [
+              {
+                "allows_loop": false,
+                "cache": true,
+                "display_name": "Scan Request",
+                "group_outputs": false,
+                "hidden": null,
+                "loop_types": null,
+                "method": "build_request",
+                "name": "scan_request",
+                "options": null,
+                "required_inputs": null,
+                "selected": "Data",
+                "tool_mode": false,
+                "types": [
+                  "Data"
+                ],
+                "value": "__UNDEFINED__"
+              }
+            ],
+            "pinned": false,
+            "template": {
+              "_type": "Component",
+              "code": {
+                "advanced": true,
+                "dynamic": true,
+                "fileTypes": [],
+                "file_path": "",
+                "info": "",
+                "list": false,
+                "load_from_db": false,
+                "multiline": true,
+                "name": "code",
+                "password": false,
+                "placeholder": "",
+                "required": true,
+                "show": true,
+                "title_case": false,
+                "type": "code",
+                "value": "import json\n\nfrom langflow.custom import Component\nfrom langflow.io import IntInput, MessageTextInput, MultilineInput, Output\nfrom langflow.schema import Data\n\n# Entry point for the Document Agent. Owns every host-supplied value so the rest\n# of the flow has a single input surface, and owns the extraction instructions so\n# the prompt stays visible and editable in the Langflow canvas instead of being\n# buried in a model node.\n#\n# Emits ONE Data payload carrying the composed prompt, the normalized page\n# images, and the context the hardener needs later (page count, timezone,\n# document id). Nothing downstream needs a second tweak.\n\nMAX_CANDIDATES_CEILING = 15\n\nDOMAINS = (\"health\", \"home\", \"car\", \"finance\", \"family\", \"pets\")\nPRIORITIES = (\"low\", \"normal\", \"high\", \"urgent\")\nCONFIDENCES = (\"high\", \"medium\", \"low\")\nDOCUMENT_TYPES = (\n    \"bill\",\n    \"statement\",\n    \"letter\",\n    \"form\",\n    \"receipt\",\n    \"insurance\",\n    \"medical\",\n    \"legal\",\n    \"identity\",\n    \"tax\",\n    \"other\",\n)\n\n# Sentinel tokens rather than str.format: the instruction text is full of JSON\n# braces, and .format would choke on every one of them.\nDEFAULT_INSTRUCTIONS = \"\"\"\nYou are reading a SCANNED DOCUMENT and producing STRUCTURED TASK CANDIDATES for a personal\nlife-admin assistant.\n\nYou are not writing prose. You are not creating tasks. Everything you emit is a CANDIDATE that a\nhuman reviews and then accepts or discards, and each one carries a citation back to the page it\ncame from. Structure and honest uncertainty are the whole job.\n\nReturn ONLY a single JSON object. No markdown, no code fences, no commentary before or after it.\nThe first character of your reply must be { and the last must be }.\n\n=====================================================================\nCONTEXT\n=====================================================================\nToday is <<CURRENT_DATE>>. The reader's timezone is <<TIMEZONE>>.\nThis document has <<PAGE_COUNT>> page(s).\n<<PAGE_MANIFEST>>\n<<DOCUMENT_TEXT>>\n\n=====================================================================\nWHAT COUNTS AS A CANDIDATE\n=====================================================================\nOne candidate per discrete actionable item, at most <<MAX_CANDIDATES>>: bills to pay, appointments\nto keep, renewals and expirations, deadlines, forms to submit, anything the document demands of\nthe reader.\n\nA single document can hold several. An insurance renewal letter naming both a payment due date and\na policy-renewal deadline is two candidates, not one. Emit each separately.\n\nIgnore boilerplate, marketing, legal footers, and anything that asks nothing of the reader. If the\ndocument asks for nothing at all, return an empty candidates array and still fill in the\ndocument-level fields below.\n\n=====================================================================\nPER CANDIDATE\n=====================================================================\n- title: a short imperative title written for the reader, not copied off the page.\n  \"Pay electricity bill\". \"Renew car insurance\". Not \"INVOICE 88213-4471\".\n\n- domain: exactly one of <<DOMAINS>>. Pick the single best fit.\n\n- priority: exactly one of <<PRIORITIES>>. Drive it from due-date proximity and from the language\n  on the page. \"Final notice\", \"overdue\", \"service will be disconnected\" is urgent. A routine\n  renewal four months out is low. Absent any signal, normal.\n\n- dueAt: your best resolution of any stated deadline, as ISO 8601 with a literal T and an explicit\n  UTC offset, e.g. \"2026-07-30T09:00:00+00:00\". null when the document states no date, or when you\n  cannot resolve one. Do not invent a date that is not on the page.\n\n- notes: ONE short natural sentence explaining this item the way you would say it out loud, with\n  the figures and reference numbers that matter woven in.\n  Good: \"Electricity bill for $142.37, account 88213-4471, due July 30.\"\n  Bad: \"Account Number: 88213-4471, Amount Due: $142.37\" - that is a label dump, not a sentence.\n  null when the title already says everything.\n\n- sourcePage: the 1-based page number, counting the pages in the order listed above, that this\n  candidate's key value was read from. If you genuinely cannot tell which page it came from,\n  return null and say so plainly in notes. NEVER invent a page number. The citation chip sends the\n  user to that page to check your work, and a confident wrong page is worse than no page at all.\n\n- confidence: high | medium | low. Read the next section before setting it.\n\n=====================================================================\nCONFIDENCE - READ THIS TWICE\n=====================================================================\nconfidence is not decoration and it is not politeness. The review screen renders a low-confidence\nvalue as a warning the user must confirm before it can become a reminder. It is the only thing\nstanding between a misread character and a wrong reminder, and one wrong reminder loses the user\npermanently.\n\nTwo failures cost the same:\n\n  UNDER-WARNING - presenting a guess as certain. A date you resolved by picking the likelier of two\n  readings is a guess. Marking it high is the exact failure this field exists to prevent.\n\n  OVER-WARNING - flagging everything. A review screen where every row is a warning teaches the user\n  to tap through without reading, which destroys the warning just as thoroughly. low has to stay\n  rare enough to still mean something.\n\nSet confidence for the candidate as a whole, governed by its WEAKEST load-bearing value - the\naction itself, and the date if it has one.\n\n  high    Every load-bearing value is printed on the page in a form with exactly one reading, and\n          you could point at the characters. \"Due 30 July 2026\" has one reading. \"$142.37\" has one\n          reading.\n\n  medium  You read the page correctly, but something took judgment: the date was derived rather\n          than printed (\"within 30 days of this notice\"), the action is implied rather than stated,\n          a figure is legible but the label around it is not, or you could not tell which page the\n          value came from.\n\n  low     Any ONE of these is enough on its own:\n          - the value has more than one plausible reading\n          - the glyphs are unclear, cut off, skewed, glared, creased, or handwritten\n          - you supplied a value that is not printed anywhere on the page\n          - the OCR text around the value is visibly garbled\n\nTHE DATE-ORDER RULE\n\nThis is the specific failure the product is built to survive. A date written in digits with no\nmonth name - 1/12, 01-12, 1.12 - has two readings: 1 December and 12 January. The page usually\ndoes not say which one it means.\n\nWhen both numbers are 12 or less AND they differ, that date is AMBIGUOUS. Choose the reading you\nbelieve is right, put it in dueAt, and report the ambiguity honestly in the evidence fields below.\nAn ambiguous date can never be high.\n\nA digits-only date is NOT ambiguous when the page itself settles it:\n  - one number exceeds 12 - 25/12/2026 can only be 25 December\n  - both numbers are equal - 12/12 reads the same either way\n  - the month is spelled out - \"30 July 2026\", \"Jul 30 2026\"\n  - it is ISO ordered - 2026-07-30\n  - the page prints its own format (\"DD/MM/YYYY\"), or another date on the same page forces the\n    order (a 13/05 elsewhere proves this document writes day first)\n\nDo not force those down to low. Over-warning is a real failure, not a safe default.\n\n=====================================================================\nEVIDENCE FIELDS\n=====================================================================\nThese three are read by the pipeline and stripped before anything reaches the user. They are how\nthe pipeline checks your reading rather than taking your word for it, so answer them literally.\n\n- dueAtRaw: the date EXACTLY as printed on the page, character for character - \"1/12\",\n  \"30 July 2026\", \"within 30 days\". Do not normalize it. null when there is no date.\n\n- dueAtSource: how you obtained the date.\n    printed  - it is on the page and you copied it\n    derived  - you computed it from something on the page (\"within 30 days of 3 July\")\n    inferred - you supplied it from expectation rather than from the page\n    none     - there is no date\n\n- dueAtOrderEvidence: if dueAtRaw was digits-only, what on the page told you the day/month order?\n  Quote it briefly - \"header prints DD/MM/YYYY\", \"another date on page 2 reads 13/05\". null when\n  nothing did. null is the honest answer when you guessed, and guessing is allowed here as long as\n  you say so.\n\n=====================================================================\nDESCRIBE THE DOCUMENT ITSELF\n=====================================================================\nThese five describe the whole document rather than any one candidate, and they are what the user\nsees in their document list. Fill them in even when there are no candidates at all.\n\n- documentType: exactly one of <<DOCUMENT_TYPES>>. Classify what the document IS, not what it asks\n  of you. A bill you already paid is still \"bill\". A letter that happens to demand payment is still\n  \"letter\" if it is not itemized like an invoice. Use \"other\" honestly when nothing fits - a\n  confidently wrong type is worse than a generic one.\n\n- documentTitle: a SHORT NOUN PHRASE naming the document, at most <<TITLE_MAX>> characters. No\n  sentence punctuation, no leading article. \"Electricity bill\". \"Car insurance renewal\". \"Blood\n  test results\". Not \"This is an electricity bill from City Power\" - that is a sentence. Keep the\n  sender's name out of it; that belongs in issuer.\n\n- documentSubtitle: ONE line, at most <<SUBTITLE_MAX>> characters, carrying the most useful concrete\n  facts - amount, deadline, reference number, period covered. It renders on a single line and is\n  CUT OFF when it overflows, so put the single most important thing FIRST.\n  Good: \"Due July 30 - $142.37 - account 88213-4471\". null when the title already says everything.\n\n- issuer: the organization or person the document came from, verbatim as printed - \"City Power\",\n  \"Dr. Amira Hassan\" - at most <<ISSUER_MAX>> characters. Copy it exactly as it appears; never\n  translate it. null when not stated.\n\n- documentSummary: a one-to-two-sentence overview in prose - what the document is, who it is from,\n  and the single most important fact. This one is shown on a detail screen with room for a full\n  sentence, so it may repeat the title and subtitle. null when you cannot tell.\n\n<<LANGUAGE_RULE>>\n\n=====================================================================\nRETURN EXACTLY THIS SHAPE\n=====================================================================\n{\n  \"documentSummary\": string | null,\n  \"documentType\": string | null,\n  \"documentTitle\": string | null,\n  \"documentSubtitle\": string | null,\n  \"issuer\": string | null,\n  \"candidates\": [\n    {\n      \"title\": string,\n      \"domain\": string,\n      \"priority\": string,\n      \"confidence\": string,\n      \"dueAt\": string | null,\n      \"dueAtRaw\": string | null,\n      \"dueAtSource\": string,\n      \"dueAtOrderEvidence\": string | null,\n      \"notes\": string | null,\n      \"sourcePage\": integer | null\n    }\n  ]\n}\n\nDo not emit a \"key\" field. The pipeline assigns candidate keys deterministically so that re-running\nthis extraction on the same document produces the same keys.\n\nReturn ONLY that JSON object.\n\"\"\".strip()\n\n\nclass DocumentScanInputComponent(Component):\n    display_name = \"Document Scan Input\"\n    description = (\n        \"Entry point for the Document Agent. Takes document text and/or page images plus the \"\n        \"host's context, composes the extraction prompt, and emits one payload for the rest of \"\n        \"the flow.\"\n    )\n    icon = \"file-text\"\n    name = \"DocumentScanInput\"\n\n    inputs = [\n        MultilineInput(\n            name=\"document_text\",\n            display_name=\"Document Text\",\n            info=(\n                \"Extracted / OCR'd text of the document, if the host has it. Optional when page \"\n                \"images are supplied. Prefix each page with a 'Page N' marker so the model can \"\n                \"ground sourcePage.\"\n            ),\n            value=\"\",\n        ),\n        MultilineInput(\n            name=\"page_images_json\",\n            display_name=\"Page Images (JSON array)\",\n            info=(\n                'JSON array of page images in page order: [{\"page\": 1, \"format\": \"png\", '\n                '\"data_base64\": \"...\"}]. \"page\" is optional and defaults to the array index + 1. '\n                \"Mirrors the gateway's multimodal image shape. Optional when document_text is \"\n                \"supplied.\"\n            ),\n            value=\"\",\n        ),\n        IntInput(\n            name=\"page_count\",\n            display_name=\"Page Count\",\n            info=(\n                \"Number of pages in the source document. Used to reject an invented sourcePage. \"\n                \"0 means 'derive it from the images supplied'.\"\n            ),\n            value=0,\n        ),\n        MessageTextInput(\n            name=\"current_date\",\n            display_name=\"Current Date (ISO-8601)\",\n            info=(\n                \"Today's date from the HOST, e.g. 2026-08-10. Supplied rather than read off the \"\n                \"clock so relative deadlines resolve against the user's day, not the server's.\"\n            ),\n            value=\"\",\n        ),\n        MessageTextInput(\n            name=\"timezone\",\n            display_name=\"Timezone (IANA)\",\n            info=\"e.g. Africa/Cairo. Used to resolve a naive date to an instant.\",\n            value=\"UTC\",\n        ),\n        MessageTextInput(\n            name=\"locale\",\n            display_name=\"Locale\",\n            info=(\n                \"Language the candidate copy should be written in, e.g. en or ar. issuer is always \"\n                \"kept verbatim regardless.\"\n            ),\n            value=\"en\",\n        ),\n        MessageTextInput(\n            name=\"document_id\",\n            display_name=\"Document Id\",\n            info=(\n                \"The host's scanned-document id. Mixed into each candidate key so keys are unique \"\n                \"per document and stable across re-runs.\"\n            ),\n            value=\"\",\n        ),\n        IntInput(\n            name=\"max_candidates\",\n            display_name=\"Max Candidates\",\n            info=f\"Hard ceiling is {MAX_CANDIDATES_CEILING}.\",\n            value=MAX_CANDIDATES_CEILING,\n        ),\n        MultilineInput(\n            name=\"extraction_instructions\",\n            display_name=\"Extraction Instructions\",\n            info=(\n                \"The extraction prompt. <<TOKENS>> are substituted at build time. Edit here rather \"\n                \"than in the model node.\"\n            ),\n            value=DEFAULT_INSTRUCTIONS,\n        ),\n    ]\n\n    outputs = [\n        Output(display_name=\"Scan Request\", name=\"scan_request\", method=\"build_request\"),\n    ]\n\n    def _parse_images(self) -> list[dict]:\n        raw = (self.page_images_json or \"\").strip()\n        if not raw:\n            return []\n        try:\n            parsed = json.loads(raw)\n        except (TypeError, ValueError) as ex:\n            msg = f\"page_images_json is not valid JSON: {ex}\"\n            raise ValueError(msg) from ex\n        if not isinstance(parsed, list):\n            msg = \"page_images_json must be a JSON array of image objects.\"\n            raise TypeError(msg)\n\n        images: list[dict] = []\n        for index, item in enumerate(parsed):\n            if not isinstance(item, dict):\n                msg = f\"page_images_json[{index}] is not an object.\"\n                raise TypeError(msg)\n            data_b64 = item.get(\"data_base64\") or item.get(\"dataBase64\") or \"\"\n            if not isinstance(data_b64, str) or not data_b64.strip():\n                msg = f\"page_images_json[{index}] has no data_base64.\"\n                raise ValueError(msg)\n            page = item.get(\"page\")\n            images.append(\n                {\n                    \"page\": int(page) if isinstance(page, (int, float, str)) and str(page).isdigit() else index + 1,\n                    \"format\": str(item.get(\"format\") or \"png\").lower(),\n                    \"data_base64\": data_b64.strip(),\n                }\n            )\n        return images\n\n    def _page_manifest(self, images: list[dict], page_count: int) -> str:\n        if images:\n            listing = \", \".join(f\"page {img['page']}\" for img in images)\n            return (\n                f\"The page images are attached in this order: {listing}. \"\n                \"sourcePage refers to these numbers.\"\n            )\n        if page_count > 0:\n            return (\n                f\"No page images were attached; you are working from text only. The document has \"\n                f\"{page_count} page(s). Use the 'Page N' markers in the text to set sourcePage, and \"\n                \"return null for sourcePage when the text carries no page markers.\"\n            )\n        return (\n            \"No page images were attached and no page count was supplied. Return null for \"\n            \"sourcePage unless the text itself states a page number.\"\n        )\n\n    def _language_rule(self, locale: str) -> str:\n        if not locale or locale.lower().startswith(\"en\"):\n            return (\n                \"Write title, notes, documentTitle, documentSubtitle and documentSummary in English. \"\n                \"issuer is copied from the page exactly as printed, never translated.\"\n            )\n        return (\n            f\"Write title, notes, documentTitle, documentSubtitle and documentSummary in the \"\n            f\"language with code '{locale}', regardless of the document's own language, so the \"\n            f\"reader gets copy they can read. Keep proper nouns, organisation names, reference \"\n            f\"numbers and amounts as printed. issuer is copied from the page exactly as printed, \"\n            f\"never translated.\"\n        )\n\n    def build_request(self) -> Data:\n        images = self._parse_images()\n        document_text = (self.document_text or \"\").strip()\n\n        if not images and not document_text:\n            msg = (\n                \"Document Scan Input needs at least one of document_text or page_images_json. \"\n                \"Both were empty.\"\n            )\n            raise ValueError(msg)\n\n        declared_pages = int(self.page_count or 0)\n        page_count = declared_pages if declared_pages > 0 else (max((i[\"page\"] for i in images), default=0))\n\n        max_candidates = int(self.max_candidates or MAX_CANDIDATES_CEILING)\n        max_candidates = max(1, min(max_candidates, MAX_CANDIDATES_CEILING))\n\n        locale = (self.locale or \"en\").strip()\n        timezone = (self.timezone or \"UTC\").strip() or \"UTC\"\n        current_date = (self.current_date or \"\").strip()\n        if not current_date:\n            msg = (\n                \"Document Scan Input requires current_date from the host. Without it, relative \"\n                \"deadlines ('within 30 days') resolve against the wrong day.\"\n            )\n            raise ValueError(msg)\n\n        text_block = (\n            f\"DOCUMENT TEXT FOLLOWS BETWEEN THE MARKERS.\\n\"\n            f\"---BEGIN DOCUMENT TEXT---\\n{document_text}\\n---END DOCUMENT TEXT---\"\n            if document_text\n            else \"No extracted text was supplied; read the attached page images.\"\n        )\n\n        prompt = (self.extraction_instructions or DEFAULT_INSTRUCTIONS)\n        substitutions = {\n            \"<<CURRENT_DATE>>\": current_date,\n            \"<<TIMEZONE>>\": timezone,\n            \"<<PAGE_COUNT>>\": str(page_count) if page_count else \"an unknown number of\",\n            \"<<PAGE_MANIFEST>>\": self._page_manifest(images, page_count),\n            \"<<DOCUMENT_TEXT>>\": text_block,\n            \"<<MAX_CANDIDATES>>\": str(max_candidates),\n            \"<<DOMAINS>>\": \", \".join(DOMAINS),\n            \"<<PRIORITIES>>\": \", \".join(PRIORITIES),\n            \"<<DOCUMENT_TYPES>>\": \", \".join(DOCUMENT_TYPES),\n            \"<<TITLE_MAX>>\": \"60\",\n            \"<<SUBTITLE_MAX>>\": \"120\",\n            \"<<ISSUER_MAX>>\": \"80\",\n            \"<<LANGUAGE_RULE>>\": self._language_rule(locale),\n        }\n        for token, value in substitutions.items():\n            prompt = prompt.replace(token, value)\n\n        payload = {\n            \"prompt\": prompt,\n            \"images\": images,\n            \"context\": {\n                \"documentId\": (self.document_id or \"\").strip(),\n                \"pageCount\": page_count,\n                \"timezone\": timezone,\n                \"currentDate\": current_date,\n                \"locale\": locale,\n                \"maxCandidates\": max_candidates,\n            },\n        }\n        self.status = (\n            f\"{len(images)} image(s), {len(document_text)} chars of text, \"\n            f\"pageCount={page_count}, max={max_candidates}\"\n        )\n        return Data(data=payload)\n"
+              },
+              "document_text": {
+                "advanced": false,
+                "display_name": "Document Text",
+                "dynamic": false,
+                "info": "Extracted / OCR'd text of the document, if the host has it. Optional when page images are supplied. Prefix each page with a 'Page N' marker so the model can ground sourcePage.",
+                "list": false,
+                "list_add_label": "Add More",
+                "name": "document_text",
+                "override_skip": false,
+                "placeholder": "",
+                "required": false,
+                "show": true,
+                "title_case": false,
+                "trace_as_metadata": true,
+                "track_in_telemetry": false,
+                "_input_type": "MultilineInput",
+                "input_types": [
+                  "Message"
+                ],
+                "load_from_db": false,
+                "multiline": true,
+                "password": false,
+                "tool_mode": false,
+                "trace_as_input": true,
+                "type": "str",
+                "value": "",
+                "ai_enabled": false,
+                "copy_field": false
+              },
+              "page_images_json": {
+                "advanced": false,
+                "display_name": "Page Images (JSON array)",
+                "dynamic": false,
+                "info": "JSON array of page images in page order: [{\"page\": 1, \"format\": \"png\", \"data_base64\": \"...\"}]. Mirrors the gateway multimodal image shape. Optional when document_text is supplied.",
+                "list": false,
+                "list_add_label": "Add More",
+                "name": "page_images_json",
+                "override_skip": false,
+                "placeholder": "",
+                "required": false,
+                "show": true,
+                "title_case": false,
+                "trace_as_metadata": true,
+                "track_in_telemetry": false,
+                "_input_type": "MultilineInput",
+                "input_types": [
+                  "Message"
+                ],
+                "load_from_db": false,
+                "multiline": true,
+                "password": false,
+                "tool_mode": false,
+                "trace_as_input": true,
+                "type": "str",
+                "value": "",
+                "ai_enabled": false,
+                "copy_field": false
+              },
+              "page_count": {
+                "advanced": false,
+                "display_name": "Page Count",
+                "dynamic": false,
+                "info": "Number of pages in the source document. Used to reject an invented sourcePage. 0 means derive it from the images supplied.",
+                "list": false,
+                "list_add_label": "Add More",
+                "name": "page_count",
+                "override_skip": false,
+                "placeholder": "",
+                "required": false,
+                "show": true,
+                "title_case": false,
+                "trace_as_metadata": true,
+                "track_in_telemetry": false,
+                "_input_type": "IntInput",
+                "input_types": [],
+                "tool_mode": false,
+                "type": "int",
+                "value": 0
+              },
+              "current_date": {
+                "advanced": false,
+                "display_name": "Current Date (ISO-8601)",
+                "dynamic": false,
+                "info": "Today's date from the HOST, e.g. 2026-08-10. Supplied rather than read off the clock so relative deadlines resolve against the user's day, not the server's.",
+                "list": false,
+                "list_add_label": "Add More",
+                "name": "current_date",
+                "override_skip": false,
+                "placeholder": "",
+                "required": false,
+                "show": true,
+                "title_case": false,
+                "trace_as_metadata": true,
+                "track_in_telemetry": false,
+                "_input_type": "MessageTextInput",
+                "input_types": [
+                  "Message"
+                ],
+                "load_from_db": false,
+                "multiline": false,
+                "password": false,
+                "tool_mode": false,
+                "trace_as_input": true,
+                "type": "str",
+                "value": ""
+              },
+              "timezone": {
+                "advanced": false,
+                "display_name": "Timezone (IANA)",
+                "dynamic": false,
+                "info": "e.g. Africa/Cairo. Used to resolve a naive date to an instant.",
+                "list": false,
+                "list_add_label": "Add More",
+                "name": "timezone",
+                "override_skip": false,
+                "placeholder": "",
+                "required": false,
+                "show": true,
+                "title_case": false,
+                "trace_as_metadata": true,
+                "track_in_telemetry": false,
+                "_input_type": "MessageTextInput",
+                "input_types": [
+                  "Message"
+                ],
+                "load_from_db": false,
+                "multiline": false,
+                "password": false,
+                "tool_mode": false,
+                "trace_as_input": true,
+                "type": "str",
+                "value": "UTC"
+              },
+              "locale": {
+                "advanced": false,
+                "display_name": "Locale",
+                "dynamic": false,
+                "info": "Language the candidate copy should be written in, e.g. en or ar. issuer is always kept verbatim.",
+                "list": false,
+                "list_add_label": "Add More",
+                "name": "locale",
+                "override_skip": false,
+                "placeholder": "",
+                "required": false,
+                "show": true,
+                "title_case": false,
+                "trace_as_metadata": true,
+                "track_in_telemetry": false,
+                "_input_type": "MessageTextInput",
+                "input_types": [
+                  "Message"
+                ],
+                "load_from_db": false,
+                "multiline": false,
+                "password": false,
+                "tool_mode": false,
+                "trace_as_input": true,
+                "type": "str",
+                "value": "en"
+              },
+              "document_id": {
+                "advanced": false,
+                "display_name": "Document Id",
+                "dynamic": false,
+                "info": "The host's scanned-document id. Mixed into each candidate key so keys are unique per document and stable across re-runs.",
+                "list": false,
+                "list_add_label": "Add More",
+                "name": "document_id",
+                "override_skip": false,
+                "placeholder": "",
+                "required": false,
+                "show": true,
+                "title_case": false,
+                "trace_as_metadata": true,
+                "track_in_telemetry": false,
+                "_input_type": "MessageTextInput",
+                "input_types": [
+                  "Message"
+                ],
+                "load_from_db": false,
+                "multiline": false,
+                "password": false,
+                "tool_mode": false,
+                "trace_as_input": true,
+                "type": "str",
+                "value": ""
+              },
+              "max_candidates": {
+                "advanced": false,
+                "display_name": "Max Candidates",
+                "dynamic": false,
+                "info": "Hard ceiling is 15.",
+                "list": false,
+                "list_add_label": "Add More",
+                "name": "max_candidates",
+                "override_skip": false,
+                "placeholder": "",
+                "required": false,
+                "show": true,
+                "title_case": false,
+                "trace_as_metadata": true,
+                "track_in_telemetry": false,
+                "_input_type": "IntInput",
+                "input_types": [],
+                "tool_mode": false,
+                "type": "int",
+                "value": 15
+              },
+              "extraction_instructions": {
+                "advanced": false,
+                "display_name": "Extraction Instructions",
+                "dynamic": false,
+                "info": "The extraction prompt. <<TOKENS>> are substituted at build time.",
+                "list": false,
+                "list_add_label": "Add More",
+                "name": "extraction_instructions",
+                "override_skip": false,
+                "placeholder": "",
+                "required": false,
+                "show": true,
+                "title_case": false,
+                "trace_as_metadata": true,
+                "track_in_telemetry": false,
+                "_input_type": "MultilineInput",
+                "input_types": [
+                  "Message"
+                ],
+                "load_from_db": false,
+                "multiline": true,
+                "password": false,
+                "tool_mode": false,
+                "trace_as_input": true,
+                "type": "str",
+                "value": "You are reading a SCANNED DOCUMENT and producing STRUCTURED TASK CANDIDATES for a personal\nlife-admin assistant.\n\nYou are not writing prose. You are not creating tasks. Everything you emit is a CANDIDATE that a\nhuman reviews and then accepts or discards, and each one carries a citation back to the page it\ncame from. Structure and honest uncertainty are the whole job.\n\nReturn ONLY a single JSON object. No markdown, no code fences, no commentary before or after it.\nThe first character of your reply must be { and the last must be }.\n\n=====================================================================\nCONTEXT\n=====================================================================\nToday is <<CURRENT_DATE>>. The reader's timezone is <<TIMEZONE>>.\nThis document has <<PAGE_COUNT>> page(s).\n<<PAGE_MANIFEST>>\n<<DOCUMENT_TEXT>>\n\n=====================================================================\nWHAT COUNTS AS A CANDIDATE\n=====================================================================\nOne candidate per discrete actionable item, at most <<MAX_CANDIDATES>>: bills to pay, appointments\nto keep, renewals and expirations, deadlines, forms to submit, anything the document demands of\nthe reader.\n\nA single document can hold several. An insurance renewal letter naming both a payment due date and\na policy-renewal deadline is two candidates, not one. Emit each separately.\n\nIgnore boilerplate, marketing, legal footers, and anything that asks nothing of the reader. If the\ndocument asks for nothing at all, return an empty candidates array and still fill in the\ndocument-level fields below.\n\n=====================================================================\nPER CANDIDATE\n=====================================================================\n- title: a short imperative title written for the reader, not copied off the page.\n  \"Pay electricity bill\". \"Renew car insurance\". Not \"INVOICE 88213-4471\".\n\n- domain: exactly one of <<DOMAINS>>. Pick the single best fit.\n\n- priority: exactly one of <<PRIORITIES>>. Drive it from due-date proximity and from the language\n  on the page. \"Final notice\", \"overdue\", \"service will be disconnected\" is urgent. A routine\n  renewal four months out is low. Absent any signal, normal.\n\n- dueAt: your best resolution of any stated deadline, as ISO 8601 with a literal T and an explicit\n  UTC offset, e.g. \"2026-07-30T09:00:00+00:00\". null when the document states no date, or when you\n  cannot resolve one. Do not invent a date that is not on the page.\n\n- notes: ONE short natural sentence explaining this item the way you would say it out loud, with\n  the figures and reference numbers that matter woven in.\n  Good: \"Electricity bill for $142.37, account 88213-4471, due July 30.\"\n  Bad: \"Account Number: 88213-4471, Amount Due: $142.37\" - that is a label dump, not a sentence.\n  null when the title already says everything.\n\n- sourcePage: the 1-based page number, counting the pages in the order listed above, that this\n  candidate's key value was read from. If you genuinely cannot tell which page it came from,\n  return null and say so plainly in notes. NEVER invent a page number. The citation chip sends the\n  user to that page to check your work, and a confident wrong page is worse than no page at all.\n\n- confidence: high | medium | low. Read the next section before setting it.\n\n=====================================================================\nCONFIDENCE - READ THIS TWICE\n=====================================================================\nconfidence is not decoration and it is not politeness. The review screen renders a low-confidence\nvalue as a warning the user must confirm before it can become a reminder. It is the only thing\nstanding between a misread character and a wrong reminder, and one wrong reminder loses the user\npermanently.\n\nTwo failures cost the same:\n\n  UNDER-WARNING - presenting a guess as certain. A date you resolved by picking the likelier of two\n  readings is a guess. Marking it high is the exact failure this field exists to prevent.\n\n  OVER-WARNING - flagging everything. A review screen where every row is a warning teaches the user\n  to tap through without reading, which destroys the warning just as thoroughly. low has to stay\n  rare enough to still mean something.\n\nSet confidence for the candidate as a whole, governed by its WEAKEST load-bearing value - the\naction itself, and the date if it has one.\n\n  high    Every load-bearing value is printed on the page in a form with exactly one reading, and\n          you could point at the characters. \"Due 30 July 2026\" has one reading. \"$142.37\" has one\n          reading.\n\n  medium  You read the page correctly, but something took judgment: the date was derived rather\n          than printed (\"within 30 days of this notice\"), the action is implied rather than stated,\n          a figure is legible but the label around it is not, or you could not tell which page the\n          value came from.\n\n  low     Any ONE of these is enough on its own:\n          - the value has more than one plausible reading\n          - the glyphs are unclear, cut off, skewed, glared, creased, or handwritten\n          - you supplied a value that is not printed anywhere on the page\n          - the OCR text around the value is visibly garbled\n\nTHE DATE-ORDER RULE\n\nThis is the specific failure the product is built to survive. A date written in digits with no\nmonth name - 1/12, 01-12, 1.12 - has two readings: 1 December and 12 January. The page usually\ndoes not say which one it means.\n\nWhen both numbers are 12 or less AND they differ, that date is AMBIGUOUS. Choose the reading you\nbelieve is right, put it in dueAt, and report the ambiguity honestly in the evidence fields below.\nAn ambiguous date can never be high.\n\nA digits-only date is NOT ambiguous when the page itself settles it:\n  - one number exceeds 12 - 25/12/2026 can only be 25 December\n  - both numbers are equal - 12/12 reads the same either way\n  - the month is spelled out - \"30 July 2026\", \"Jul 30 2026\"\n  - it is ISO ordered - 2026-07-30\n  - the page prints its own format (\"DD/MM/YYYY\"), or another date on the same page forces the\n    order (a 13/05 elsewhere proves this document writes day first)\n\nDo not force those down to low. Over-warning is a real failure, not a safe default.\n\n=====================================================================\nEVIDENCE FIELDS\n=====================================================================\nThese three are read by the pipeline and stripped before anything reaches the user. They are how\nthe pipeline checks your reading rather than taking your word for it, so answer them literally.\n\n- dueAtRaw: the date EXACTLY as printed on the page, character for character - \"1/12\",\n  \"30 July 2026\", \"within 30 days\". Do not normalize it. null when there is no date.\n\n- dueAtSource: how you obtained the date.\n    printed  - it is on the page and you copied it\n    derived  - you computed it from something on the page (\"within 30 days of 3 July\")\n    inferred - you supplied it from expectation rather than from the page\n    none     - there is no date\n\n- dueAtOrderEvidence: if dueAtRaw was digits-only, what on the page told you the day/month order?\n  Quote it briefly - \"header prints DD/MM/YYYY\", \"another date on page 2 reads 13/05\". null when\n  nothing did. null is the honest answer when you guessed, and guessing is allowed here as long as\n  you say so.\n\n=====================================================================\nDESCRIBE THE DOCUMENT ITSELF\n=====================================================================\nThese five describe the whole document rather than any one candidate, and they are what the user\nsees in their document list. Fill them in even when there are no candidates at all.\n\n- documentType: exactly one of <<DOCUMENT_TYPES>>. Classify what the document IS, not what it asks\n  of you. A bill you already paid is still \"bill\". A letter that happens to demand payment is still\n  \"letter\" if it is not itemized like an invoice. Use \"other\" honestly when nothing fits - a\n  confidently wrong type is worse than a generic one.\n\n- documentTitle: a SHORT NOUN PHRASE naming the document, at most <<TITLE_MAX>> characters. No\n  sentence punctuation, no leading article. \"Electricity bill\". \"Car insurance renewal\". \"Blood\n  test results\". Not \"This is an electricity bill from City Power\" - that is a sentence. Keep the\n  sender's name out of it; that belongs in issuer.\n\n- documentSubtitle: ONE line, at most <<SUBTITLE_MAX>> characters, carrying the most useful concrete\n  facts - amount, deadline, reference number, period covered. It renders on a single line and is\n  CUT OFF when it overflows, so put the single most important thing FIRST.\n  Good: \"Due July 30 - $142.37 - account 88213-4471\". null when the title already says everything.\n\n- issuer: the organization or person the document came from, verbatim as printed - \"City Power\",\n  \"Dr. Amira Hassan\" - at most <<ISSUER_MAX>> characters. Copy it exactly as it appears; never\n  translate it. null when not stated.\n\n- documentSummary: a one-to-two-sentence overview in prose - what the document is, who it is from,\n  and the single most important fact. This one is shown on a detail screen with room for a full\n  sentence, so it may repeat the title and subtitle. null when you cannot tell.\n\n<<LANGUAGE_RULE>>\n\n=====================================================================\nRETURN EXACTLY THIS SHAPE\n=====================================================================\n{\n  \"documentSummary\": string | null,\n  \"documentType\": string | null,\n  \"documentTitle\": string | null,\n  \"documentSubtitle\": string | null,\n  \"issuer\": string | null,\n  \"candidates\": [\n    {\n      \"title\": string,\n      \"domain\": string,\n      \"priority\": string,\n      \"confidence\": string,\n      \"dueAt\": string | null,\n      \"dueAtRaw\": string | null,\n      \"dueAtSource\": string,\n      \"dueAtOrderEvidence\": string | null,\n      \"notes\": string | null,\n      \"sourcePage\": integer | null\n    }\n  ]\n}\n\nDo not emit a \"key\" field. The pipeline assigns candidate keys deterministically so that re-running\nthis extraction on the same document produces the same keys.\n\nReturn ONLY that JSON object.",
+                "ai_enabled": false,
+                "copy_field": false
+              }
+            },
+            "tool_mode": false
+          },
+          "showNode": true,
+          "type": "DocumentScanInput"
+        },
+        "dragging": false,
+        "id": "CustomComponent-Dci01",
+        "measured": {
+          "height": 400,
+          "width": 320
+        },
+        "position": {
+          "x": -520.0,
+          "y": -140.0
+        },
+        "selected": false,
+        "type": "genericNode"
+      },
+      {
+        "data": {
+          "id": "CustomComponent-Dvx01",
+          "node": {
+            "base_classes": [
+              "Data"
+            ],
+            "beta": false,
+            "conditional_paths": [],
+            "custom_fields": {},
+            "description": "Sends the composed prompt plus page images to the configured model gateway and returns the raw model output alongside the context the hardener needs.",
+            "display_name": "Document Vision Extractor",
+            "documentation": "",
+            "edited": true,
+            "field_order": [
+              "scan_request",
+              "api_base_url",
+              "model_id",
+              "api_key",
+              "chat_path",
+              "multimodal_path",
+              "max_tokens",
+              "timeout_seconds",
+              "max_retries"
+            ],
+            "frozen": false,
+            "icon": "scan-eye",
+            "legacy": false,
+            "lf_version": "1.10.0",
+            "metadata": {
+              "dependencies": {
+                "dependencies": [
+                  {
+                    "name": "requests",
+                    "version": null
+                  },
+                  {
+                    "name": "langflow",
+                    "version": null
+                  }
+                ],
+                "total_dependencies": 2
+              },
+              "module": "custom_components.DocumentVisionExtractor"
+            },
+            "minimized": false,
+            "output_types": [],
+            "outputs": [
+              {
+                "allows_loop": false,
+                "cache": true,
+                "display_name": "Extraction",
+                "group_outputs": false,
+                "hidden": null,
+                "loop_types": null,
+                "method": "extract",
+                "name": "extraction",
+                "options": null,
+                "required_inputs": null,
+                "selected": "Data",
+                "tool_mode": false,
+                "types": [
+                  "Data"
+                ],
+                "value": "__UNDEFINED__"
+              }
+            ],
+            "pinned": false,
+            "template": {
+              "_type": "Component",
+              "code": {
+                "advanced": true,
+                "dynamic": true,
+                "fileTypes": [],
+                "file_path": "",
+                "info": "",
+                "list": false,
+                "load_from_db": false,
+                "multiline": true,
+                "name": "code",
+                "password": false,
+                "placeholder": "",
+                "required": true,
+                "show": true,
+                "title_case": false,
+                "type": "code",
+                "value": "import json\nimport os\nimport time\n\nimport requests\nfrom langflow.custom import Component\nfrom langflow.io import DataInput, IntInput, MessageTextInput, Output, SecretStrInput\nfrom langflow.schema import Data\n\n# The vision call. Deliberately a custom component rather than one of Langflow's\n# built-in model nodes: this product talks to a gateway whose multimodal request\n# shape is \"text\" + \"images[{format, data_base64}]\" per message, not Anthropic's\n# or OpenAI's native content-block format. See\n# Life-Admin-Autopilot.DAL/Claude/Models/Internal/ClaudeMultimodalWireRequest.cs -\n# no stock model component emits that shape, so wrapping it here keeps the flow\n# honest about what it actually sends.\n#\n# Nothing about the endpoint is baked in. Host, model and credential all resolve\n# from Langflow global variables or the process environment, and the component\n# refuses to run rather than falling back to a default host.\n\nRETRYABLE_STATUS = frozenset({408, 409, 425, 429, 500, 502, 503, 504})\n\n\nclass DocumentVisionExtractorComponent(Component):\n    display_name = \"Document Vision Extractor\"\n    description = (\n        \"Sends the composed prompt plus page images to the configured model gateway and returns \"\n        \"the raw model output alongside the context the hardener needs.\"\n    )\n    icon = \"scan-eye\"\n    name = \"DocumentVisionExtractor\"\n\n    inputs = [\n        DataInput(\n            name=\"scan_request\",\n            display_name=\"Scan Request\",\n            info=\"Payload from Document Scan Input.\",\n        ),\n        MessageTextInput(\n            name=\"api_base_url\",\n            display_name=\"API Base URL\",\n            info=(\n                \"Gateway origin, e.g. https://gateway.example.com. No default and no fallback \"\n                \"host: leave blank to read the DOCUMENT_AGENT_BASE_URL environment variable \"\n                \"instead. The component errors if neither is set.\"\n            ),\n            value=\"\",\n            required=False,\n        ),\n        MessageTextInput(\n            name=\"model_id\",\n            display_name=\"Model Id\",\n            info=(\n                \"Gateway model identifier. Leave blank to read the DOCUMENT_AGENT_MODEL_ID \"\n                \"environment variable.\"\n            ),\n            value=\"\",\n            required=False,\n        ),\n        SecretStrInput(\n            name=\"api_key\",\n            display_name=\"API Key\",\n            info=(\n                \"Resolved from the Langflow global variable named here; never stored in this \"\n                \"file. Falls back to the DOCUMENT_AGENT_API_KEY environment variable when blank.\"\n            ),\n            required=False,\n        ),\n        MessageTextInput(\n            name=\"chat_path\",\n            display_name=\"Text Endpoint Path\",\n            info=\"Appended to the base URL when there are no page images.\",\n            value=\"/api/v1/student/chat\",\n            advanced=True,\n        ),\n        MessageTextInput(\n            name=\"multimodal_path\",\n            display_name=\"Multimodal Endpoint Path\",\n            info=\"Appended to the base URL when page images are present.\",\n            value=\"/api/v1/student/multimodal-chat\",\n            advanced=True,\n        ),\n        IntInput(\n            name=\"max_tokens\",\n            display_name=\"Max Tokens\",\n            value=8192,\n            advanced=True,\n        ),\n        IntInput(\n            name=\"timeout_seconds\",\n            display_name=\"Timeout (seconds)\",\n            value=120,\n            advanced=True,\n        ),\n        IntInput(\n            name=\"max_retries\",\n            display_name=\"Max Retries\",\n            info=\"Retries only on network errors and retryable status codes.\",\n            value=2,\n            advanced=True,\n        ),\n    ]\n\n    outputs = [\n        Output(display_name=\"Extraction\", name=\"extraction\", method=\"extract\"),\n    ]\n\n    def _resolve(self, field_value: str, env_name: str, label: str) -> str:\n        value = (field_value or \"\").strip() or os.environ.get(env_name, \"\").strip()\n        if not value:\n            msg = (\n                f\"{label} is not configured. Set the '{field_value or env_name}' field on the \"\n                f\"Document Vision Extractor node, or export {env_name}. This component has no \"\n                f\"default {label.lower()} on purpose.\"\n            )\n            raise ValueError(msg)\n        return value\n\n    def _payload(self, prompt: str, images: list[dict], model_id: str) -> tuple[str, dict]:\n        max_tokens = int(self.max_tokens or 8192)\n        if images:\n            body = {\n                \"model_id\": model_id,\n                \"messages\": [\n                    {\n                        \"role\": \"user\",\n                        \"text\": prompt,\n                        \"images\": [\n                            {\"format\": img[\"format\"], \"data_base64\": img[\"data_base64\"]}\n                            for img in images\n                        ],\n                    }\n                ],\n                \"max_tokens\": max_tokens,\n            }\n            return (self.multimodal_path or \"/api/v1/student/multimodal-chat\"), body\n\n        body = {\n            \"model_id\": model_id,\n            \"messages\": [{\"role\": \"user\", \"content\": prompt}],\n            \"max_tokens\": max_tokens,\n        }\n        return (self.chat_path or \"/api/v1/student/chat\"), body\n\n    def _post(self, url: str, body: dict, api_key: str) -> str:\n        timeout = int(self.timeout_seconds or 120)\n        attempts = max(1, int(self.max_retries or 0) + 1)\n        last_error = \"\"\n\n        for attempt in range(attempts):\n            try:\n                response = requests.post(\n                    url,\n                    json=body,\n                    headers={\n                        \"Content-Type\": \"application/json\",\n                        \"Authorization\": f\"Bearer {api_key}\",\n                    },\n                    timeout=timeout,\n                )\n            except requests.RequestException as ex:\n                last_error = f\"network error: {ex}\"\n            else:\n                if response.status_code < 400:\n                    try:\n                        envelope = response.json()\n                    except ValueError as ex:\n                        msg = f\"Gateway returned a non-JSON body: {ex}\"\n                        raise ValueError(msg) from ex\n                    # Same envelope for both endpoints, confirmed empirically on the\n                    # .NET side - see ClaudeChatWireResponse.cs.\n                    output_text = envelope.get(\"output_text\")\n                    if not isinstance(output_text, str) or not output_text.strip():\n                        msg = f\"Gateway returned no output_text. Envelope keys: {sorted(envelope)}\"\n                        raise ValueError(msg)\n                    return output_text\n                # A 4xx that is not retryable is a contract problem; surface it now\n                # rather than burning the retry budget on it.\n                last_error = f\"HTTP {response.status_code}: {response.text[:500]}\"\n                if response.status_code not in RETRYABLE_STATUS:\n                    break\n\n            if attempt < attempts - 1:\n                time.sleep(2**attempt)\n\n        msg = f\"Document extraction call failed after {attempts} attempt(s). Last error: {last_error}\"\n        raise RuntimeError(msg)\n\n    def extract(self) -> Data:\n        request = self.scan_request.data if isinstance(self.scan_request, Data) else self.scan_request\n        if not isinstance(request, dict):\n            msg = \"Scan Request must be the Data payload emitted by Document Scan Input.\"\n            raise TypeError(msg)\n\n        prompt = request.get(\"prompt\") or \"\"\n        images = request.get(\"images\") or []\n        context = request.get(\"context\") or {}\n        if not prompt:\n            msg = \"Scan Request carried no prompt.\"\n            raise ValueError(msg)\n\n        base_url = self._resolve(self.api_base_url, \"DOCUMENT_AGENT_BASE_URL\", \"API base URL\").rstrip(\"/\")\n        model_id = self._resolve(self.model_id, \"DOCUMENT_AGENT_MODEL_ID\", \"Model id\")\n        api_key = self._resolve(self.api_key, \"DOCUMENT_AGENT_API_KEY\", \"API key\")\n\n        path, body = self._payload(prompt, images, model_id)\n        url = f\"{base_url}/{path.lstrip('/')}\"\n\n        raw_output = self._post(url, body, api_key)\n\n        self.status = f\"{len(raw_output)} chars from {model_id} ({len(images)} image(s))\"\n        return Data(\n            data={\n                \"rawOutput\": raw_output,\n                \"context\": context,\n                \"modelId\": model_id,\n                \"imageCount\": len(images),\n            }\n        )\n"
+              },
+              "scan_request": {
+                "advanced": false,
+                "display_name": "Scan Request",
+                "dynamic": false,
+                "info": "Payload from Document Scan Input.",
+                "list": false,
+                "list_add_label": "Add More",
+                "name": "scan_request",
+                "override_skip": false,
+                "placeholder": "",
+                "required": false,
+                "show": true,
+                "title_case": false,
+                "trace_as_metadata": true,
+                "track_in_telemetry": false,
+                "_input_type": "DataInput",
+                "input_types": [
+                  "Data"
+                ],
+                "tool_mode": false,
+                "trace_as_input": true,
+                "type": "other",
+                "value": ""
+              },
+              "api_base_url": {
+                "advanced": false,
+                "display_name": "API Base URL",
+                "dynamic": false,
+                "info": "Gateway origin, e.g. https://gateway.example.com. No default and no fallback host: leave blank to read the DOCUMENT_AGENT_BASE_URL environment variable instead. The component errors if neither is set.",
+                "list": false,
+                "list_add_label": "Add More",
+                "name": "api_base_url",
+                "override_skip": false,
+                "placeholder": "",
+                "required": false,
+                "show": true,
+                "title_case": false,
+                "trace_as_metadata": true,
+                "track_in_telemetry": false,
+                "_input_type": "MessageTextInput",
+                "input_types": [
+                  "Message"
+                ],
+                "load_from_db": false,
+                "multiline": false,
+                "password": false,
+                "tool_mode": false,
+                "trace_as_input": true,
+                "type": "str",
+                "value": ""
+              },
+              "model_id": {
+                "advanced": false,
+                "display_name": "Model Id",
+                "dynamic": false,
+                "info": "Gateway model identifier. Leave blank to read the DOCUMENT_AGENT_MODEL_ID environment variable.",
+                "list": false,
+                "list_add_label": "Add More",
+                "name": "model_id",
+                "override_skip": false,
+                "placeholder": "",
+                "required": false,
+                "show": true,
+                "title_case": false,
+                "trace_as_metadata": true,
+                "track_in_telemetry": false,
+                "_input_type": "MessageTextInput",
+                "input_types": [
+                  "Message"
+                ],
+                "load_from_db": false,
+                "multiline": false,
+                "password": false,
+                "tool_mode": false,
+                "trace_as_input": true,
+                "type": "str",
+                "value": ""
+              },
+              "api_key": {
+                "advanced": false,
+                "display_name": "API Key",
+                "dynamic": false,
+                "info": "Resolved from the Langflow global variable named here; never stored in this file. Falls back to the DOCUMENT_AGENT_API_KEY environment variable when blank.",
+                "list": false,
+                "list_add_label": "Add More",
+                "name": "api_key",
+                "override_skip": false,
+                "placeholder": "",
+                "required": false,
+                "show": true,
+                "title_case": false,
+                "trace_as_metadata": true,
+                "track_in_telemetry": false,
+                "_input_type": "SecretStrInput",
+                "input_types": [],
+                "load_from_db": true,
+                "password": true,
+                "type": "str",
+                "value": "DOCUMENT_AGENT_API_KEY"
+              },
+              "chat_path": {
+                "advanced": true,
+                "display_name": "Text Endpoint Path",
+                "dynamic": false,
+                "info": "Appended to the base URL when there are no page images.",
+                "list": false,
+                "list_add_label": "Add More",
+                "name": "chat_path",
+                "override_skip": false,
+                "placeholder": "",
+                "required": false,
+                "show": true,
+                "title_case": false,
+                "trace_as_metadata": true,
+                "track_in_telemetry": false,
+                "_input_type": "MessageTextInput",
+                "input_types": [
+                  "Message"
+                ],
+                "load_from_db": false,
+                "multiline": false,
+                "password": false,
+                "tool_mode": false,
+                "trace_as_input": true,
+                "type": "str",
+                "value": "/api/v1/student/chat"
+              },
+              "multimodal_path": {
+                "advanced": true,
+                "display_name": "Multimodal Endpoint Path",
+                "dynamic": false,
+                "info": "Appended to the base URL when page images are present.",
+                "list": false,
+                "list_add_label": "Add More",
+                "name": "multimodal_path",
+                "override_skip": false,
+                "placeholder": "",
+                "required": false,
+                "show": true,
+                "title_case": false,
+                "trace_as_metadata": true,
+                "track_in_telemetry": false,
+                "_input_type": "MessageTextInput",
+                "input_types": [
+                  "Message"
+                ],
+                "load_from_db": false,
+                "multiline": false,
+                "password": false,
+                "tool_mode": false,
+                "trace_as_input": true,
+                "type": "str",
+                "value": "/api/v1/student/multimodal-chat"
+              },
+              "max_tokens": {
+                "advanced": true,
+                "display_name": "Max Tokens",
+                "dynamic": false,
+                "info": "",
+                "list": false,
+                "list_add_label": "Add More",
+                "name": "max_tokens",
+                "override_skip": false,
+                "placeholder": "",
+                "required": false,
+                "show": true,
+                "title_case": false,
+                "trace_as_metadata": true,
+                "track_in_telemetry": false,
+                "_input_type": "IntInput",
+                "input_types": [],
+                "tool_mode": false,
+                "type": "int",
+                "value": 8192
+              },
+              "timeout_seconds": {
+                "advanced": true,
+                "display_name": "Timeout (seconds)",
+                "dynamic": false,
+                "info": "",
+                "list": false,
+                "list_add_label": "Add More",
+                "name": "timeout_seconds",
+                "override_skip": false,
+                "placeholder": "",
+                "required": false,
+                "show": true,
+                "title_case": false,
+                "trace_as_metadata": true,
+                "track_in_telemetry": false,
+                "_input_type": "IntInput",
+                "input_types": [],
+                "tool_mode": false,
+                "type": "int",
+                "value": 120
+              },
+              "max_retries": {
+                "advanced": true,
+                "display_name": "Max Retries",
+                "dynamic": false,
+                "info": "Retries only on network errors and retryable status codes.",
+                "list": false,
+                "list_add_label": "Add More",
+                "name": "max_retries",
+                "override_skip": false,
+                "placeholder": "",
+                "required": false,
+                "show": true,
+                "title_case": false,
+                "trace_as_metadata": true,
+                "track_in_telemetry": false,
+                "_input_type": "IntInput",
+                "input_types": [],
+                "tool_mode": false,
+                "type": "int",
+                "value": 2
+              }
+            },
+            "tool_mode": false
+          },
+          "showNode": true,
+          "type": "DocumentVisionExtractor"
+        },
+        "dragging": false,
+        "id": "CustomComponent-Dvx01",
+        "measured": {
+          "height": 400,
+          "width": 320
+        },
+        "position": {
+          "x": -60.0,
+          "y": -140.0
+        },
+        "selected": false,
+        "type": "genericNode"
+      },
+      {
+        "data": {
+          "id": "CustomComponent-Dch01",
+          "node": {
+            "base_classes": [
+              "Message"
+            ],
+            "beta": false,
+            "conditional_paths": [],
+            "custom_fields": {},
+            "description": "Parses the model's output, coerces it to the ScanCandidate contract, enforces the confidence calibration rules, assigns deterministic keys, and emits bare JSON.",
+            "display_name": "Candidate Hardener",
+            "documentation": "",
+            "edited": true,
+            "field_order": [
+              "extraction"
+            ],
+            "frozen": false,
+            "icon": "shield-check",
+            "legacy": false,
+            "lf_version": "1.10.0",
+            "metadata": {
+              "dependencies": {
+                "dependencies": [
+                  {
+                    "name": "langflow",
+                    "version": null
+                  }
+                ],
+                "total_dependencies": 1
+              },
+              "module": "custom_components.CandidateHardener"
+            },
+            "minimized": false,
+            "output_types": [],
+            "outputs": [
+              {
+                "allows_loop": false,
+                "cache": true,
+                "display_name": "Document Scan JSON",
+                "group_outputs": false,
+                "hidden": null,
+                "loop_types": null,
+                "method": "harden",
+                "name": "document_scan_json",
+                "options": null,
+                "required_inputs": null,
+                "selected": "Message",
+                "tool_mode": false,
+                "types": [
+                  "Message"
+                ],
+                "value": "__UNDEFINED__"
+              }
+            ],
+            "pinned": false,
+            "template": {
+              "_type": "Component",
+              "code": {
+                "advanced": true,
+                "dynamic": true,
+                "fileTypes": [],
+                "file_path": "",
+                "info": "",
+                "list": false,
+                "load_from_db": false,
+                "multiline": true,
+                "name": "code",
+                "password": false,
+                "placeholder": "",
+                "required": true,
+                "show": true,
+                "title_case": false,
+                "type": "code",
+                "value": "import hashlib\nimport json\nimport re\nfrom datetime import datetime, timezone as dt_timezone\n\nfrom langflow.custom import Component\nfrom langflow.io import DataInput, Output\nfrom langflow.schema.message import Message\n\ntry:\n    from zoneinfo import ZoneInfo\nexcept ImportError:  # pragma: no cover - Python < 3.9 only\n    ZoneInfo = None\n\n# The model proposes; this component decides. Everything the review UI depends on\n# is enforced here in code rather than trusted from the model:\n#\n#   - enums are coerced to the six domains / four priorities / three confidences\n#   - dueAt is re-validated and re-serialized, never passed through\n#   - sourcePage is checked against the real page count, so an invented citation\n#     is dropped instead of pointing the user at a page that does not exist\n#   - confidence is CAPPED by mechanical rules the model cannot talk its way past,\n#     which is what makes \"an uncertain date comes back low\" a guarantee rather\n#     than a hope\n#   - candidate keys are assigned deterministically, byte-identical to the Node\n#     reference worker's makeCandidateKey(documentId, index, title)\n#\n# Output is a bare JSON string. No fences, no prose - the caller can json.parse\n# it directly.\n\nDOMAINS = (\"health\", \"home\", \"car\", \"finance\", \"family\", \"pets\")\nPRIORITIES = (\"low\", \"normal\", \"high\", \"urgent\")\nCONFIDENCES = (\"high\", \"medium\", \"low\")\nDOCUMENT_TYPES = (\n    \"bill\",\n    \"statement\",\n    \"letter\",\n    \"form\",\n    \"receipt\",\n    \"insurance\",\n    \"medical\",\n    \"legal\",\n    \"identity\",\n    \"tax\",\n    \"other\",\n)\n\nCONFIDENCE_RANK = {\"low\": 0, \"medium\": 1, \"high\": 2}\nRANK_CONFIDENCE = {0: \"low\", 1: \"medium\", 2: \"high\"}\n\nTITLE_MAX = 240\nNOTES_MAX = 2000\nDOCUMENT_TITLE_MAX = 60\nDOCUMENT_SUBTITLE_MAX = 120\nDOCUMENT_ISSUER_MAX = 80\nMAX_CANDIDATES_CEILING = 15\n\nSTRICT_DATETIME_RE = re.compile(r\"^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}(:\\d{2}(\\.\\d+)?)?(Z|[+-]\\d{2}:\\d{2})?$\")\nFENCE_RE = re.compile(r\"^\\s*```(?:json)?\\s*|\\s*```\\s*$\", re.IGNORECASE)\nMONTH_WORD_RE = re.compile(r\"[A-Za-z]{3,}\")\nNUMERIC_DATE_RE = re.compile(r\"(\\d{1,4})\\s*[/.\\-]\\s*(\\d{1,2})(?:\\s*[/.\\-]\\s*(\\d{2,4}))?\")\n\n\ndef cap_confidence(current: str, ceiling: str) -> str:\n    return RANK_CONFIDENCE[min(CONFIDENCE_RANK[current], CONFIDENCE_RANK[ceiling])]\n\n\ndef clamp_copy(value, limit: int):\n    if not isinstance(value, str):\n        return None\n    normalized = re.sub(r\"\\s+\", \" \", value).strip()\n    return normalized[:limit] if normalized else None\n\n\ndef is_ambiguous_numeric_date(raw) -> bool:\n    \"\"\"True when a digits-only date could be read two different ways.\n\n    1/12 is 1 December or 12 January and the page does not say which - that is the\n    failure this whole pipeline is built around. Deliberately NOT true for\n    25/12/2026 (25 cannot be a month), 12/12 (identical either way), 2026-07-30\n    (ISO), or \"30 July 2026\" (month spelled out). Over-warning trains users to\n    dismiss the warning, so the rule stays narrow.\n    \"\"\"\n    if not isinstance(raw, str) or not raw.strip():\n        return False\n    if MONTH_WORD_RE.search(raw):\n        return False\n    match = NUMERIC_DATE_RE.search(raw)\n    if not match:\n        return False\n    first, second = match.group(1), match.group(2)\n    if len(first) == 4:  # year-first, i.e. ISO ordered\n        return False\n    a, b = int(first), int(second)\n    return a <= 12 and b <= 12 and a != b\n\n\nclass CandidateHardenerComponent(Component):\n    display_name = \"Candidate Hardener\"\n    description = (\n        \"Parses the model's output, coerces it to the ScanCandidate contract, enforces the \"\n        \"confidence calibration rules, assigns deterministic keys, and emits bare JSON.\"\n    )\n    icon = \"shield-check\"\n    name = \"CandidateHardener\"\n\n    inputs = [\n        DataInput(\n            name=\"extraction\",\n            display_name=\"Extraction\",\n            info=\"Payload from Document Vision Extractor.\",\n        ),\n    ]\n\n    outputs = [\n        Output(display_name=\"Document Scan JSON\", name=\"document_scan_json\", method=\"harden\"),\n    ]\n\n    # ---------- parsing ----------\n\n    def _parse_model_json(self, raw: str) -> dict:\n        text = (raw or \"\").strip()\n        if not text:\n            return {}\n        # The prompt forbids fences. Stripping them anyway is belt-and-braces, not\n        # an expectation - if this ever fires in production it means the prompt\n        # stopped holding and the prompt is what should be fixed.\n        if text.startswith(\"```\"):\n            text = FENCE_RE.sub(\"\", text).strip()\n        try:\n            parsed = json.loads(text)\n        except ValueError:\n            start, end = text.find(\"{\"), text.rfind(\"}\")\n            if start == -1 or end <= start:\n                return {}\n            try:\n                parsed = json.loads(text[start : end + 1])\n            except ValueError:\n                return {}\n        return parsed if isinstance(parsed, dict) else {}\n\n    # ---------- dates ----------\n\n    def _resolve_due_at(self, value, tz_name: str):\n        \"\"\"Return (iso_utc_string_or_None, was_claimed_but_unresolvable).\"\"\"\n        if not isinstance(value, str) or not value.strip():\n            return None, False\n        candidate = value.strip()\n        if not STRICT_DATETIME_RE.match(candidate):\n            return None, True\n        normalized = candidate[:-1] + \"+00:00\" if candidate.endswith(\"Z\") else candidate\n        try:\n            parsed = datetime.fromisoformat(normalized)\n        except ValueError:\n            return None, True\n        if parsed.tzinfo is None:\n            tzinfo = None\n            if ZoneInfo is not None:\n                try:\n                    tzinfo = ZoneInfo(tz_name)\n                except Exception:  # noqa: BLE001 - unknown IANA name falls back to UTC\n                    tzinfo = None\n            parsed = parsed.replace(tzinfo=tzinfo or dt_timezone.utc)\n        as_utc = parsed.astimezone(dt_timezone.utc)\n        return as_utc.strftime(\"%Y-%m-%dT%H:%M:%S.000Z\"), False\n\n    # ---------- candidates ----------\n\n    def _harden_candidate(self, raw, page_count: int, tz_name: str):\n        if not isinstance(raw, dict):\n            return None\n        title = clamp_copy(raw.get(\"title\"), TITLE_MAX)\n        if not title:\n            return None\n\n        confidence = raw.get(\"confidence\")\n        confidence = confidence if confidence in CONFIDENCES else \"low\"\n\n        domain = raw.get(\"domain\")\n        domain = domain.strip().lower() if isinstance(domain, str) else \"\"\n        if domain not in DOMAINS:\n            # Never drop a candidate over a bad domain - park it in 'home' at low\n            # confidence so the user reassigns it. A lost candidate is worse.\n            domain = \"home\"\n            confidence = \"low\"\n\n        priority = raw.get(\"priority\")\n        priority = priority if priority in PRIORITIES else \"normal\"\n\n        warnings: list[str] = []\n\n        due_at, unresolvable = self._resolve_due_at(raw.get(\"dueAt\"), tz_name)\n        due_raw = raw.get(\"dueAtRaw\") if isinstance(raw.get(\"dueAtRaw\"), str) else None\n        due_source = raw.get(\"dueAtSource\")\n        due_source = due_source if due_source in (\"printed\", \"derived\", \"inferred\", \"none\") else \"none\"\n        order_evidence = raw.get(\"dueAtOrderEvidence\")\n        has_order_evidence = isinstance(order_evidence, str) and order_evidence.strip() != \"\"\n\n        if unresolvable:\n            warnings.append(\n                \"A due date was read from this document but could not be resolved, so no date is set.\"\n            )\n            confidence = cap_confidence(confidence, \"medium\")\n\n        if due_at:\n            # --- the date-order rule, enforced rather than requested ---\n            if is_ambiguous_numeric_date(due_raw):\n                printed = due_raw.strip()\n                if has_order_evidence:\n                    # The model says the page settles the order, but nothing here can\n                    # verify that. Believable enough for medium, never for high.\n                    confidence = cap_confidence(confidence, \"medium\")\n                    warnings.append(\n                        f'The date is printed as \"{printed}\"; the day/month order was read from '\n                        f\"the document ({order_evidence.strip()}). Worth a glance before accepting.\"\n                    )\n                else:\n                    confidence = \"low\"\n                    warnings.append(\n                        f'The date is printed as \"{printed}\", which can be read two ways '\n                        f\"(day/month or month/day). Check the page before accepting.\"\n                    )\n            if due_source == \"inferred\":\n                confidence = \"low\"\n                warnings.append(\"The due date is not printed on the document; it was inferred.\")\n            elif due_source == \"derived\":\n                confidence = cap_confidence(confidence, \"medium\")\n            elif due_source == \"printed\" and not due_raw:\n                # Claimed as copied off the page but no printed form was given -\n                # the audit trail is missing, so the claim is not worth 'high'.\n                confidence = cap_confidence(confidence, \"medium\")\n\n        source_page = raw.get(\"sourcePage\")\n        source_page = source_page if isinstance(source_page, int) and not isinstance(source_page, bool) else None\n        if source_page is not None and (source_page < 1 or (page_count > 0 and source_page > page_count)):\n            # Out of range means the model made it up. Drop it - a citation chip\n            # that opens the wrong page is worse than an absent one.\n            source_page = None\n            warnings.append(\n                \"The page reference returned for this item did not exist in the document, so it \"\n                \"has been removed and there is no citation to check.\"\n            )\n            confidence = cap_confidence(confidence, \"medium\")\n        elif source_page is None:\n            warnings.append(\n                \"The page this was read from could not be determined, so there is no citation to check.\"\n            )\n            confidence = cap_confidence(confidence, \"medium\")\n\n        notes = clamp_copy(raw.get(\"notes\"), NOTES_MAX)\n        if warnings:\n            joined = \" \".join(warnings)\n            notes = f\"{notes} {joined}\".strip() if notes else joined\n            notes = notes[:NOTES_MAX]\n\n        hardened = {\n            \"title\": title,\n            \"domain\": domain,\n            \"priority\": priority,\n            \"confidence\": confidence,\n        }\n        if due_at:\n            hardened[\"dueAt\"] = due_at\n        if notes:\n            hardened[\"notes\"] = notes\n        if source_page is not None:\n            hardened[\"sourcePage\"] = source_page\n        return hardened\n\n    # ---------- keys ----------\n\n    def _assign_key(self, document_id: str, index: int, title: str) -> str:\n        # Byte-identical to the Node reference worker's makeCandidateKey, so a\n        # document extracted through either path yields the same keys and a\n        # re-run stays idempotent against already-reviewed candidates.\n        normalized = re.sub(r\"\\s+\", \" \", title.strip().lower())\n        digest = hashlib.sha256(f\"{document_id}|{index}|{normalized}\".encode()).hexdigest()\n        return digest[:24]\n\n    # ---------- entry point ----------\n\n    def harden(self) -> Message:\n        payload = self.extraction.data if hasattr(self.extraction, \"data\") else self.extraction\n        if not isinstance(payload, dict):\n            msg = \"Extraction must be the Data payload emitted by Document Vision Extractor.\"\n            raise TypeError(msg)\n\n        context = payload.get(\"context\") or {}\n        page_count = int(context.get(\"pageCount\") or 0)\n        tz_name = str(context.get(\"timezone\") or \"UTC\")\n        document_id = str(context.get(\"documentId\") or \"\")\n        max_candidates = int(context.get(\"maxCandidates\") or MAX_CANDIDATES_CEILING)\n        max_candidates = max(1, min(max_candidates, MAX_CANDIDATES_CEILING))\n\n        parsed = self._parse_model_json(payload.get(\"rawOutput\") or \"\")\n\n        document_type = parsed.get(\"documentType\")\n        if isinstance(document_type, str) and document_type.strip():\n            lowered = document_type.strip().lower()\n            # An unrecognised label still means the model classified the document -\n            # 'other' records that more truthfully than dropping the field.\n            document_type = lowered if lowered in DOCUMENT_TYPES else \"other\"\n        else:\n            document_type = None\n\n        raw_candidates = parsed.get(\"candidates\")\n        raw_candidates = raw_candidates if isinstance(raw_candidates, list) else []\n\n        hardened = []\n        for raw in raw_candidates:\n            item = self._harden_candidate(raw, page_count, tz_name)\n            if item is not None:\n                hardened.append(item)\n            if len(hardened) >= max_candidates:\n                break\n\n        for index, item in enumerate(hardened):\n            # key first, so the serialized object reads the way the contract does.\n            item_key = self._assign_key(document_id, index, item[\"title\"])\n            hardened[index] = {\"key\": item_key, **item}\n\n        result = {\n            \"documentSummary\": clamp_copy(parsed.get(\"documentSummary\"), NOTES_MAX),\n            \"documentType\": document_type,\n            \"documentTitle\": clamp_copy(parsed.get(\"documentTitle\"), DOCUMENT_TITLE_MAX),\n            \"documentSubtitle\": clamp_copy(parsed.get(\"documentSubtitle\"), DOCUMENT_SUBTITLE_MAX),\n            \"issuer\": clamp_copy(parsed.get(\"issuer\"), DOCUMENT_ISSUER_MAX),\n            \"candidates\": hardened,\n        }\n\n        low = sum(1 for c in hardened if c[\"confidence\"] == \"low\")\n        self.status = f\"{len(hardened)} candidate(s), {low} low-confidence, type={document_type}\"\n        return Message(text=json.dumps(result, ensure_ascii=False))\n"
+              },
+              "extraction": {
+                "advanced": false,
+                "display_name": "Extraction",
+                "dynamic": false,
+                "info": "Payload from Document Vision Extractor.",
+                "list": false,
+                "list_add_label": "Add More",
+                "name": "extraction",
+                "override_skip": false,
+                "placeholder": "",
+                "required": false,
+                "show": true,
+                "title_case": false,
+                "trace_as_metadata": true,
+                "track_in_telemetry": false,
+                "_input_type": "DataInput",
+                "input_types": [
+                  "Data"
+                ],
+                "tool_mode": false,
+                "trace_as_input": true,
+                "type": "other",
+                "value": ""
+              }
+            },
+            "tool_mode": false
+          },
+          "showNode": true,
+          "type": "CandidateHardener"
+        },
+        "dragging": false,
+        "id": "CustomComponent-Dch01",
+        "measured": {
+          "height": 400,
+          "width": 320
+        },
+        "position": {
+          "x": 400.0,
+          "y": -140.0
+        },
+        "selected": false,
+        "type": "genericNode"
+      },
+      {
+        "data": {
+          "id": "ChatOutput-Dco01",
+          "node": {
+            "base_classes": [
+              "Message"
+            ],
+            "beta": false,
+            "conditional_paths": [],
+            "custom_fields": {},
+            "description": "Display a chat message in the Playground.",
+            "display_name": "Document Scan Output",
+            "documentation": "https://docs.langflow.org/chat-input-and-output",
+            "edited": false,
+            "field_order": [
+              "input_value",
+              "should_store_message",
+              "sender",
+              "sender_name",
+              "session_id",
+              "context_id",
+              "data_template",
+              "clean_data"
+            ],
+            "frozen": false,
+            "icon": "MessagesSquare",
+            "legacy": false,
+            "lf_version": "1.10.0",
+            "metadata": {
+              "code_hash": "84009527d08c",
+              "dependencies": {
+                "dependencies": [
+                  {
+                    "name": "orjson",
+                    "version": "3.11.9"
+                  },
+                  {
+                    "name": "fastapi",
+                    "version": "0.137.2"
+                  },
+                  {
+                    "name": "lfx",
+                    "version": null
+                  }
+                ],
+                "total_dependencies": 3
+              },
+              "module": "lfx.components.input_output.chat_output.ChatOutput"
+            },
+            "minimized": true,
+            "output_types": [],
+            "outputs": [
+              {
+                "allows_loop": false,
+                "cache": true,
+                "display_name": "Output Message",
+                "group_outputs": false,
+                "method": "message_response",
+                "name": "message",
+                "selected": "Message",
+                "tool_mode": true,
+                "types": [
+                  "Message"
+                ],
+                "value": "__UNDEFINED__"
+              }
+            ],
+            "pinned": false,
+            "template": {
+              "_type": "Component",
+              "clean_data": {
+                "_input_type": "BoolInput",
+                "advanced": true,
+                "display_name": "Basic Clean Data",
+                "dynamic": false,
+                "info": "Whether to clean data before converting to string.",
+                "list": false,
+                "list_add_label": "Add More",
+                "name": "clean_data",
+                "override_skip": false,
+                "placeholder": "",
+                "required": false,
+                "show": true,
+                "title_case": false,
+                "tool_mode": false,
+                "trace_as_metadata": true,
+                "track_in_telemetry": true,
+                "type": "bool",
+                "value": true
+              },
+              "code": {
+                "advanced": true,
+                "dynamic": true,
+                "fileTypes": [],
+                "file_path": "",
+                "info": "",
+                "list": false,
+                "load_from_db": false,
+                "multiline": true,
+                "name": "code",
+                "password": false,
+                "placeholder": "",
+                "required": true,
+                "show": true,
+                "title_case": false,
+                "type": "code",
+                "value": "from collections.abc import Generator\nfrom typing import Any\n\nimport orjson\nfrom fastapi.encoders import jsonable_encoder\n\nfrom lfx.base.io.chat import ChatComponent\nfrom lfx.helpers.data import safe_convert\nfrom lfx.inputs.inputs import BoolInput, DropdownInput, HandleInput, MessageTextInput\nfrom lfx.schema.data import Data\nfrom lfx.schema.dataframe import DataFrame\nfrom lfx.schema.message import Message\nfrom lfx.schema.properties import Source\nfrom lfx.template.field.base import Output\nfrom lfx.utils.constants import (\n    MESSAGE_SENDER_AI,\n    MESSAGE_SENDER_NAME_AI,\n    MESSAGE_SENDER_USER,\n)\n\n\nclass ChatOutput(ChatComponent):\n    display_name = \"Chat Output\"\n    description = \"Display a chat message in the Playground.\"\n    documentation: str = \"https://docs.langflow.org/chat-input-and-output\"\n    icon = \"MessagesSquare\"\n    name = \"ChatOutput\"\n    minimized = True\n\n    inputs = [\n        HandleInput(\n            name=\"input_value\",\n            display_name=\"Inputs\",\n            info=\"Message to be passed as output.\",\n            input_types=[\"Data\", \"JSON\", \"DataFrame\", \"Table\", \"Message\"],\n            required=True,\n        ),\n        BoolInput(\n            name=\"should_store_message\",\n            display_name=\"Store Messages\",\n            info=\"Store the message in the history.\",\n            value=True,\n            advanced=True,\n        ),\n        DropdownInput(\n            name=\"sender\",\n            display_name=\"Sender Type\",\n            options=[MESSAGE_SENDER_AI, MESSAGE_SENDER_USER],\n            value=MESSAGE_SENDER_AI,\n            advanced=True,\n            info=\"Type of sender.\",\n        ),\n        MessageTextInput(\n            name=\"sender_name\",\n            display_name=\"Sender Name\",\n            info=\"Name of the sender.\",\n            value=MESSAGE_SENDER_NAME_AI,\n            advanced=True,\n        ),\n        MessageTextInput(\n            name=\"session_id\",\n            display_name=\"Session ID\",\n            info=\"The session ID of the chat. If empty, the current session ID parameter will be used.\",\n            advanced=True,\n        ),\n        MessageTextInput(\n            name=\"context_id\",\n            display_name=\"Context ID\",\n            info=\"The context ID of the chat. Adds an extra layer to the local memory.\",\n            value=\"\",\n            advanced=True,\n        ),\n        MessageTextInput(\n            name=\"data_template\",\n            display_name=\"Data Template\",\n            value=\"{text}\",\n            advanced=True,\n            info=\"Template to convert Data to Text. If left empty, it will be dynamically set to the Data's text key.\",\n        ),\n        BoolInput(\n            name=\"clean_data\",\n            display_name=\"Basic Clean Data\",\n            value=True,\n            advanced=True,\n            info=\"Whether to clean data before converting to string.\",\n        ),\n    ]\n    outputs = [\n        Output(\n            display_name=\"Output Message\",\n            name=\"message\",\n            method=\"message_response\",\n        ),\n    ]\n\n    def _build_source(self, id_: str | None, display_name: str | None, source: str | None) -> Source:\n        source_dict = {}\n        if id_:\n            source_dict[\"id\"] = id_\n        if display_name:\n            source_dict[\"display_name\"] = display_name\n        if source:\n            # Handle case where source is a ChatOpenAI object\n            if hasattr(source, \"model_name\"):\n                source_dict[\"source\"] = source.model_name\n            elif hasattr(source, \"model\"):\n                source_dict[\"source\"] = str(source.model)\n            else:\n                source_dict[\"source\"] = str(source)\n        return Source(**source_dict)\n\n    async def message_response(self) -> Message:\n        # First convert the input to string if needed\n        text = self.convert_to_string()\n\n        # Get source properties\n        source, _, display_name, source_id = self.get_properties_from_source_component()\n\n        # Create or use existing Message object\n        if isinstance(self.input_value, Message) and not self.is_connected_to_chat_input():\n            message = self.input_value\n            # Update message properties\n            message.text = text\n            # Preserve existing session_id from the incoming message if it exists\n            existing_session_id = message.session_id\n        else:\n            message = Message(text=text)\n            existing_session_id = None\n\n        # Set message properties\n        message.sender = self.sender\n        message.sender_name = self.sender_name\n        # Preserve session_id from incoming message, or use component/graph session_id\n        message.session_id = (\n            self.session_id or existing_session_id or (self.graph.session_id if hasattr(self, \"graph\") else None) or \"\"\n        )\n        message.context_id = self.context_id\n        message.flow_id = self.graph.flow_id if hasattr(self, \"graph\") else None\n        message.properties.source = self._build_source(source_id, display_name, source)\n\n        # Store message if needed\n        if message.session_id and self.should_store_message:\n            stored_message = await self.send_message(message)\n            self.message.value = stored_message\n            message = stored_message\n\n        # Set accumulated token usage from all upstream LLM vertices.\n        # This must happen AFTER send_message() because streaming captures\n        # usage from chunks and would overwrite accumulated totals.\n        if hasattr(self, \"_vertex\") and self._vertex is not None:\n            accumulated_usage = self._vertex._accumulate_upstream_token_usage()  # noqa: SLF001\n            if accumulated_usage:\n                message.properties.usage = accumulated_usage\n                if self.should_store_message and message.get_id():\n                    message = await self._update_stored_message(message)\n                    await self._send_message_event(message, id_=message.get_id())\n\n        self.status = message\n        return message\n\n    def _serialize_data(self, data: Data) -> str:\n        \"\"\"Serialize Data object to JSON string.\"\"\"\n        # Convert data.data to JSON-serializable format\n        serializable_data = jsonable_encoder(data.data)\n        # Serialize with orjson, enabling pretty printing with indentation\n        json_bytes = orjson.dumps(serializable_data, option=orjson.OPT_INDENT_2)\n        # Convert bytes to string and wrap in Markdown code blocks\n        return \"```json\\n\" + json_bytes.decode(\"utf-8\") + \"\\n```\"\n\n    def _validate_input(self) -> None:\n        \"\"\"Validate the input data and raise ValueError if invalid.\"\"\"\n        if self.input_value is None:\n            msg = \"Input data cannot be None\"\n            raise ValueError(msg)\n        if isinstance(self.input_value, list) and not all(\n            isinstance(item, Message | Data | DataFrame | str) for item in self.input_value\n        ):\n            invalid_types = [\n                type(item).__name__\n                for item in self.input_value\n                if not isinstance(item, Message | Data | DataFrame | str)\n            ]\n            msg = f\"Expected Data or DataFrame or Message or str, got {invalid_types}\"\n            raise TypeError(msg)\n        if not isinstance(\n            self.input_value,\n            Message | Data | DataFrame | str | list | Generator | type(None),\n        ):\n            type_name = type(self.input_value).__name__\n            msg = f\"Expected Data or DataFrame or Message or str, Generator or None, got {type_name}\"\n            raise TypeError(msg)\n\n    def convert_to_string(self) -> str | Generator[Any, None, None]:\n        \"\"\"Convert input data to string with proper error handling.\"\"\"\n        self._validate_input()\n        if isinstance(self.input_value, list):\n            clean_data: bool = getattr(self, \"clean_data\", False)\n            return \"\\n\".join([safe_convert(item, clean_data=clean_data) for item in self.input_value])\n        if isinstance(self.input_value, Generator):\n            return self.input_value\n        return safe_convert(self.input_value)\n"
+              },
+              "context_id": {
+                "_input_type": "MessageTextInput",
+                "advanced": true,
+                "display_name": "Context ID",
+                "dynamic": false,
+                "info": "The context ID of the chat. Adds an extra layer to the local memory.",
+                "input_types": [
+                  "Message"
+                ],
+                "list": false,
+                "list_add_label": "Add More",
+                "load_from_db": false,
+                "name": "context_id",
+                "override_skip": false,
+                "placeholder": "",
+                "required": false,
+                "show": true,
+                "title_case": false,
+                "tool_mode": false,
+                "trace_as_input": true,
+                "trace_as_metadata": true,
+                "track_in_telemetry": false,
+                "type": "str",
+                "value": ""
+              },
+              "data_template": {
+                "_input_type": "MessageTextInput",
+                "advanced": true,
+                "display_name": "Data Template",
+                "dynamic": false,
+                "info": "Template to convert Data to Text. If left empty, it will be dynamically set to the Data's text key.",
+                "input_types": [
+                  "Message"
+                ],
+                "list": false,
+                "list_add_label": "Add More",
+                "load_from_db": false,
+                "name": "data_template",
+                "override_skip": false,
+                "placeholder": "",
+                "required": false,
+                "show": true,
+                "title_case": false,
+                "tool_mode": false,
+                "trace_as_input": true,
+                "trace_as_metadata": true,
+                "track_in_telemetry": false,
+                "type": "str",
+                "value": "{text}"
+              },
+              "input_value": {
+                "_input_type": "HandleInput",
+                "advanced": false,
+                "display_name": "Inputs",
+                "dynamic": false,
+                "info": "Message to be passed as output.",
+                "input_types": [
+                  "Data",
+                  "JSON",
+                  "DataFrame",
+                  "Table",
+                  "Message"
+                ],
+                "list": false,
+                "list_add_label": "Add More",
+                "name": "input_value",
+                "override_skip": false,
+                "placeholder": "",
+                "required": true,
+                "show": true,
+                "title_case": false,
+                "trace_as_metadata": true,
+                "track_in_telemetry": false,
+                "type": "other",
+                "value": ""
+              },
+              "sender": {
+                "_input_type": "DropdownInput",
+                "advanced": true,
+                "combobox": false,
+                "dialog_inputs": {},
+                "display_name": "Sender Type",
+                "dynamic": false,
+                "external_options": {},
+                "info": "Type of sender.",
+                "name": "sender",
+                "options": [
+                  "Machine",
+                  "User"
+                ],
+                "options_metadata": [],
+                "override_skip": false,
+                "placeholder": "",
+                "required": false,
+                "show": true,
+                "title_case": false,
+                "toggle": false,
+                "tool_mode": false,
+                "trace_as_metadata": true,
+                "track_in_telemetry": true,
+                "type": "str",
+                "value": "Machine"
+              },
+              "sender_name": {
+                "_input_type": "MessageTextInput",
+                "advanced": true,
+                "display_name": "Sender Name",
+                "dynamic": false,
+                "info": "Name of the sender.",
+                "input_types": [
+                  "Message"
+                ],
+                "list": false,
+                "list_add_label": "Add More",
+                "load_from_db": false,
+                "name": "sender_name",
+                "override_skip": false,
+                "placeholder": "",
+                "required": false,
+                "show": true,
+                "title_case": false,
+                "tool_mode": false,
+                "trace_as_input": true,
+                "trace_as_metadata": true,
+                "track_in_telemetry": false,
+                "type": "str",
+                "value": "AI"
+              },
+              "session_id": {
+                "_input_type": "MessageTextInput",
+                "advanced": true,
+                "display_name": "Session ID",
+                "dynamic": false,
+                "info": "The session ID of the chat. If empty, the current session ID parameter will be used.",
+                "input_types": [
+                  "Message"
+                ],
+                "list": false,
+                "list_add_label": "Add More",
+                "load_from_db": false,
+                "name": "session_id",
+                "override_skip": false,
+                "placeholder": "",
+                "required": false,
+                "show": true,
+                "title_case": false,
+                "tool_mode": false,
+                "trace_as_input": true,
+                "trace_as_metadata": true,
+                "track_in_telemetry": false,
+                "type": "str",
+                "value": ""
+              },
+              "should_store_message": {
+                "_input_type": "BoolInput",
+                "advanced": true,
+                "display_name": "Store Messages",
+                "dynamic": false,
+                "info": "Store the message in the history.",
+                "list": false,
+                "list_add_label": "Add More",
+                "name": "should_store_message",
+                "override_skip": false,
+                "placeholder": "",
+                "required": false,
+                "show": true,
+                "title_case": false,
+                "tool_mode": false,
+                "trace_as_metadata": true,
+                "track_in_telemetry": true,
+                "type": "bool",
+                "value": true
+              }
+            },
+            "tool_mode": false
+          },
+          "showNode": false,
+          "type": "ChatOutput"
+        },
+        "dragging": false,
+        "id": "ChatOutput-Dco01",
+        "measured": {
+          "height": 52,
+          "width": 192
+        },
+        "position": {
+          "x": 860.0,
+          "y": -140.0
+        },
+        "selected": false,
+        "type": "genericNode"
+      }
+    ],
+    "viewport": {
+      "x": 240.0,
+      "y": 320.0,
+      "zoom": 0.7
+    }
+  },
+  "description": "Reads a scanned document and emits structured task candidates for user review. Each candidate carries a confidence bucket and a sourcePage citation; nothing here creates a task.",
+  "endpoint_name": null,
+  "id": "7c1f0a52-3d84-4f6e-9a10-2b5c8e41d7a3",
+  "is_component": false,
+  "last_tested_version": "1.10.0",
+  "locked": false,
+  "name": "Life Admin Autopilot - Document Agent",
+  "tags": []
+}
