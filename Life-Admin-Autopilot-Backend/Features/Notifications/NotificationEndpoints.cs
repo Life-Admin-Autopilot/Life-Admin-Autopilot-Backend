@@ -93,6 +93,22 @@ public static class NotificationEndpoints
     /// </summary>
     private static async Task<JsonElement> ReadBodyRootAsync(HttpContext context, CancellationToken cancellationToken)
     {
+        // express.json() parses ONLY application/json; anything else leaves
+        // req.body = {} without reading the stream at all. Because this route
+        // deliberately bypasses KernelBody.ReadAsync<T>, it does NOT inherit that
+        // helper's gate and has to apply it itself.
+        //
+        // Gating BEFORE the read is load-bearing, not tidiness: an oversize or
+        // malformed body is a 500 as application/json and a plain 200 here as
+        // text/plain, because body-parser never looks at a request it skips.
+        // Verified live: POST /me/notifications/read with Content-Type: text/plain
+        // and body {"ids":[1,2]} answers 200 on the reference (nothing is required,
+        // so the unparsed {} validates) — not the 400 the parsed body would give.
+        if (!KernelBody.IsJsonContentType(context.Request))
+        {
+            return EmptyObject;
+        }
+
         var bytes = await KernelBody.ReadBytesAsync(context.Request, KernelJson.MaxJsonBodyBytes, cancellationToken);
 
         if (bytes.Length == 0)
