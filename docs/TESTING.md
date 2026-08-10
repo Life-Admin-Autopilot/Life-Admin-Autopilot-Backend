@@ -1,6 +1,6 @@
 # Testing the frontend against the .NET backend
 
-One command brings up the whole stack. Everything except the AI surface works today.
+One command brings up the whole stack. Chat AI works; the document agent does not — see below.
 
 ```bash
 cd /Users/mina/Documents/Mina/Life-Admin-Autopilot-Backend
