@@ -283,6 +283,19 @@ public static class GoogleIntegrationEndpoints
     /// </summary>
     private static async Task<bool> ReadWebFlagAsync(HttpContext context, CancellationToken cancellationToken)
     {
+        // express.json() parses ONLY application/json and never reads the stream of
+        // a request it skips, so a non-JSON body leaves req.body = {} — no parse, no
+        // SyntaxError, no 500. Reading it by hand here means this route does NOT
+        // inherit KernelBody.ReadAsync<T>'s gate and has to apply it itself.
+        //
+        // Measured before this gate: form-encoded and text/plain bodies gave
+        // dotnet=500 against node=400, because the bytes were parsed as JSON and the
+        // failure surfaced as a BodyReadException.
+        if (!KernelBody.IsJsonContentType(context.Request))
+        {
+            return false;
+        }
+
         var bytes = await KernelBody
             .ReadBytesAsync(context.Request, KernelJson.MaxJsonBodyBytes, cancellationToken)
             .ConfigureAwait(false);
