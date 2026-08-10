@@ -50,26 +50,43 @@ GET    /ai/quota                200
 
 So: sign up, onboard, create and filter matters, complete/snooze/delete with undo, subtasks, bulk actions, the dashboard, the documents tab, profile, calendar feeds, export, account deletion. **84 of 84 runnable operations byte-match the Node reference.**
 
-## What does NOT work yet — the AI surface
+## The AI surface — chat works end to end
 
-`/ai/ask` reaches Langflow and comes back with an error frame. The split matters:
-
-**The .NET adapter is proven correct.** It emits the frontend's exact SSE contract, verified live:
+Verified against live Langflow 1.11.2, with the resulting rows checked in Mongo rather than trusted from the reply:
 
 ```
-data: {"type":"sources","sources":[]}
-data: {"type":"error","code":"langflow_error", …}   ← error frame inside a 200
-data: {"type":"done","usage":{}}
-data: {"type":"quota","tier":"free","used":1, …}    ← always last
+POST /ai/ask  {"question":"remind me to call the dentist tomorrow at 9am",
+               "timezone":"Africa/Cairo"}
+
+sources → token×40 → tool_call(createTask) → tool_result → done → quota
+  dueAt: 2026-08-11T09:00:00+03:00      ← the user's 9am, not UTC's
 ```
 
-Frame format, ordering, the failures-after-flush-are-frames rule, and quota accounting all behave.
+Confirmation-gated bulk delete, first-ever for a user:
 
-**The flow does not run.** Langflow 1.11.2 reports `Delete Task` has a required `MessageTextInput` receiving `None`, and that all 15 components are outdated — they were authored against the older schema in the supplied baseline. Tracked as task #37, with the fix path.
+```
+ask     : 1 tool_call, 0 tool_result, stored pending_confirmation
+confirm : HTTP 200, deletedCount 2, stored executed, the open task survives
+```
 
-The flow also needs a **Mistral API key** as a Langflow global variable. The one in the supplied baseline is the leaked key from task #35 — rotate it first.
+So chat, tool calls, task creation with correct local time, and the confirm/decline
+deck all work. Four defects were found and fixed only because a live instance was
+available — see `git log` for `LangflowEventTranslator` and `LangflowInputBinding`.
 
-In the app this shows up as: chat and voice return an error, document scans land `failed`, search/summarize/categorize don't work, and the clarification deck stays empty. Everything else is unaffected.
+**`LANGFLOW_INPUT_NODE` is required.** The Planning Agent has no ChatInput node, so
+`input_value` alone reaches nothing: Langflow accepts the run, streams a healthy
+`sources → token* → done`, and the agent answers an empty envelope with **no error
+anywhere**. `stack.sh` sets it; if you boot the server yourself, set it too.
+
+The flow needs a **Mistral API key** as a Langflow global variable. The free tier
+rate-limits hard — a 429 arrives as an `error` frame inside a healthy 200, and on a
+post-confirm continuation the action has *already* succeeded, so a trailing error
+frame must not be read as "it didn't happen".
+
+Still not working: **the document agent has never done a real extraction** (its
+gateway needs `SBG_API_KEY`, which is not on this machine — it returns a genuine
+401), and clarification mode needs `pendingTasks`/`answers`, which belong to the
+clarifications slice.
 
 ## Re-running parity
 
@@ -83,6 +100,14 @@ node tools/parity/run.mjs --reference http://localhost:4100 --candidate http://l
 
 Expect `PASS 84 / SKIPPED 3`, exit 0. The 3 skips are the strict-auth-limiter scenario, excluded by default because it burns 5 slots against a 5-per-hour budget.
 
+**Run the candidate with Langflow NOT configured.** Parity is defined against *Node
+without `GEMINI_API_KEY`*, so the candidate has to be in the same not-configured
+state. `stack.sh up` deliberately wires Langflow in, which is right for using the
+app and wrong for measuring parity: with it set, `/ai/voice/transcribe` answers
+`empty_body` where the reference answers `ai_not_configured`, and three rows fail
+for a reason that is not a defect. Boot the candidate without the `LANGFLOW_*`
+variables when you want a parity number.
+
 Use `:4100` (dev mode) not `:4200` (`NODE_ENV=test`) for anything worker-dependent — document scans, voice notes, reminders firing. In test mode the workers don't run, so the reference sits at `pending` while the candidate reaches `failed` and the row diverges for an environment reason.
 
 ## Gotchas that will cost you an hour
@@ -91,3 +116,18 @@ Use `:4100` (dev mode) not `:4200` (`NODE_ENV=test`) for anything worker-depende
 - **Bind `[::]`, dial `localhost`.** `127.0.0.1` is IPv4-only; Node records `::ffff:127.0.0.1` and anything echoing `req.ip` diverges.
 - **`dotnet run` alone is wrong** — `launchSettings.json` silently pins ports 5115/7276 and `Development`. Always `--no-launch-profile`.
 - **Don't `pkill -f Life-Admin-Autopilot`** — it matches every candidate at once. Use `lsof -ti tcp:<port> | xargs kill`.
+- **An orphaned server from another worktree will corrupt your results, silently.**
+  Every backend runs the same `BackgroundService` workers against whatever Mongo it
+  was pointed at, so a leftover process *competes for scan and reminder jobs* and
+  writes outcomes computed from **its** working directory. This cost an hour: two
+  document-scan rows failed with `Could not find a part of the path
+  '…/backend-slices/m-langflow/uploads/…'` while the file sat correctly in this
+  repo, and the same upload driven by hand passed. Killing the port is not enough —
+  the offender need not be listening on one, and it can be reparented to init. List
+  the actual clients:
+
+  ```bash
+  lsof -nP -iTCP:27018 | awk 'NR>1 && $10!="(LISTEN)"{print $2}' | sort -u | while read p; do echo "$p $(lsof -a -p $p -d cwd | tail -1 | awk '{print $NF}')"; done
+  ```
+
+  Anything whose cwd is not this repo or `Steward/server` should not be running.
