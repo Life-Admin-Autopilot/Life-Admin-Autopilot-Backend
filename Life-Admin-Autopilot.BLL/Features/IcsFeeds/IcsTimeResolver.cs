@@ -189,22 +189,16 @@ public static class IcsTimeResolver
     /// the ids the reference rejects.
     /// </para>
     /// </summary>
-    public static bool IsIanaTimeZone(string? id)
-    {
-        if (string.IsNullOrEmpty(id))
-        {
-            return false;
-        }
-
-        try
-        {
-            return TimeZoneInfo.FindSystemTimeZoneById(id).HasIanaId;
-        }
-        catch (Exception)
-        {
-            return false;
-        }
-    }
+    /// <remarks>
+    /// Now a thin delegate. This slice carried its own copy because the kernel's
+    /// helper resolved Windows zone ids that Node rejects, and a slice must not edit
+    /// frozen kernel code. The kernel helper has since been corrected — and is
+    /// strictly better than this copy was, because it also excludes tzdata's
+    /// <c>Factory</c>, which carries a real IANA id and so passed
+    /// <c>HasIanaId</c> alone. Kept as a named alias for the call sites and their
+    /// comments rather than deleted.
+    /// </remarks>
+    public static bool IsIanaTimeZone(string? id) => ImportedTimeResolver.IsValidTimeZone(id);
 
     /// <summary>
     /// Resolve one wall clock under a known zone spec.
