@@ -108,4 +108,63 @@ public sealed class AiConversationService
 
         return call;
     }
+
+    /// <summary>
+    /// The user pressed Decline. <b>Neither <c>result</c> nor <c>error</c> is
+    /// written</b> — Node passes only the status, so the record keeps whatever
+    /// defaults it was created with, and the <c>error:"declined"</c> the client sees
+    /// lives on the FRAME, not on the stored call.
+    /// </summary>
+    public Task DeclineToolCallAsync(
+        ObjectId userId,
+        string callId,
+        CancellationToken cancellationToken = default) =>
+        _conversations.ResolveToolCallAsync(
+            userId,
+            AiConversationVocabulary.PersonalScope,
+            callId,
+            "declined",
+            cancellationToken: cancellationToken);
+
+    /// <summary>The tool ran. Records the result so the next turn's history is coherent.</summary>
+    public Task MarkToolCallExecutedAsync(
+        ObjectId userId,
+        string callId,
+        IReadOnlyDictionary<string, object?> result,
+        CancellationToken cancellationToken = default) =>
+        _conversations.ResolveToolCallAsync(
+            userId,
+            AiConversationVocabulary.PersonalScope,
+            callId,
+            "executed",
+            result: ToBson(result),
+            writeResult: true,
+            cancellationToken: cancellationToken);
+
+    /// <summary>The tool threw. The message is the one the client shows in the pill.</summary>
+    public Task MarkToolCallFailedAsync(
+        ObjectId userId,
+        string callId,
+        string error,
+        CancellationToken cancellationToken = default) =>
+        _conversations.ResolveToolCallAsync(
+            userId,
+            AiConversationVocabulary.PersonalScope,
+            callId,
+            "failed",
+            error: error,
+            writeError: true,
+            cancellationToken: cancellationToken);
+
+    /// <summary>
+    /// Tool results are <c>Schema.Types.Mixed</c>, so they are stored as whatever
+    /// shape they arrived in. Going through JSON keeps the stored value identical to
+    /// the one the client was sent in the <c>tool_result</c> frame.
+    /// </summary>
+    private static BsonValue ToBson(IReadOnlyDictionary<string, object?> result) =>
+        BsonDocument.TryParse(
+            System.Text.Json.JsonSerializer.Serialize(result, AiStreamJson.Frame),
+            out var parsed)
+            ? parsed
+            : BsonNull.Value;
 }
