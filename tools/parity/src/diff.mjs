@@ -1,6 +1,8 @@
 // Structural differ. Reports the JSON path of each disagreement rather than
 // dumping two blobs and leaving the reader to spot the delta.
 
+import { diffHeaders } from './headers.mjs';
+
 const MAX_DIFFS = 25;
 
 function kindOf(value) {
@@ -81,11 +83,14 @@ function errorEnvelope(raw) {
  *
  * @param {object} reference normalized observation from the reference server
  * @param {object} candidate normalized observation from the port
- * @returns {{diffs: Array, notes: Array}}
+ * @returns {{diffs: Array, notes: Array, headerPolicy: Array}} `headerPolicy`
+ *          records every header divergence the policy chose NOT to fail, so the
+ *          report can print it rather than swallow it.
  */
 /**
- * `options.statusOnly` compares the status and any explicitly-requested headers,
- * and nothing else.
+ * `options.statusOnly` drops the BODY and CONTENT-TYPE comparison. It does not
+ * drop anything else: status, the full header set, and "is this an error
+ * envelope" are all still compared.
  *
  * This exists for ONE declared exception and should stay that way: Express's
  * fall-through 404 body. We deliberately do not reproduce it — it interpolates the
@@ -93,6 +98,13 @@ function errorEnvelope(raw) {
  * unknown route of an API that also serves authenticated JSON. Nothing parses a 404
  * body, so the status is the only difference a client can observe. See
  * `docs/KERNEL.md` §2.2.1 and `docs/RESUME.md` for the arbitration.
+ *
+ * The envelope check is what stops the exception from being a hole. The scenario
+ * comment on those two steps says a JSON error envelope there "would be a
+ * DIFFERENT kind of wrong" — so assert exactly that and nothing more. Dropping
+ * the whole body comparison silently un-armed the negative control's two
+ * HTML-404 defects; this is the narrowest assertion that arms them again without
+ * requiring the XSS-bearing body.
  *
  * Reach for this only when a diff is unfixable AND unobservable by a client.
  * Anything else is a real failure and belongs red.
@@ -111,18 +123,33 @@ export function diffObservations(reference, candidate, options = {}) {
     });
   }
 
+  // Headers are diffed on the UNION of both sides under the policy in
+  // headers.mjs, so a header only the CANDIDATE emits is visible.
+  const headerComparison = diffHeaders(
+    reference.headers ?? {},
+    candidate.headers ?? {},
+    reference.forcedHeaders ?? candidate.forcedHeaders ?? [],
+  );
+  diffs.push(...headerComparison.diffs);
+  const headerPolicy = headerComparison.policy;
+
+  const refErr = errorEnvelope(reference.rawJson);
+  const candErr = errorEnvelope(candidate.rawJson);
+
   if (statusOnly) {
     notes.push(
-      'statusOnly: body and content-type deliberately not compared (declared exception — see docs/KERNEL.md §2.2.1)',
+      'statusOnly: body and content-type deliberately not compared (declared exception — see docs/KERNEL.md §2.2.1). ' +
+        'Status, headers and "is this a JSON error envelope" ARE still compared.',
     );
-    for (const name of Object.keys(reference.extraHeaders ?? {})) {
-      const a = reference.extraHeaders[name] ?? null;
-      const b = (candidate.extraHeaders ?? {})[name] ?? null;
-      if (a !== b) {
-        diffs.push({ path: `header.${name}`, kind: 'header', reference: preview(a), candidate: preview(b) });
-      }
+    if (Boolean(refErr) !== Boolean(candErr)) {
+      diffs.push({
+        path: '$.error',
+        kind: 'error-envelope',
+        reference: refErr ? 'error envelope' : 'no error envelope',
+        candidate: candErr ? 'error envelope' : 'no error envelope',
+      });
     }
-    return { diffs: diffs.slice(0, MAX_DIFFS), truncated: diffs.length >= MAX_DIFFS, notes };
+    return { diffs: diffs.slice(0, MAX_DIFFS), truncated: diffs.length >= MAX_DIFFS, notes, headerPolicy };
   }
 
   const refCt = reference.contentType ?? null;
@@ -131,18 +158,8 @@ export function diffObservations(reference, candidate, options = {}) {
     diffs.push({ path: 'header.content-type', kind: 'header', reference: preview(refCt), candidate: preview(candCt) });
   }
 
-  for (const name of Object.keys(reference.extraHeaders ?? {})) {
-    const a = reference.extraHeaders[name] ?? null;
-    const b = (candidate.extraHeaders ?? {})[name] ?? null;
-    if (a !== b) {
-      diffs.push({ path: `header.${name}`, kind: 'header', reference: preview(a), candidate: preview(b) });
-    }
-  }
-
   // The error envelope is compared on the RAW text: literal `code` and
   // `message` are part of this contract, punctuation and all.
-  const refErr = errorEnvelope(reference.rawJson);
-  const candErr = errorEnvelope(candidate.rawJson);
   if (refErr || candErr) {
     if (!refErr || !candErr) {
       diffs.push({
@@ -183,5 +200,5 @@ export function diffObservations(reference, candidate, options = {}) {
   }
 
   const truncated = diffs.length >= MAX_DIFFS;
-  return { diffs: diffs.slice(0, MAX_DIFFS), truncated, notes };
+  return { diffs: diffs.slice(0, MAX_DIFFS), truncated, notes, headerPolicy };
 }

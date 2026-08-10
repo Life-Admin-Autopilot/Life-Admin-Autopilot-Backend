@@ -63,6 +63,7 @@ export function parseArgs(argv) {
     tags: [],
     skipTags: ['strict-ratelimit'],
     maskIp: false,
+    seedCandidateUser: null,
     authSweep: true,
     colour: process.stdout.isTTY === true && !process.env.NO_COLOR,
     timeoutMs: DEFAULTS.timeoutMs,
@@ -91,6 +92,7 @@ export function parseArgs(argv) {
       case '--skip-tag': options.skipTags.push(next()); break;
       case '--include-strict': options.skipTags = options.skipTags.filter((t) => t !== 'strict-ratelimit'); break;
       case '--mask-ip': options.maskIp = true; break;
+      case '--seed-candidate-user': options.seedCandidateUser = next(); break;
       case '--no-auth-sweep': options.authSweep = false; break;
       case '--no-colour':
       case '--no-color': options.colour = false; break;
@@ -126,6 +128,12 @@ kitto parity harness — differential test of the .NET port against the Node ref
   --skip-tag TAG      skip scenarios carrying TAG (repeatable; 'strict-ratelimit' by default)
   --include-strict    also run the strictAuthLimiter scenario (5 slots/side against a 5-per-hour budget)
   --mask-ip           additionally mask client IPs in session listings
+  --seed-candidate-user CMD
+                      provision the candidate's test user by running CMD instead of calling
+                      POST /auth/signup on the candidate. CMD gets PARITY_BASE_URL / PARITY_EMAIL /
+                      PARITY_PASSWORD in its environment and must print {"accessToken": "..."}.
+                      Use it when candidate signup is broken, so one route's regression stops
+                      blanking every authenticated row. See README section 8.1.
   --no-auth-sweep     skip the generated "every authed route returns 401" scenario
   --timeout MS        per-request timeout                default ${DEFAULTS.timeoutMs}
   --max-wait SECONDS  on an unexpected 429, wait this long for the window to reset (default 0 = never)
