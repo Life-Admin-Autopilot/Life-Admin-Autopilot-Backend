@@ -26,7 +26,8 @@ namespace Life_Admin_Autopilot.Tests.Features.Ai;
 /// <para>
 /// <b>OPT-IN, and silent by default.</b> It runs only when
 /// <c>LANGFLOW_SMOKE_BASE_URL</c> and <c>LANGFLOW_SMOKE_FLOW_ID</c> are set, so it
-/// never fails a normal run and never pretends to have checked anything:
+/// never fails a normal run. <b>A green suite is therefore NOT evidence that this
+/// ran</b> — see the known gap in the body:
 /// </para>
 ///
 /// <code>
@@ -37,11 +38,9 @@ namespace Life_Admin_Autopilot.Tests.Features.Ai;
 /// </code>
 ///
 /// <para>
-/// <b>NOT YET EXECUTED.</b> Written from a worktree with no Langflow reachable, so
-/// the live path has never run once. The assertions below are the same invariants
-/// <c>LangflowProviderTests</c> checks against a stub, and those do run — but until
-/// someone points this at a real instance, treat it as unproven scaffolding rather
-/// than as coverage. A skipping test that is quietly broken is worse than no test.
+/// <b>Executed and passing</b> against live Langflow 1.11.2 (12s — a real round
+/// trip, not a silent skip), and verified to FAIL against a bogus flow id, so the
+/// connection has teeth rather than only the assertions.
 /// </para>
 ///
 /// <para>
@@ -60,6 +59,15 @@ public sealed class LangflowSmokeTests
         var options = SmokeOptions();
         var database = TryGetDatabase();
 
+        // KNOWN GAP: this returns rather than skipping, so an unconfigured run
+        // reports as PASSED in 111ms. That is the same false-green this test exists
+        // to prevent, one level up — on the day the credentials stop being injected
+        // the summary still reads green and nobody notices the boundary went
+        // unchecked. xunit 2.9.3 has no dynamic skip (`Assert.Skip` binds to
+        // AsyncEnumerable.Skip); fixing it properly needs Xunit.SkippableFact or
+        // xunit v3. Until then the mitigation is that LangflowTurnInvariants also
+        // runs against the stubbed turn in LangflowProviderTests, so the assertions
+        // are always exercised — only the live connection can go silently unrun.
         if (options is null || database is null)
         {
             return;
@@ -67,9 +75,9 @@ public sealed class LangflowSmokeTests
 
         var provider = new LangflowAiProvider(
             new SmokeHttpClientFactory(),
-            options,
+            options!,
             SmokeBinding(),
-            new AiConversationRepository(database));
+            new AiConversationRepository(database!));
 
         var events = new List<AiStreamEvent>();
         var request = new AiAskRequest(
