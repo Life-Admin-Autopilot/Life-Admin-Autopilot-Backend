@@ -5680,7 +5680,7 @@
   },
   "description": "Single convergence point for chat, voice transcripts and document candidates. Mode-aware, eleven tools, returns one JSON envelope.",
   "endpoint_name": null,
-  "id": "6b0f1c2e-9a41-4d3f-8c77-planningagentv4",
+  "id": "6b0f1c2e-9a41-4d3f-8c77-91a1f10a9e14",
   "is_component": false,
   "last_tested_version": "1.10.0",
   "locked": false,

@@ -1,0 +1,124 @@
+#!/usr/bin/env bash
+# Bring up the whole stack for testing the frontend against the .NET backend.
+#
+#   ./tools/dev/stack.sh up      start everything, print status
+#   ./tools/dev/stack.sh down    stop everything this script started
+#   ./tools/dev/stack.sh status  what is listening, and is AI wired
+#
+# Ports, all localhost:
+#   27018  mongo    isolated parity instance (NEVER the shared Atlas cluster)
+#    7860  langflow the planning + document agents
+#    5080  .NET     the backend the frontend talks to
+#    4100  node     the reference server, only needed to re-run parity
+set -uo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+STEWARD="$(cd "$ROOT/../Steward" && pwd)"
+SCRATCH="${TMPDIR:-/tmp}/kitto-stack"
+mkdir -p "$SCRATCH/mongo/data" "$SCRATCH/mongo/log" "$SCRATCH/log"
+
+export DOTNET_ROOT="$HOME/.dotnet"
+export PATH="$HOME/.dotnet:$HOME/.local/bin:$PATH"
+
+# The Planning Agent v4 flow, as imported into Langflow.
+LANGFLOW_FLOW="${LANGFLOW_FLOW:-6b0f1c2e-9a41-4d3f-8c77-91a1f10a9e14}"
+
+port_pid() { lsof -ti "tcp:$1" 2>/dev/null | head -1; }
+up()       { curl -sf -m 2 "$1" >/dev/null 2>&1; }
+
+wait_for() { # url, label, tries
+  for _ in $(seq 1 "${3:-60}"); do up "$1" && { echo "  ✓ $2"; return 0; }; sleep 1; done
+  echo "  ✗ $2 did not come up — see $SCRATCH/log/"; return 1
+}
+
+start_mongo() {
+  [ -n "$(port_pid 27018)" ] && { echo "  ✓ mongo (already running)"; return; }
+  /opt/homebrew/bin/mongod --dbpath "$SCRATCH/mongo/data" --port 27018 --bind_ip 127.0.0.1 \
+    --logpath "$SCRATCH/mongo/log/mongod.log" --fork >/dev/null 2>&1
+  sleep 1; nc -z localhost 27018 && echo "  ✓ mongo" || echo "  ✗ mongo"
+}
+
+start_langflow() {
+  up http://127.0.0.1:7860/health && { echo "  ✓ langflow (already running)"; return; }
+  ( export LANGFLOW_AUTO_LOGIN=true DO_NOT_TRACK=true
+    nohup langflow run --host 127.0.0.1 --port 7860 > "$SCRATCH/log/langflow.log" 2>&1 & )
+  wait_for http://127.0.0.1:7860/health langflow 90
+}
+
+langflow_token() {
+  curl -s -m 10 http://127.0.0.1:7860/api/v1/auto_login \
+    | node -e "let d='';process.stdin.on('data',c=>d+=c).on('end',()=>{try{console.log(JSON.parse(d).access_token)}catch{console.log('')}})"
+}
+
+start_dotnet() {
+  local pid; pid="$(port_pid 5080)"; [ -n "$pid" ] && kill -9 "$pid" 2>/dev/null; sleep 1
+  ( cd "$ROOT"
+    export ASPNETCORE_URLS="http://[::]:5080"          # dual-stack: 127.0.0.1 alone breaks req.ip parity
+    export ASPNETCORE_ENVIRONMENT=Development
+    export Database__Provider=Sqlite
+    export ConnectionStrings__DefaultConnection="Data Source=$SCRATCH/identity.db"
+    export MongoDbSettings__ConnectionString="mongodb://127.0.0.1:27018"
+    export MongoDbSettings__DatabaseName="kitto_dev"
+    export Jwt__Key="${JWT_KEY:-dev-only-not-a-real-secret-0000000000000000000000000000000000}"
+    # The frontend's origins. Capacitor's webview sends capacitor://localhost.
+    export Kernel__Cors__Origins="http://localhost:3000,http://127.0.0.1:3000,capacitor://localhost,http://localhost"
+    export Kernel__Workers__Enabled=true
+    export LANGFLOW_BASE_URL="http://127.0.0.1:7860"
+    export LANGFLOW_FLOW_ID="$LANGFLOW_FLOW"
+    [ -f "$SCRATCH/langflow_api_key" ] && export LANGFLOW_API_KEY="$(cat "$SCRATCH/langflow_api_key")"
+    nohup dotnet run --project Life-Admin-Autopilot-Backend --no-launch-profile \
+      > "$SCRATCH/log/dotnet.log" 2>&1 & )
+  wait_for http://localhost:5080/health ".NET backend" 90
+}
+
+case "${1:-up}" in
+  up)
+    echo "starting the stack…"
+    start_mongo
+    start_langflow
+
+    # Mint an API key once so the backend is not relying on AUTO_LOGIN.
+    if [ ! -f "$SCRATCH/langflow_api_key" ]; then
+      T="$(langflow_token)"
+      [ -n "$T" ] && curl -s -m 20 -X POST http://127.0.0.1:7860/api/v1/api_key/ \
+        -H "Authorization: Bearer $T" -H 'Content-Type: application/json' \
+        -d '{"name":"kitto-dotnet-backend"}' \
+        | node -e "let d='';process.stdin.on('data',c=>d+=c).on('end',()=>{try{const k=JSON.parse(d).api_key;if(k)require('fs').writeFileSync(process.argv[1],k)}catch{}})" \
+          "$SCRATCH/langflow_api_key"
+    fi
+
+    start_dotnet
+    echo
+    "$0" status
+    ;;
+
+  down)
+    for p in 5080 7860; do
+      pid="$(port_pid "$p")"; [ -n "$pid" ] && { kill -9 "$pid" 2>/dev/null; echo "  stopped :$p"; }
+    done
+    pid="$(port_pid 27018)"; [ -n "$pid" ] && { kill "$pid" 2>/dev/null; echo "  stopped mongo"; }
+    echo "note: the Node reference on :4100 and your own server on :4000 were left alone."
+    ;;
+
+  status)
+    echo "stack:"
+    nc -z localhost 27018 2>/dev/null && echo "  mongo     :27018  up" || echo "  mongo     :27018  DOWN"
+    up http://127.0.0.1:7860/health   && echo "  langflow  :7860   up" || echo "  langflow  :7860   DOWN"
+    up http://localhost:5080/health   && echo "  .NET      :5080   up" || echo "  .NET      :5080   DOWN"
+    up http://localhost:4100/health   && echo "  node ref  :4100   up (parity only)" || echo "  node ref  :4100   down (only needed for parity runs)"
+    echo
+    echo "AI wiring — is the Langflow provider actually selected?"
+    code="$(curl -s -o /dev/null -w '%{http_code}' -m 5 -X POST http://localhost:5080/ai/ask \
+      -H 'Content-Type: application/json' -d '{"question":"ping"}' 2>/dev/null)"
+    case "$code" in
+      401) echo "  ✓ /ai/ask answers 401 unauthenticated — the route is live." ;;
+      503) echo "  ✗ /ai/ask is 503: Langflow NOT configured. Check LANGFLOW_BASE_URL / LANGFLOW_FLOW_ID." ;;
+      *)   echo "  ? /ai/ask returned $code" ;;
+    esac
+    echo
+    echo "frontend:  cd $STEWARD && npm run dev     → http://localhost:3000"
+    echo "logs:      $SCRATCH/log/"
+    ;;
+
+  *) echo "usage: $0 {up|down|status}"; exit 1 ;;
+esac
