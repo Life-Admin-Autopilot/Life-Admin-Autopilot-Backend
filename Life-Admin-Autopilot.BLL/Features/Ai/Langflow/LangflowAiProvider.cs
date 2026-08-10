@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Net.Http.Headers;
 using System.Runtime.CompilerServices;
 using System.Text;
@@ -97,6 +98,11 @@ public sealed class LangflowAiProvider : IAiProvider
         RunTurnAsync(
             ObjectId.Parse(request.UserId),
             request.Question,
+            LangflowTweaks.Build(
+                request.Question,
+                LangflowTweaks.ChatMode,
+                request.Timezone,
+                request.AccessToken),
             persistUserTurn: true,
             cancellationToken);
 
@@ -116,6 +122,11 @@ public sealed class LangflowAiProvider : IAiProvider
         RunTurnAsync(
             ObjectId.Parse(request.UserId),
             ContinuationPrompt(request),
+            LangflowTweaks.Build(
+                ContinuationPrompt(request),
+                LangflowTweaks.ChatMode,
+                request.Timezone,
+                request.AccessToken),
             persistUserTurn: false,
             cancellationToken);
 
@@ -145,6 +156,7 @@ public sealed class LangflowAiProvider : IAiProvider
     private async IAsyncEnumerable<AiStreamEvent> RunTurnAsync(
         ObjectId userId,
         string prompt,
+        Dictionary<string, Dictionary<string, string>> tweaks,
         bool persistUserTurn,
         [EnumeratorCancellation] CancellationToken cancellationToken)
     {
@@ -164,7 +176,8 @@ public sealed class LangflowAiProvider : IAiProvider
         var translator = new LangflowEventTranslator();
         yield return translator.Start();
 
-        await foreach (var frame in ReadFramesAsync(userId, prompt, cancellationToken).ConfigureAwait(false))
+        await foreach (var frame in ReadFramesAsync(userId, prompt, tweaks, cancellationToken)
+                           .ConfigureAwait(false))
         {
             foreach (var translated in translator.Accept(frame))
             {
@@ -199,12 +212,13 @@ public sealed class LangflowAiProvider : IAiProvider
     private async IAsyncEnumerable<LangflowFrame> ReadFramesAsync(
         ObjectId userId,
         string prompt,
+        Dictionary<string, Dictionary<string, string>> tweaks,
         [EnumeratorCancellation] CancellationToken cancellationToken)
     {
         using var client = _clients.CreateClient(LangflowOptions.HttpClientName);
         client.Timeout = _options.Timeout;
 
-        using var request = BuildRequest(userId, prompt);
+        using var request = BuildRequest(userId, prompt, tweaks);
 
         HttpResponseMessage response;
         try
@@ -254,7 +268,10 @@ public sealed class LangflowAiProvider : IAiProvider
         }
     }
 
-    private HttpRequestMessage BuildRequest(ObjectId userId, string prompt)
+    private HttpRequestMessage BuildRequest(
+        ObjectId userId,
+        string prompt,
+        Dictionary<string, Dictionary<string, string>> tweaks)
     {
         var payload = new LangflowRunRequest
         {
@@ -263,6 +280,9 @@ public sealed class LangflowAiProvider : IAiProvider
             // The user's own id, so Langflow's per-session memory never crosses
             // accounts. The conversation of record is still ours, in Mongo.
             SessionId = userId.ToString(),
+
+            // The prompt actually reaches the agent through here. See LangflowTweaks.
+            Tweaks = tweaks,
         };
 
         var request = new HttpRequestMessage(HttpMethod.Post, _options.RunUri)
@@ -345,9 +365,19 @@ public sealed class LangflowAiProvider : IAiProvider
 }
 
 /// <summary>
-/// The request body Langflow's run endpoint takes. Four keys, snake_case — Langflow
-/// does not camelCase its API, so the property names are set explicitly rather than
-/// left to the serializer's policy.
+/// The request body Langflow's run endpoint takes, snake_case — Langflow does not
+/// camelCase its API, so the property names are set explicitly rather than left to
+/// the serializer's policy.
+///
+/// <para>
+/// <b><c>tweaks</c> is not an optimisation; without it the agent receives nothing.</b>
+/// The planning flow has no ChatInput node. Its only text entry point is the
+/// <c>transcript</c> field on <c>PlanningInput-v4</c>, so a run that carries
+/// <c>input_value</c> alone reaches the model with an empty prompt and answers with
+/// the empty envelope every time — a 200, a healthy token stream, and no content.
+/// See <see cref="LangflowTweaks"/> for the six field names, which are fixed by the
+/// flow and must not be renamed on one side only.
+/// </para>
 /// </summary>
 internal sealed class LangflowRunRequest
 {
@@ -362,4 +392,71 @@ internal sealed class LangflowRunRequest
 
     [System.Text.Json.Serialization.JsonPropertyName("session_id")]
     public string SessionId { get; init; } = string.Empty;
+
+    [System.Text.Json.Serialization.JsonPropertyName("tweaks")]
+    public Dictionary<string, Dictionary<string, string>>? Tweaks { get; init; }
+}
+
+/// <summary>
+/// The six values the planning flow expects on its input node, and the node they
+/// target. Every name here is a contract with <c>langflow/planning-agent.v4.json</c>:
+/// a tweak whose key does not match a template field on that node is silently
+/// ignored by Langflow, so a typo here degrades into "the agent answered nothing"
+/// rather than an error.
+/// </summary>
+internal static class LangflowTweaks
+{
+    /// <summary>The Prompt Template node that renders all six into the agent's prompt.</summary>
+    public const string InputNode = "PlanningInput-v4";
+
+    public const string ChatMode = "chat";
+
+    /// <summary>
+    /// Builds the tweak map for one turn.
+    ///
+    /// <para>
+    /// <c>currentDate</c> MUST carry an explicit UTC offset. The API rejects any
+    /// datetime without one, so an offset-free "today" leaves the agent with no
+    /// offset to emit and every write it attempts fails validation. The user's IANA
+    /// zone supplies it; an unknown or absent zone falls back to UTC (<c>+00:00</c>)
+    /// rather than to the server's local time, which would be a silently wrong
+    /// answer instead of an obviously neutral one.
+    /// </para>
+    /// </summary>
+    public static Dictionary<string, Dictionary<string, string>> Build(
+        string payload,
+        string mode,
+        string? timezone,
+        string? accessToken,
+        string pendingTasks = "",
+        string answers = "")
+    {
+        var zone = ResolveZone(timezone);
+        var now = TimeZoneInfo.ConvertTime(DateTimeOffset.UtcNow, zone);
+
+        return new Dictionary<string, Dictionary<string, string>>(1, StringComparer.Ordinal)
+        {
+            [InputNode] = new(6, StringComparer.Ordinal)
+            {
+                ["currentDate"] = now.ToString("yyyy-MM-dd'T'HH:mm:sszzz", CultureInfo.InvariantCulture),
+                ["accessToken"] = accessToken ?? string.Empty,
+                ["mode"] = mode,
+                ["transcript"] = payload,
+                ["pendingTasks"] = pendingTasks,
+                ["answers"] = answers,
+            },
+        };
+    }
+
+    private static TimeZoneInfo ResolveZone(string? timezone)
+    {
+        if (string.IsNullOrWhiteSpace(timezone))
+        {
+            return TimeZoneInfo.Utc;
+        }
+
+        // The zone reached us from a request body. An id this runtime does not know
+        // is a bad input, not a reason to fail a turn that would otherwise work.
+        return TimeZoneInfo.TryFindSystemTimeZoneById(timezone, out var zone) ? zone : TimeZoneInfo.Utc;
+    }
 }

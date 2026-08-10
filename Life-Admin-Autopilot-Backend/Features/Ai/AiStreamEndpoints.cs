@@ -100,7 +100,7 @@ public static class AiStreamEndpoints
                     ai,
                     quota,
                     tier,
-                    new AiAskRequest(caller.IdString, question!, timezone),
+                    new AiAskRequest(caller.IdString, question!, timezone, AiRequests.BearerToken(context)),
                     cancellationToken)
                 .ConfigureAwait(false);
 

@@ -80,7 +80,24 @@ public static class AiToolCatalog
         var fieldErrors = new Dictionary<string, List<string>>(StringComparer.Ordinal);
 
         var domain = ReadOptionalEnum(supplied, "domain", TaskVocabulary.Domains, fieldErrors);
-        var status = ReadOptionalEnum(supplied, "status", TaskVocabulary.Statuses, fieldErrors);
+
+        // `status` OR `status_filter`, and the second name is not cosmetic.
+        //
+        // Langflow 1.11.2 refuses any component input called `status`: the name collides
+        // with `Component.status`, the build-status slot the canvas renders, and
+        // `Component.set_attributes` raises "reserved word" before the graph is built.
+        // The tool ARGUMENT name is derived from the input name with no renaming layer
+        // (`lfx.base.tools.component_tool._build_output_function`), so the planning flow's
+        // `deleteAllTasks` necessarily puts `status_filter` on the wire.
+        //
+        // Reading only `status` would not fail loudly — it would silently widen the
+        // filter. A user who confirmed "delete all my DONE tasks" would have every task
+        // in that domain deleted, because the unrecognised key is stripped below. Both
+        // names are accepted so a record written by either flow revision replays
+        // correctly.
+        var status = supplied.Contains("status")
+            ? ReadOptionalEnum(supplied, "status", TaskVocabulary.Statuses, fieldErrors)
+            : ReadOptionalEnum(supplied, "status_filter", TaskVocabulary.Statuses, fieldErrors);
 
         if (fieldErrors.Count > 0)
         {
