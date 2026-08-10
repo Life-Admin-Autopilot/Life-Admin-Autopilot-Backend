@@ -1,0 +1,365 @@
+using System.Net.Http.Headers;
+using System.Runtime.CompilerServices;
+using System.Text;
+using System.Text.Json;
+using Life_Admin_Autopilot.DAL.Features.Ai;
+using Life_Admin_Autopilot.DAL.Kernel.Errors;
+using MongoDB.Bson;
+
+namespace Life_Admin_Autopilot.BLL.Features.Ai.Langflow;
+
+/// <summary>
+/// The second implementation behind <see cref="IAiProvider"/>: a Langflow agent,
+/// driving the chat stream the frontend already ships against.
+///
+/// <para>
+/// <b>Streaming is the requirement, not an optimisation.</b> Langflow's run endpoint
+/// has a blocking form that answers once the whole turn is finished; using it would
+/// leave the chat blank for the length of a multi-tool plan and then paint
+/// everything at once. This calls <c>?stream=true</c> and translates each frame as it
+/// arrives, so tokens and tool pills appear live.
+/// </para>
+///
+/// <para>
+/// <b>What it owns and what it does not.</b> It owns the HTTP call, the incremental
+/// line read, and the conversation persistence Node does in <c>service.ts</c> —
+/// sweep stale pending calls, append the user turn before streaming, append the
+/// assistant turn before <c>done</c>. It does NOT own the SSE wire format, the
+/// heartbeat, the quota, or the <c>quota</c> frame: those are the route's, exactly as
+/// in Node, and keeping the split means the not-configured provider still produces a
+/// byte-identical reference response.
+/// </para>
+///
+/// <para>
+/// <b>Failures are frames, not statuses.</b> Everything this provider does happens
+/// after the route has flushed headers, so a connection refused, a 500 from
+/// Langflow, or a timeout must surface as <c>{"type":"error"}</c> inside a 200.
+/// The provider throws <see cref="AppException"/> with a real code; the route turns
+/// it into the frame.
+/// </para>
+/// </summary>
+public sealed class LangflowAiProvider : IAiProvider
+{
+    /// <summary>
+    /// <c>STALE_PENDING_MS</c>. Matches the conversation sweep window Node uses and
+    /// the TTL of the in-memory map it replaces.
+    /// </summary>
+    public static readonly TimeSpan StalePendingWindow = TimeSpan.FromHours(1);
+
+    private readonly IHttpClientFactory _clients;
+    private readonly LangflowOptions _options;
+    private readonly AiConversationRepository _conversations;
+
+    public LangflowAiProvider(
+        IHttpClientFactory clients,
+        LangflowOptions options,
+        AiConversationRepository conversations)
+    {
+        _clients = clients;
+        _options = options;
+        _conversations = conversations;
+    }
+
+    /// <summary>
+    /// Node's <c>isAiConfigured()</c>, answered from Langflow's own configuration
+    /// rather than <c>GEMINI_API_KEY</c>. False keeps every AI route on its 503, which
+    /// is the parity target.
+    /// </summary>
+    public bool IsConfigured => _options.IsConfigured;
+
+    /// <summary>
+    /// <b>Not provided by this adapter, and deliberately not faked.</b> Node's
+    /// transcription is a Gemini audio call; the baseline flow has no audio input and
+    /// Langflow's run endpoint takes text. Throwing loudly is the honest answer — a
+    /// deployment that configures Langflow and then calls this route has a real gap,
+    /// and answering 503 <c>ai_not_configured</c> would misreport it as "switched
+    /// off". See the slice report.
+    /// </summary>
+    public Task<string> TranscribeAsync(
+        AiTranscriptionRequest request,
+        CancellationToken cancellationToken = default) =>
+        throw new NotSupportedException(
+            "POST /ai/voice/transcribe has no Langflow counterpart: the run endpoint is text-only and " +
+            "the baseline flow has no speech input. Wire a transcription provider, or leave the route " +
+            "on NotConfiguredAiProvider.");
+
+    /// <summary>
+    /// One turn of <c>POST /ai/ask</c>.
+    ///
+    /// <para>
+    /// The user turn is persisted BEFORE the first frame, so a mid-stream disconnect
+    /// still leaves the question in history — the same ordering Node relies on.
+    /// </para>
+    /// </summary>
+    public IAsyncEnumerable<AiStreamEvent> AskAsync(
+        AiAskRequest request,
+        CancellationToken cancellationToken = default) =>
+        RunTurnAsync(
+            ObjectId.Parse(request.UserId),
+            request.Question,
+            persistUserTurn: true,
+            cancellationToken);
+
+    /// <summary>
+    /// The post-confirmation continuation.
+    ///
+    /// <para>
+    /// Re-enters the agent with a synthetic report of what the confirmed tool did, so
+    /// it can react and finish any remaining steps of the user's original plan. No
+    /// new user turn is appended — the "message" here is the tool outcome, and
+    /// appending it would show up as something the user typed.
+    /// </para>
+    /// </summary>
+    public IAsyncEnumerable<AiStreamEvent> ContinueAfterConfirmAsync(
+        AiContinuationRequest request,
+        CancellationToken cancellationToken = default) =>
+        RunTurnAsync(
+            ObjectId.Parse(request.UserId),
+            ContinuationPrompt(request),
+            persistUserTurn: false,
+            cancellationToken);
+
+    /// <summary>
+    /// What the agent is told about the tool the user just confirmed. Plain text
+    /// rather than a structured function-response part, because Langflow's run
+    /// endpoint takes a single <c>input_value</c> string — there is no channel for the
+    /// <c>functionCall</c>/<c>functionResponse</c> pair Gemini gets. This is the
+    /// clearest place where the two orchestrators genuinely do not line up.
+    /// </summary>
+    private static string ContinuationPrompt(AiContinuationRequest request)
+    {
+        var outcome = request.ToolError is not null
+            ? $"failed with: {request.ToolError}"
+            : $"succeeded with result: {Describe(request.ToolResult)}";
+
+        return
+            $"The user confirmed the pending action '{request.ToolName}' and it {outcome}. " +
+            "Tell them what happened and continue with any remaining steps of their request.";
+    }
+
+    private static string Describe(object? value) =>
+        value is null ? "{}" : JsonSerializer.Serialize(value, AiStreamJson.Frame);
+
+    // ---- the streaming turn -------------------------------------------------
+
+    private async IAsyncEnumerable<AiStreamEvent> RunTurnAsync(
+        ObjectId userId,
+        string prompt,
+        bool persistUserTurn,
+        [EnumeratorCancellation] CancellationToken cancellationToken)
+    {
+        // Sweep first: a pending call older than the window is declined, so a
+        // confirmation card from a previous deploy cannot still fire a bulk delete.
+        await _conversations
+            .ExpireStalePendingToolCallsAsync(
+                userId, AiConversationVocabulary.PersonalScope, StalePendingWindow,
+                cancellationToken: cancellationToken)
+            .ConfigureAwait(false);
+
+        if (persistUserTurn)
+        {
+            await AppendAsync(userId, "user", prompt, null, cancellationToken).ConfigureAwait(false);
+        }
+
+        var translator = new LangflowEventTranslator();
+        yield return translator.Start();
+
+        await foreach (var frame in ReadFramesAsync(userId, prompt, cancellationToken).ConfigureAwait(false))
+        {
+            foreach (var translated in translator.Accept(frame))
+            {
+                yield return translated;
+            }
+        }
+
+        await AppendAsync(
+                userId,
+                "assistant",
+                translator.AssistantText,
+                translator.ToolCalls,
+                cancellationToken)
+            .ConfigureAwait(false);
+
+        foreach (var tail in translator.Complete())
+        {
+            yield return tail;
+        }
+    }
+
+    /// <summary>
+    /// The HTTP half: POST the run request, then hand back one
+    /// <see cref="LangflowFrame"/> per line as the body arrives.
+    ///
+    /// <para>
+    /// <c>ResponseHeadersRead</c> is what makes this incremental — the default
+    /// buffers the whole body first, which would silently reintroduce the blocking
+    /// behaviour this adapter exists to avoid.
+    /// </para>
+    /// </summary>
+    private async IAsyncEnumerable<LangflowFrame> ReadFramesAsync(
+        ObjectId userId,
+        string prompt,
+        [EnumeratorCancellation] CancellationToken cancellationToken)
+    {
+        using var client = _clients.CreateClient(LangflowOptions.HttpClientName);
+        client.Timeout = _options.Timeout;
+
+        using var request = BuildRequest(userId, prompt);
+
+        HttpResponseMessage response;
+        try
+        {
+            response = await client
+                .SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken)
+                .ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException
+                                   && !cancellationToken.IsCancellationRequested)
+        {
+            throw new AppException(502, "langflow_unavailable", $"Could not reach the agent: {ex.Message}");
+        }
+
+        using (response)
+        {
+            if (!response.IsSuccessStatusCode)
+            {
+                var body = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+                throw new AppException(
+                    502,
+                    "langflow_error",
+                    $"The agent returned {(int)response.StatusCode}: {Truncate(body)}");
+            }
+
+            await using var stream = await response.Content
+                .ReadAsStreamAsync(cancellationToken)
+                .ConfigureAwait(false);
+
+            using var reader = new StreamReader(stream, Encoding.UTF8);
+
+            string? pendingEventName = null;
+
+            while (!reader.EndOfStream)
+            {
+                var line = await reader.ReadLineAsync(cancellationToken).ConfigureAwait(false);
+                if (line is null)
+                {
+                    break;
+                }
+
+                if (LangflowWireContract.TryParseLine(line, ref pendingEventName, out var frame))
+                {
+                    yield return frame;
+                }
+            }
+        }
+    }
+
+    private HttpRequestMessage BuildRequest(ObjectId userId, string prompt)
+    {
+        var payload = new LangflowRunRequest
+        {
+            InputValue = prompt,
+
+            // The user's own id, so Langflow's per-session memory never crosses
+            // accounts. The conversation of record is still ours, in Mongo.
+            SessionId = userId.ToString(),
+        };
+
+        var request = new HttpRequestMessage(HttpMethod.Post, _options.RunUri)
+        {
+            Content = new StringContent(
+                JsonSerializer.Serialize(payload, AiStreamJson.Frame),
+                Encoding.UTF8,
+                "application/json"),
+        };
+
+        request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("text/event-stream"));
+
+        if (!string.IsNullOrEmpty(_options.ApiKey))
+        {
+            request.Headers.TryAddWithoutValidation("x-api-key", _options.ApiKey);
+        }
+
+        return request;
+    }
+
+    private static string Truncate(string body) =>
+        body.Length <= 300 ? body : body[..300] + "…";
+
+    // ---- persistence --------------------------------------------------------
+
+    private Task AppendAsync(
+        ObjectId userId,
+        string role,
+        string text,
+        IReadOnlyList<TranslatedToolCall>? toolCalls,
+        CancellationToken cancellationToken)
+    {
+        var message = new AiConversationMessageDocument
+        {
+            Role = role,
+            Text = text,
+            CreatedAt = DateTime.UtcNow,
+
+            // `default: undefined` in Mongoose — an empty list is stored as nothing
+            // at all, and the ROUTE coerces the absent value back to [] on read.
+            ToolCalls = toolCalls is { Count: > 0 } ? toolCalls.Select(ToDocument).ToList() : null,
+        };
+
+        return _conversations.AppendTurnAsync(
+            userId,
+            AiConversationVocabulary.PersonalScope,
+            null,
+            message,
+            cancellationToken: cancellationToken);
+    }
+
+    private static AiConversationToolCallDocument ToDocument(TranslatedToolCall call) => new()
+    {
+        CallId = call.CallId,
+        Name = call.Name,
+        Args = ToBson(call.Args) ?? new BsonDocument(),
+        Status = call.Status,
+        Result = ToBson(call.Result) ?? BsonNull.Value,
+        Error = call.Error,
+    };
+
+    /// <summary>
+    /// Raw JSON → BSON for storage. <c>args</c> is <c>Schema.Types.Mixed</c>, so any
+    /// shape is permitted and none is coerced — narrowing it here is what made one
+    /// oddly-shaped stored value turn every read of a user's history into a 500.
+    /// </summary>
+    private static BsonValue? ToBson(JsonElement? element)
+    {
+        if (element is not { } value || value.ValueKind is JsonValueKind.Undefined or JsonValueKind.Null)
+        {
+            return null;
+        }
+
+        return BsonDocument.TryParse(
+            value.ValueKind == JsonValueKind.Object ? value.GetRawText() : $"{{\"value\":{value.GetRawText()}}}",
+            out var parsed)
+            ? value.ValueKind == JsonValueKind.Object ? parsed : parsed["value"]
+            : BsonNull.Value;
+    }
+}
+
+/// <summary>
+/// The request body Langflow's run endpoint takes. Four keys, snake_case — Langflow
+/// does not camelCase its API, so the property names are set explicitly rather than
+/// left to the serializer's policy.
+/// </summary>
+internal sealed class LangflowRunRequest
+{
+    [System.Text.Json.Serialization.JsonPropertyName("input_value")]
+    public string InputValue { get; init; } = string.Empty;
+
+    [System.Text.Json.Serialization.JsonPropertyName("input_type")]
+    public string InputType { get; init; } = "chat";
+
+    [System.Text.Json.Serialization.JsonPropertyName("output_type")]
+    public string OutputType { get; init; } = "chat";
+
+    [System.Text.Json.Serialization.JsonPropertyName("session_id")]
+    public string SessionId { get; init; } = string.Empty;
+}
