@@ -83,10 +83,24 @@ rate-limits hard — a 429 arrives as an `error` frame inside a healthy 200, and
 post-confirm continuation the action has *already* succeeded, so a trailing error
 frame must not be read as "it didn't happen".
 
-Still not working: **the document agent has never done a real extraction** (its
-gateway needs `SBG_API_KEY`, which is not on this machine — it returns a genuine
-401), and clarification mode needs `pendingTasks`/`answers`, which belong to the
-clarifications slice.
+Still not working, both non-blocking for the chat surface:
+
+**The document agent has never completed a real extraction.** It builds, runs and
+reaches its gateway, then stops on a genuine `401 AUTH_INVALID` — `SBG_API_KEY`
+exists nowhere on this machine. Everything either side of that one call was proved
+by running `DocumentScanInput → CandidateHardener` in-process against a canned model
+response: the hardener repaired out-of-vocabulary values and dropped an invented
+`sourcePage`. The model call itself is unproven. **The Langflow global
+`DOCUMENT_AGENT_API_KEY` currently holds the literal `not-a-real-key-probe-only`**,
+set deliberately to force the request through to a real 401 rather than fail early
+— it lives in the Langflow instance, not in this repo, so nothing here reveals it.
+Replace it before expecting that flow to do anything.
+
+**`clarification` mode is unreachable through `/ai/ask`.** The flow supports all four
+modes and each was verified directly against Langflow, but the adapter only ever
+sends `mode=chat`, and `pendingTasks`/`answers` are not wired. That needs a route
+that knows the user is answering questions; the measured payload shapes are recorded
+in `LangflowInputBinding`'s docstring so the next person need not rediscover them.
 
 ## Re-running parity
 
