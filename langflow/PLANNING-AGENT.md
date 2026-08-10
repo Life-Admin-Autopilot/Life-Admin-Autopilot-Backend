@@ -255,7 +255,7 @@ gone.
 > **Both of these are live credentials committed in `planning-agent.v3.baseline.json` and
 > are in git history. Rotating them is not optional.**
 
-1. **Mistral API key** `k454hUTSJpxJV6MA6VminSnWRapyXxYy` —
+1. **Mistral API key** `<REDACTED-KEY-ROTATE-SEE-TASK-35>` —
    `MistralModel-XpO15.template.api_key.value`.
 2. **A user JWT** for `fady@gmail.com` (subject `73010c68-3732-4ebb-f68b-08def1aee2ac`,
    `exp` 1786123365) — `Prompt Template-9PpOE.template.accessToken.value`.
