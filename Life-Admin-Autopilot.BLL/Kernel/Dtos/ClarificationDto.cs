@@ -53,8 +53,11 @@ public sealed class ClarificationDto
     [JsonPropertyName("userId")]
     public string UserId { get; init; } = string.Empty;
 
+    // Omitted, never null and never a zero id: legacy rows predate the required
+    // constraint and the reference leaves the key out entirely for them.
     [JsonPropertyName("taskId")]
-    public string TaskId { get; init; } = string.Empty;
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? TaskId { get; init; }
 
     [JsonPropertyName("status")]
     public string Status { get; init; } = "open";
