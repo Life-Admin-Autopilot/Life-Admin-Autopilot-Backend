@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Net;
 using System.Net.Sockets;
 using System.Text.RegularExpressions;
@@ -75,17 +76,20 @@ public sealed class SystemFeedDnsResolver : IFeedDnsResolver
 /// </para>
 ///
 /// <para>
-/// <b>Second undocumented gap, shared with the reference: IPv4-in-IPv6 transition
-/// prefixes.</b> <see cref="IsPrivateIpv6"/> unwraps only the <c>::ffff:</c> mapped
-/// form. NAT64 (<c>64:ff9b::/96</c>), 6to4 (<c>2002::/16</c>) and Teredo
+/// <b>IPv4-in-IPv6 transition prefixes — FIXED, on both servers together.</b>
+/// <see cref="IsPrivateIpv6"/> used to unwrap only the <c>::ffff:</c> mapped form.
+/// NAT64 (<c>64:ff9b::/96</c>), 6to4 (<c>2002::/16</c>) and Teredo
 /// (<c>2001::/32</c>) also embed an IPv4 address in their low bits, so
-/// <c>64:ff9b::a9fe:a9fe</c> is the metadata endpoint wearing a v6 costume and this
-/// guard passes it. It matters only where the egress path actually does NAT64/DNS64
-/// or has a 6to4 relay — but that describes IPv6-only container egress on more than
-/// one cloud. Deliberately NOT fixed here: the reference has the identical hole, and
-/// the two servers have to refuse the same URLs with the same message during
-/// cut-over. Raised for a decision that lands on BOTH servers at once, rather than
-/// quietly diverging.
+/// <c>64:ff9b::a9fe:a9fe</c> was the metadata endpoint wearing a v6 costume and the
+/// guard waved it through. It bites only where the egress path actually does
+/// NAT64/DNS64 or has a 6to4 relay — which describes IPv6-only container egress on
+/// more than one cloud.
+///
+/// <para>The identical hole existed in the reference and was closed in the same
+/// change, so the two servers still refuse the same URLs with the same message
+/// during cut-over. See <see cref="EmbeddedIpv4"/>. Fixing one side alone would have
+/// been a divergence the parity harness reports for a good reason, which is the
+/// worst kind of red row.</para>
 /// </para>
 ///
 /// <para>
@@ -229,10 +233,16 @@ public sealed class FeedUrlGuard
             return true; // unspecified, loopback
         }
 
-        var mapped = Ipv4Mapped.Match(lower);
-        if (mapped.Success)
+        // Every transition format that carries an IPv4 has to be unwrapped, or it
+        // bypasses the v4 rules entirely. `::ffff:` alone is not enough — see
+        // EmbeddedIpv4. Fixed on BOTH servers in one change, so the two still refuse
+        // the same URLs with the same message.
+        foreach (var embedded in EmbeddedIpv4(lower))
         {
-            return IsPrivateIpv4(mapped.Groups[1].Value);
+            if (IsPrivateIpv4(embedded))
+            {
+                return true;
+            }
         }
 
         var head = lower.Split(':').FirstOrDefault() ?? string.Empty;
@@ -241,6 +251,125 @@ public sealed class FeedUrlGuard
 
         return false;
     }
+
+    /// <summary>
+    /// Expand any IPv6 form — <c>::</c> compression, a trailing dotted quad — into
+    /// its eight 16-bit groups. Null for anything unparseable, which callers treat
+    /// as "no embedded v4" rather than as safe.
+    /// </summary>
+    private static ushort[]? ExpandIpv6(string ip)
+    {
+        var s = ip.Split('%')[0];
+
+        var dotted = TrailingDottedQuad.Match(s);
+        if (dotted.Success)
+        {
+            var o = dotted.Groups[1].Value.Split('.').Select(p => int.TryParse(p, out var n) ? n : 256).ToArray();
+            if (o.Any(n => n > 255))
+            {
+                return null;
+            }
+
+            s = string.Concat(
+                s.AsSpan(0, dotted.Groups[1].Index),
+                ((o[0] << 8) | o[1]).ToString("x", CultureInfo.InvariantCulture),
+                ":",
+                ((o[2] << 8) | o[3]).ToString("x", CultureInfo.InvariantCulture));
+        }
+
+        var halves = s.Split("::");
+        if (halves.Length > 2)
+        {
+            return null;
+        }
+
+        var head = halves[0].Length > 0 ? halves[0].Split(':') : [];
+        var tail = halves.Length == 2 && halves[1].Length > 0 ? halves[1].Split(':') : [];
+        if (halves.Length == 1 && head.Length != 8)
+        {
+            return null;
+        }
+
+        var fill = 8 - head.Length - tail.Length;
+        if (fill < 0)
+        {
+            return null;
+        }
+
+        var groups = head
+            .Concat(halves.Length == 2 ? Enumerable.Repeat("0", fill) : [])
+            .Concat(tail)
+            .ToArray();
+
+        if (groups.Length != 8)
+        {
+            return null;
+        }
+
+        var outGroups = new ushort[8];
+        for (var i = 0; i < 8; i++)
+        {
+            if (groups[i].Length == 0)
+            {
+                outGroups[i] = 0;
+                continue;
+            }
+
+            if (!ushort.TryParse(groups[i], NumberStyles.HexNumber, CultureInfo.InvariantCulture, out outGroups[i]))
+            {
+                return null;
+            }
+        }
+
+        return outGroups;
+    }
+
+    /// <summary>
+    /// Every IPv4 address an IPv6 address can carry.
+    ///
+    /// <para>Unwrapping only <c>::ffff:</c> leaves three other transition formats that
+    /// also embed IPv4, so <c>64:ff9b::a9fe:a9fe</c> is 169.254.169.254 — the cloud
+    /// metadata endpoint — in an IPv6 costume, and the guard waved it through. Each
+    /// address found here is put through the v4 rules.</para>
+    /// </summary>
+    private static IEnumerable<string> EmbeddedIpv4(string ip)
+    {
+        var g = ExpandIpv6(ip);
+        if (g is null)
+        {
+            yield break;
+        }
+
+        static string V4(ushort hi, ushort lo) =>
+            $"{hi >> 8}.{hi & 0xff}.{lo >> 8}.{lo & 0xff}";
+
+        // ::ffff:a.b.c.d (mapped) and ::a.b.c.d (compatible - deprecated but routable)
+        if (g[0] == 0 && g[1] == 0 && g[2] == 0 && g[3] == 0 && g[4] == 0 && (g[5] == 0xffff || g[5] == 0))
+        {
+            yield return V4(g[6], g[7]);
+        }
+
+        // NAT64 well-known prefix, RFC 6052
+        if (g[0] == 0x0064 && g[1] == 0xff9b && g[2] == 0 && g[3] == 0 && g[4] == 0 && g[5] == 0)
+        {
+            yield return V4(g[6], g[7]);
+        }
+
+        // 6to4, RFC 3056 - the IPv4 sits in groups 1..2
+        if (g[0] == 0x2002)
+        {
+            yield return V4(g[1], g[2]);
+        }
+
+        // Teredo, RFC 4380 - client IPv4 is the last 32 bits, XOR'd with all-ones
+        if (g[0] == 0x2001 && g[1] == 0x0000)
+        {
+            yield return V4((ushort)~g[6], (ushort)~g[7]);
+        }
+    }
+
+    private static readonly Regex TrailingDottedQuad =
+        new(@"(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$", RegexOptions.Compiled);
 
     /// <summary>
     /// Port of the exported <c>isPrivateAddress(ip, family)</c>. <paramref name="family"/>
