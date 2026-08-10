@@ -12,19 +12,7 @@ public readonly record struct AiTranscriptionRequest(byte[] Bytes, string MimeTy
 /// <param name="UserId">Owner, as the 24-hex string the Node service passes around.</param>
 /// <param name="Question">Already trimmed and length-checked.</param>
 /// <param name="Timezone">IANA zone anchoring relative phrases. UTC when absent.</param>
-/// <param name="AccessToken">
-/// <b>The caller's own bearer token, forwarded verbatim.</b> Not needed by a provider
-/// that talks to a model directly — Gemini has no reason to see it — but an agent
-/// whose tools are HTTP wrappers over THIS API cannot call <c>/me/tasks</c> without
-/// it. It is the caller's token rather than a service credential on purpose: every
-/// tool call is then scoped to exactly the user who asked, and the agent can reach
-/// nothing its user could not.
-/// </param>
-public readonly record struct AiAskRequest(
-    string UserId,
-    string Question,
-    string? Timezone,
-    string? AccessToken = null);
+public readonly record struct AiAskRequest(string UserId, string Question, string? Timezone);
 
 /// <summary>Inputs for the post-confirmation continuation of a turn.</summary>
 public readonly record struct AiContinuationRequest(
@@ -34,8 +22,7 @@ public readonly record struct AiContinuationRequest(
     object? ToolArgs,
     object? ToolResult,
     string? ToolError,
-    string? Timezone,
-    string? AccessToken = null);
+    string? Timezone);
 
 /// <summary>
 /// <b>The one seam Gemini sits behind.</b>

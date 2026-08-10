@@ -155,8 +155,7 @@ internal static class AiStreamTurns
                 }
 
                 var continuation = new AiContinuationRequest(
-                    caller.IdString, callId, toolName, toolArgs, result, error, null,
-                    AiRequests.BearerToken(context));
+                    caller.IdString, callId, toolName, toolArgs, result, error, null);
 
                 await foreach (var value in ai.ContinueAfterConfirmAsync(continuation, cancellationToken)
                                    .WithCancellation(cancellationToken)

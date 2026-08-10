@@ -60,30 +60,6 @@ internal static class AiRequests
 
     public static readonly IReadOnlyList<string> ConfirmActions = new[] { "confirm", "decline" };
 
-    private const string BearerPrefix = "Bearer ";
-
-    /// <summary>
-    /// The caller's raw bearer token, for forwarding to an agent whose tools are HTTP
-    /// wrappers over this same API.
-    ///
-    /// <para>
-    /// The route has already run <c>RequireAuthorization</c>, so by the time this is
-    /// read the token is present and valid. It is returned WITHOUT the <c>Bearer </c>
-    /// prefix because that is the shape the flow's tool components add back
-    /// themselves. Null when the header is missing or not a bearer — a provider that
-    /// does not need a token is unaffected, and one that does reports its own
-    /// misconfiguration rather than sending <c>Bearer null</c>.
-    /// </para>
-    /// </summary>
-    public static string? BearerToken(HttpContext context)
-    {
-        var header = context.Request.Headers.Authorization.ToString();
-
-        return header.StartsWith(BearerPrefix, StringComparison.OrdinalIgnoreCase)
-            ? header[BearerPrefix.Length..].Trim() is { Length: > 0 } token ? token : null
-            : null;
-    }
-
     /// <summary>
     /// Reads the body with express's semantics, then hands the bytes to the kernel
     /// binder so the deserialization and unknown-key handling stay in one place.
