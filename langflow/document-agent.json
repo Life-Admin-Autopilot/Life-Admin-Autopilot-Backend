@@ -26,9 +26,9 @@
         "id": "xy-edge__CustomComponent-Dci01{dataTypeœ:œDocumentScanInputœ,idœ:œCustomComponent-Dci01œ,nameœ:œscan_requestœ,output_typesœ:[œJSONœ]}-CustomComponent-Dvx01{fieldNameœ:œscan_requestœ,idœ:œCustomComponent-Dvx01œ,inputTypesœ:[œDataœ,œJSONœ],typeœ:œotherœ}",
         "selected": false,
         "source": "CustomComponent-Dci01",
-        "sourceHandle": "{dataTypeœ:œDocumentScanInputœ,idœ:œCustomComponent-Dci01œ,nameœ:œscan_requestœ,output_typesœ:[œJSONœ]}",
+        "sourceHandle": "{œdataTypeœ:œDocumentScanInputœ,œidœ:œCustomComponent-Dci01œ,œnameœ:œscan_requestœ,œoutput_typesœ:[œJSONœ]}",
         "target": "CustomComponent-Dvx01",
-        "targetHandle": "{fieldNameœ:œscan_requestœ,idœ:œCustomComponent-Dvx01œ,inputTypesœ:[œDataœ,œJSONœ],typeœ:œotherœ}"
+        "targetHandle": "{œfieldNameœ:œscan_requestœ,œidœ:œCustomComponent-Dvx01œ,œinputTypesœ:[œDataœ,œJSONœ],œtypeœ:œotherœ}"
       },
       {
         "animated": false,
@@ -55,9 +55,9 @@
         "id": "xy-edge__CustomComponent-Dvx01{dataTypeœ:œDocumentVisionExtractorœ,idœ:œCustomComponent-Dvx01œ,nameœ:œextractionœ,output_typesœ:[œJSONœ]}-CustomComponent-Dch01{fieldNameœ:œextractionœ,idœ:œCustomComponent-Dch01œ,inputTypesœ:[œDataœ,œJSONœ],typeœ:œotherœ}",
         "selected": false,
         "source": "CustomComponent-Dvx01",
-        "sourceHandle": "{dataTypeœ:œDocumentVisionExtractorœ,idœ:œCustomComponent-Dvx01œ,nameœ:œextractionœ,output_typesœ:[œJSONœ]}",
+        "sourceHandle": "{œdataTypeœ:œDocumentVisionExtractorœ,œidœ:œCustomComponent-Dvx01œ,œnameœ:œextractionœ,œoutput_typesœ:[œJSONœ]}",
         "target": "CustomComponent-Dch01",
-        "targetHandle": "{fieldNameœ:œextractionœ,idœ:œCustomComponent-Dch01œ,inputTypesœ:[œDataœ,œJSONœ],typeœ:œotherœ}"
+        "targetHandle": "{œfieldNameœ:œextractionœ,œidœ:œCustomComponent-Dch01œ,œinputTypesœ:[œDataœ,œJSONœ],œtypeœ:œotherœ}"
       },
       {
         "animated": false,
@@ -87,9 +87,9 @@
         "id": "xy-edge__CustomComponent-Dch01{dataTypeœ:œCandidateHardenerœ,idœ:œCustomComponent-Dch01œ,nameœ:œdocument_scan_jsonœ,output_typesœ:[œMessageœ]}-ChatOutput-Dco01{fieldNameœ:œinput_valueœ,idœ:œChatOutput-Dco01œ,inputTypesœ:[œDataœ,œJSONœ,œDataFrameœ,œTableœ,œMessageœ],typeœ:œotherœ}",
         "selected": false,
         "source": "CustomComponent-Dch01",
-        "sourceHandle": "{dataTypeœ:œCandidateHardenerœ,idœ:œCustomComponent-Dch01œ,nameœ:œdocument_scan_jsonœ,output_typesœ:[œMessageœ]}",
+        "sourceHandle": "{œdataTypeœ:œCandidateHardenerœ,œidœ:œCustomComponent-Dch01œ,œnameœ:œdocument_scan_jsonœ,œoutput_typesœ:[œMessageœ]}",
         "target": "ChatOutput-Dco01",
-        "targetHandle": "{fieldNameœ:œinput_valueœ,idœ:œChatOutput-Dco01œ,inputTypesœ:[œDataœ,œJSONœ,œDataFrameœ,œTableœ,œMessageœ],typeœ:œotherœ}"
+        "targetHandle": "{œfieldNameœ:œinput_valueœ,œidœ:œChatOutput-Dco01œ,œinputTypesœ:[œDataœ,œJSONœ,œDataFrameœ,œTableœ,œMessageœ],œtypeœ:œotherœ}"
       }
     ],
     "nodes": [
