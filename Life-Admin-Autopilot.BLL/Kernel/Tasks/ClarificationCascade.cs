@@ -42,7 +42,11 @@ public sealed class ClarificationCascade
                 Builders<ClarificationDocument>.Filter.And(
                     Builders<ClarificationDocument>.Filter.Eq(c => c.UserId, userId),
                     Builders<ClarificationDocument>.Filter.Eq(c => c.Status, "open"),
-                    Builders<ClarificationDocument>.Filter.In(c => c.TaskId, taskIds)),
+                    // TaskId is ObjectId? because legacy rows have no taskId at all;
+                    // the ids being cascaded are always concrete, so lift them.
+                    Builders<ClarificationDocument>.Filter.In(
+                        c => c.TaskId,
+                        taskIds.Select(id => (ObjectId?)id))),
                 Builders<ClarificationDocument>.Update
                     .Set(c => c.Status, "dropped")
                     .Set(c => c.ResolvedAt, DateTime.UtcNow),

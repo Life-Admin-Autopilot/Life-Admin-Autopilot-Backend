@@ -49,7 +49,15 @@ public sealed class ClarificationDocument
 
     public ObjectId UserId { get; set; }
 
-    public ObjectId TaskId { get; set; }
+    /// <summary>
+    /// Nullable despite the Mongoose schema marking it required. Legacy rows
+    /// predate that constraint and have no <c>taskId</c> at all, and the reference
+    /// simply OMITS the key for them rather than emitting a zero id. A
+    /// non-nullable <see cref="ObjectId"/> deserialises those to
+    /// <c>000000000000000000000000</c> and the response then diverges on every
+    /// surface that returns such a row.
+    /// </summary>
+    public ObjectId? TaskId { get; set; }
 
     public string Status { get; set; } = "open";
 
