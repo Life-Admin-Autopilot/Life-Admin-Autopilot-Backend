@@ -13,19 +13,21 @@ function isText(contentType) {
   return lower.startsWith('text/') || lower.includes('event-stream') || lower.includes('xml');
 }
 
-export function observe(result, { ctx, masks, literalPaths = [], compareHeaders = [] }) {
+export function observe(result, { ctx, masks, literalPaths = [], compareHeaders = [], stepKey = '' }) {
   if (!result.ok) {
     return { reachable: false, error: result.error, durationMs: result.durationMs };
   }
-
-  const extraHeaders = {};
-  for (const name of compareHeaders) extraHeaders[name.toLowerCase()] = result.headers[name.toLowerCase()] ?? null;
 
   const observation = {
     reachable: true,
     status: result.status,
     contentType: result.contentType,
-    extraHeaders,
+    // The FULL response header set, so the differ can compare the union of the
+    // two sides and see headers the candidate emits on its own. `compareHeaders`
+    // no longer selects what is compared — it now only forces a strict, raw
+    // comparison for headers the policy in headers.mjs would otherwise relax.
+    headers: result.headers,
+    forcedHeaders: compareHeaders.map((name) => name.toLowerCase()),
     bytes: result.bytes.length,
     durationMs: result.durationMs,
     rateLimit: result.rateLimit,
@@ -52,7 +54,7 @@ export function observe(result, { ctx, masks, literalPaths = [], compareHeaders 
       observation.pretty = /\n\s+/.test(text);
       observation.keyOrder =
         parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? Object.keys(parsed).join(',') : null;
-      observation.body = normalizeBody(parsed, { ctx, masks, literalPaths });
+      observation.body = normalizeBody(parsed, { ctx, masks, literalPaths, stepKey });
       return observation;
     } catch {
       // A body that claims JSON and is not JSON is itself a difference; fall
@@ -63,7 +65,7 @@ export function observe(result, { ctx, masks, literalPaths = [], compareHeaders 
 
   if (isText(result.contentType) || observation.bodyKind === 'json-unparseable') {
     if (observation.bodyKind !== 'json-unparseable') observation.bodyKind = 'text';
-    observation.body = normalizeText(text, { ctx, masks });
+    observation.body = normalizeText(text, { ctx, masks, stepKey });
     return observation;
   }
 

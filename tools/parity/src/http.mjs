@@ -23,6 +23,12 @@ export async function request(baseUrl, { method, path, headers = {}, body, timeo
     const bytes = Buffer.from(await response.arrayBuffer());
     const headerMap = {};
     for (const [name, value] of response.headers) headerMap[name.toLowerCase()] = value;
+    // Iterating Headers yields one entry per Set-Cookie, so the naive loop above
+    // keeps only the last. A stray or duplicated cookie is exactly the kind of
+    // candidate-only divergence the header differ exists to catch, so collect
+    // them all.
+    const cookies = response.headers.getSetCookie?.() ?? [];
+    if (cookies.length) headerMap['set-cookie'] = cookies.join('\n');
     const rateLimit = {};
     for (const name of RATE_LIMIT_HEADERS) {
       if (headerMap[name] !== undefined) rateLimit[name] = headerMap[name];

@@ -120,7 +120,28 @@ steps:
     op: scanReprocessDocument
     method: POST
     path: /me/document-scans/{{scanId}}/reprocess
-    expect: { status: 202 }
+    expect: { status: [202, 200] }
+    # TIMING-SENSITIVE ROW — the reference's own status here is not a constant.
+    #
+    # Reprocess returns 202 when it re-queues a scan that actually reached
+    # `failed`, and 200 as an idempotent no-op when the scan is anything else.
+    # Which one the reference gives therefore depends on whether the scan worker
+    # finished before `get-until-settled` gave up:
+    #
+    #   * against :4100 (workers ON) the scan settles to `failed` in ~20s
+    #     against this scenario's 60s poll budget, so it is normally 202 — but
+    #     the margin is only 3x and disappears when the box is loaded or two
+    #     harness runs share it;
+    #   * against :4200 (NODE_ENV=test, workers OFF) it is ALWAYS 200, because
+    #     the scan stays `pending` forever.
+    #
+    # Pinning 202 made this row report ERROR — "the reference contradicted the
+    # scenario", exit code 2 — on nothing but which port the reference was
+    # started on and how busy the machine was. Accepting both keeps the real
+    # assertion (reference vs candidate, compared exactly) while removing a
+    # verdict that flips between runs. Which branch was actually taken stays
+    # visible in the CODES SEEN / DECLARED column, so a run that only ever hits
+    # the 200 no-op reports 202 as an unexercised code rather than hiding it.
 
   - name: quota-after
     op: scanReadQuota
