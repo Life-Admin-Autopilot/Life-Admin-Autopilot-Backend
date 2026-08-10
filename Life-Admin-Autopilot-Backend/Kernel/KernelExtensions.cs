@@ -97,8 +97,15 @@ public static class KernelExtensions
     /// </summary>
     public static WebApplication UseKernel(this WebApplication app)
     {
-        // 1. Error handling wraps everything, so a throw anywhere below becomes the
-        //    envelope. It is FIRST because it must also catch CORS/auth failures.
+        // 1. Weak ETag, OUTERMOST. It hashes the FINISHED body, so it has to wrap
+        //    every writer — including the error middleware below, which is what
+        //    produces the error envelopes. Placing it inside error handling silently
+        //    skipped every 4xx: measured, an error body carried an ETag on the
+        //    reference and none here, across 46 rows.
+        app.UseMiddleware<Http.WeakETagMiddleware>();
+
+        // 2. Error handling wraps everything below, so a throw anywhere becomes the
+        //    envelope. It must also catch CORS/auth failures.
         app.UseMiddleware<KernelErrorMiddleware>();
 
         // 2. helmet's twelve default headers, set on the way in so they are already

@@ -57,6 +57,14 @@ public sealed class RefreshTokenDocument
     [BsonId]
     public ObjectId Id { get; set; }
 
+    /// <summary>
+    /// Mongoose stamps <c>__v: 0</c> on insert; the .NET driver adds nothing. Only
+    /// User opts out (<c>versionKey: false</c>). Observable through
+    /// <c>GET /me/export</c>, whose <c>sessions</c> section returns raw stored rows.
+    /// </summary>
+    [BsonElement("__v")]
+    public int SchemaVersion { get; set; }
+
     public ObjectId UserId { get; set; }
 
     /// <summary>sha256 hex of the raw token. Unique.</summary>
@@ -99,6 +107,14 @@ public sealed class VerificationTokenDocument
 {
     [BsonId]
     public ObjectId Id { get; set; }
+
+    /// <summary>
+    /// Mongoose stamps <c>__v: 0</c> on insert; the .NET driver adds nothing. Only
+    /// User opts out (<c>versionKey: false</c>). Observable through
+    /// <c>GET /me/export</c>, whose <c>sessions</c> section returns raw stored rows.
+    /// </summary>
+    [BsonElement("__v")]
+    public int SchemaVersion { get; set; }
 
     public ObjectId UserId { get; set; }
 

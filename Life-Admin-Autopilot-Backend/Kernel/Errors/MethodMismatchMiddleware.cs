@@ -37,13 +37,47 @@ public sealed class MethodMismatchMiddleware
 
     public MethodMismatchMiddleware(RequestDelegate next) => _next = next;
 
+    /// <summary>
+    /// Express's <c>finalhandler</c> writes its own <c>Content-Security-Policy:
+    /// default-src 'none'</c>, REPLACING the app-wide helmet policy, on the
+    /// responses it generates. Measured on the reference:
+    ///
+    /// <list type="bullet">
+    ///   <item>unknown route → <c>default-src 'none'</c></item>
+    ///   <item>wrong method on a known path → <c>default-src 'none'</c></item>
+    ///   <item>a ROUTE-LEVEL 404 such as <c>task_not_found</c> → the full app CSP,
+    ///         because that one is written by the app's own error handler and never
+    ///         reaches finalhandler</item>
+    /// </list>
+    ///
+    /// So this is scoped precisely to the fall-through cases, which is exactly where
+    /// this middleware already operates. Do not apply it to every 404.
+    /// </summary>
+    private const string FinalHandlerCsp = "default-src 'none'";
+
+    private static void ApplyFinalHandlerCsp(HttpResponse response) =>
+        response.Headers.ContentSecurityPolicy = FinalHandlerCsp;
+
     public async Task InvokeAsync(HttpContext context)
     {
         await _next(context);
 
         var response = context.Response;
 
-        if (response.HasStarted || response.StatusCode != StatusCodes.Status405MethodNotAllowed)
+        if (response.HasStarted)
+        {
+            return;
+        }
+
+        // An unknown path never produced a 405 — routing simply matched nothing —
+        // but it is still a finalhandler response and carries the same CSP.
+        if (response.StatusCode == StatusCodes.Status404NotFound && context.GetEndpoint() is null)
+        {
+            ApplyFinalHandlerCsp(response);
+            return;
+        }
+
+        if (response.StatusCode != StatusCodes.Status405MethodNotAllowed)
         {
             return;
         }
@@ -59,5 +93,7 @@ public sealed class MethodMismatchMiddleware
 
         // Express's 404 carries no Allow header — ASP.NET's 405 does. Verified live.
         response.Headers.Remove("Allow");
+
+        ApplyFinalHandlerCsp(response);
     }
 }

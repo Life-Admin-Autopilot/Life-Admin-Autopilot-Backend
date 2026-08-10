@@ -120,20 +120,20 @@ export const RUN_MODE_OPTIONAL = [/^ratelimit-/, /^retry-after$/];
  * Any OTHER divergence in the same header (both sides present with different
  * values, or the opposite direction) is compared and failed normally.
  */
-export const DECLARED_EXCEPTIONS = [
-  {
-    header: 'etag',
-    direction: 'reference-only',
-    reason:
-      'Express emits a weak ETag on every res.json() body (frozen contract, ' +
-      'docs/contract/paths.auth.yaml line 21: "with a weak ETag and Content-Length"). ' +
-      'Kestrel emits none. This is ONE kernel-level gap that shows up on nearly every ' +
-      'JSON row; failing all of them would bury every slice-level signal.',
-    removeWhen:
-      'the kernel emits a weak ETag on JSON responses — then delete this entry and the ' +
-      'rows go green on their own. Until then this is an open contract violation, not a pass.',
-  },
-];
+// Empty, and worth keeping that way.
+//
+// The one entry this list ever held was `etag` (reference-only), covering the
+// 240 steps where Express emitted a weak ETag and Kestrel emitted none. The
+// kernel now mints the same tag — `WeakETagMiddleware`, the etag npm algorithm
+// `W/"<len:x>-<base64(sha1)[..27]>"`, verified byte-identical on both sides —
+// so the exception was deleted rather than left standing, exactly as its own
+// `removeWhen` prescribed.
+//
+// Before adding one back: an exception is a claim that a divergence is BOTH
+// unfixable AND unobservable by a client. `etag` was neither, and it sat here
+// for one merge only because failing 240 rows at once would have buried every
+// slice-level signal. That is a reason to defer, not a reason to accept.
+export const DECLARED_EXCEPTIONS = [];
 
 const HEADER_LABEL = new Map([
   ['reference-only', 'reference emits it, candidate does not'],

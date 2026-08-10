@@ -45,6 +45,16 @@ public sealed class IcsFeedDocument
     [BsonId]
     public ObjectId Id { get; set; }
 
+    /// <summary>
+    /// Mongoose stamps <c>__v: 0</c> on insert for every model except User, which
+    /// is the only one setting <c>versionKey: false</c>
+    /// (<c>server/src/models/User.ts:217</c>). The .NET driver adds nothing, so a
+    /// document written here was missing a field the reference stores. Observable
+    /// today through <c>GET /me/export</c>, which returns raw stored rows.
+    /// </summary>
+    [BsonElement("__v")]
+    public int SchemaVersion { get; set; }
+
     public ObjectId UserId { get; set; }
 
     /// <summary>
