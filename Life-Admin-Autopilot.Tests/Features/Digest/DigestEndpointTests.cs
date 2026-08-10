@@ -415,7 +415,7 @@ public sealed class DigestEndpointTests : IClassFixture<DigestWebApplicationFact
         }
 
         var userId = ObjectId.GenerateNewId();
-        var due = DateTime.UtcNow.AddHours(2);
+        var due = MiddayTodayInTz();
         await SeedTaskAsync(db, userId, "Call the vet", due);
         await SeedTaskAsync(db, userId, "  call   the VET  ", due.AddMinutes(30));
         await SeedTaskAsync(db, userId, "Renew passport", due.AddMinutes(45));
@@ -438,7 +438,7 @@ public sealed class DigestEndpointTests : IClassFixture<DigestWebApplicationFact
         }
 
         var userId = ObjectId.GenerateNewId();
-        var due = DateTime.UtcNow.AddHours(2);
+        var due = MiddayTodayInTz();
 
         await SeedTaskAsync(db, userId, "Estimated", due, t =>
             t["estimate"] = new BsonDocument { ["minMinutes"] = 15, ["maxMinutes"] = 30 });
@@ -487,6 +487,27 @@ public sealed class DigestEndpointTests : IClassFixture<DigestWebApplicationFact
     {
         var zone = TimeZoneInfo.FindSystemTimeZoneById(timezone);
         return TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow, zone).ToString("yyyy-MM-dd");
+    }
+
+    /// <summary>
+    /// Midday <b>today in <see cref="Tz"/></b>, as UTC.
+    ///
+    /// <para>
+    /// Seeding with <c>UtcNow.AddHours(2)</c> is what these tests used to do, and it
+    /// is only today-in-Cairo for 22 hours out of 24: between 19:00 and 20:59 UTC it
+    /// lands after local midnight, "today's" pool comes back empty, and the suite
+    /// goes red on a two-hour schedule with nothing wrong. The digest selects today's
+    /// rows by a day WINDOW rather than by future-ness, so any instant inside the
+    /// local day serves — midday is simply the one furthest from either edge.
+    /// </para>
+    /// </summary>
+    private static DateTime MiddayTodayInTz()
+    {
+        var zone = TimeZoneInfo.FindSystemTimeZoneById(Tz);
+        var localToday = TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow, zone).Date;
+
+        return TimeZoneInfo.ConvertTimeToUtc(
+            DateTime.SpecifyKind(localToday.AddHours(12), DateTimeKind.Unspecified), zone);
     }
 
     private async Task<JsonElement> GetJsonAsync(string path, HttpStatusCode expected, ObjectId? userId = null)
