@@ -464,6 +464,37 @@ public sealed class LangflowProviderTests
     }
 
     [Fact]
+    public async Task a_stubbed_turn_satisfies_the_same_invariants_the_live_smoke_test_asserts()
+    {
+        if (Database is null)
+        {
+            return;
+        }
+
+        // Runs LangflowTurnInvariants.AssertTurnShape against a turn carrying BOTH a
+        // gated and an ungated tool. The smoke test can only run where a Langflow
+        // exists; this proves its assertion logic is not itself broken, so that when
+        // someone finally points it at an instance, a pass means something and a
+        // failure is about Langflow rather than about the test.
+        var handler = Handler(Ndjson(
+            """{"event":"tool_call","data":{"callId":"c-gated","name":"deleteAllTasks","args":{}}}""",
+            """{"event":"tool_result","data":{"callId":"c-gated","result":{"executed":false}}}""",
+            """{"event":"tool_call","data":{"callId":"c-inline","name":"queryTasks","args":{}}}""",
+            """{"event":"tool_result","data":{"callId":"c-inline","result":{"count":3}}}""",
+            """{"event":"token","data":{"chunk":"Three things."}}""",
+            """{"event":"end","data":{}}"""));
+
+        var events = await DrainAsync(Provider(handler), ObjectId.GenerateNewId());
+
+        LangflowTurnInvariants.AssertTurnShape(events);
+
+        // And specifically the invariant the live run is there to police.
+        Assert.DoesNotContain(
+            events,
+            e => e.Kind == AiStreamEvents.ToolResultKind && (string)e.Payload["callId"]! == "c-gated");
+    }
+
+    [Fact]
     public async Task declines_a_pending_call_that_outlived_the_stale_window()
     {
         var database = Database;
