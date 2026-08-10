@@ -2,14 +2,19 @@
 // independently — no shared state, no shared user, no shared ids — and only
 // the normalized observations are compared afterwards.
 
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+
 import { request } from './http.mjs';
 import { observe } from './observe.mjs';
 import { createMaskContext, resolveMasks } from './normalize.mjs';
 import { interpolate, interpolateString, readPath, collectLiterals, MissingVariableError } from './interpolate.mjs';
 import { buildRawBody, buildJsonPadding } from './fixtures.mjs';
 import { noteRateLimit, retryDelayMs, sleep } from './ratelimit.mjs';
+import { expectedStatuses } from './scenarios.mjs';
 
 const DEFAULT_USER_AGENT = 'kitto-parity/1';
+const execFileAsync = promisify(execFile);
 
 function buildQuery(query) {
   if (!query || !Object.keys(query).length) return '';
@@ -95,7 +100,7 @@ function planFor(step, vars, defaults) {
     headers,
     body,
     timeoutMs: step.timeoutMs ?? defaults.timeoutMs,
-    expects429: step.expect?.status === 429,
+    expects429: (expectedStatuses(step) ?? []).includes(429),
   };
 }
 
@@ -121,7 +126,33 @@ async function runPoll(baseUrl, step, vars, options) {
   }
 }
 
+/**
+ * PROVISIONING IS THE ONE PLACE EVERY SCENARIO TOUCHES THE SAME ROUTE.
+ *
+ * A `user: fresh` scenario gets its account from `POST /auth/signup` on the
+ * side being replayed — which on the candidate means every authenticated row in
+ * the corpus depends on candidate signup working. That coupling is unavoidable
+ * for a black-box harness (there is no other way to obtain a token the
+ * candidate will accept), but it must not be reported as if each row were
+ * individually broken.
+ *
+ * So the failure is classified rather than flattened into "unreachable":
+ *
+ *   'unreachable'    the server did not answer at all — nothing to say about
+ *                    the rows, and the same verdict as before.
+ *   'rate-limited'   the authLimiter budget ran out; the rows never ran.
+ *   'signup-broken'  the server ANSWERED and got signup wrong. That is a
+ *                    candidate defect in exactly one route, and it is reported
+ *                    as SETUP-FAILED naming that route, not as N unreachable
+ *                    rows. Exit code 2: the run is not trustworthy.
+ *
+ * `--seed-candidate-user CMD` breaks the coupling entirely: see seedViaCommand.
+ */
 async function provisionUser(baseUrl, vars, options) {
+  if (options.side === 'cand' && options.seedCandidateUser) {
+    return seedViaCommand(baseUrl, vars, options);
+  }
+
   const plan = {
     method: 'POST',
     path: '/auth/signup',
@@ -130,44 +161,124 @@ async function provisionUser(baseUrl, vars, options) {
     timeoutMs: options.timeoutMs,
   };
   const result = await send(baseUrl, plan, options);
-  if (!result.ok) return { ok: false, error: `signup unreachable: ${result.error}` };
+  if (!result.ok) return { ok: false, kind: 'unreachable', error: `signup unreachable: ${result.error}` };
   if (result.status === 429) {
     return {
       ok: false,
-      rateLimited: true,
+      kind: 'rate-limited',
       error:
         'provisioning signup was rate limited (authLimiter is 20 per 15 minutes per IP). ' +
         'Re-run with --max-wait 900, or shard with --only. See tools/parity/README.md section 7.',
     };
   }
   if (result.status !== 201) {
-    return { ok: false, error: `signup returned ${result.status}: ${result.bytes.toString('utf8').slice(0, 200)}` };
+    return {
+      ok: false,
+      kind: 'signup-broken',
+      error:
+        `POST /auth/signup returned ${result.status}, expected 201: ` +
+        `${result.bytes.toString('utf8').slice(0, 200)}`,
+    };
   }
-  const parsed = JSON.parse(result.bytes.toString('utf8'));
-  vars.accessToken = parsed.tokens.accessToken;
+
+  let parsed;
+  try {
+    parsed = JSON.parse(result.bytes.toString('utf8'));
+  } catch {
+    return { ok: false, kind: 'signup-broken', error: 'POST /auth/signup returned 201 with a non-JSON body' };
+  }
+  const accessToken = parsed?.tokens?.accessToken;
+  if (typeof accessToken !== 'string' || !accessToken) {
+    return {
+      ok: false,
+      kind: 'signup-broken',
+      error: 'POST /auth/signup returned 201 but no $.tokens.accessToken, so nothing downstream can authenticate',
+    };
+  }
+  vars.accessToken = accessToken;
   vars.refreshToken = parsed.tokens.refreshToken;
-  vars.userId = parsed.user.id;
+  vars.userId = parsed.user?.id;
   return { ok: true };
 }
 
 /**
- * @returns {{ setupError: string|null, steps: Array }}
+ * Provision the candidate user WITHOUT calling candidate signup.
+ *
+ * The command is run with `PARITY_BASE_URL`, `PARITY_EMAIL` and
+ * `PARITY_PASSWORD` in its environment and must print one JSON object to
+ * stdout: `{"accessToken": "...", "refreshToken": "...", "userId": "..."}`
+ * (only `accessToken` is required). Anything it writes to stderr is surfaced
+ * when it fails.
+ *
+ * This is the escape hatch for the coupling described above: it lets the rest
+ * of the corpus be measured while `/auth/signup` is broken, unimplemented, or
+ * deliberately excluded, instead of blanking 60 rows on one route's regression.
+ */
+async function seedViaCommand(baseUrl, vars, options) {
+  const command = options.seedCandidateUser;
+  try {
+    const { stdout } = await execFileAsync('/bin/sh', ['-c', command], {
+      env: {
+        ...process.env,
+        PARITY_BASE_URL: baseUrl,
+        PARITY_EMAIL: vars.email,
+        PARITY_PASSWORD: vars.password,
+      },
+      timeout: options.timeoutMs,
+      maxBuffer: 1024 * 1024,
+    });
+    const parsed = JSON.parse(stdout.trim().split('\n').at(-1));
+    if (typeof parsed?.accessToken !== 'string' || !parsed.accessToken) {
+      return {
+        ok: false,
+        kind: 'seed-command-broken',
+        error: `--seed-candidate-user printed no accessToken: ${stdout.slice(0, 200)}`,
+      };
+    }
+    vars.accessToken = parsed.accessToken;
+    if (parsed.refreshToken !== undefined) vars.refreshToken = parsed.refreshToken;
+    if (parsed.userId !== undefined) vars.userId = parsed.userId;
+    return { ok: true, seeded: true };
+  } catch (error) {
+    return {
+      ok: false,
+      kind: 'seed-command-broken',
+      error: `--seed-candidate-user failed: ${error.message}${error.stderr ? ` — ${String(error.stderr).slice(0, 200)}` : ''}`,
+    };
+  }
+}
+
+/**
+ * @returns {{ setupError: string|null, setupErrorKind?: string, steps: Array }}
+ *          `setupErrorKind` is one of the provisionUser() classifications above;
+ *          run.mjs maps it to the row state.
  */
 export async function runScenario(baseUrl, scenario, side, options) {
   const { vars, volatileInputs } = seedVariables(scenario, side, options.runId);
-  const ctx = createMaskContext({ preserve: preserveSetFor(scenario), volatileInputs });
+  const pinned = new Map();
+  const ctx = createMaskContext({ preserve: preserveSetFor(scenario), volatileInputs, pinned });
   const sideOptions = { ...options, side, budget: options.budget };
 
   if (scenario.user === 'fresh') {
     const provisioned = await provisionUser(baseUrl, vars, sideOptions);
     if (!provisioned.ok) {
-      return { setupError: provisioned.error, setupRateLimited: provisioned.rateLimited === true, steps: [] };
+      return { setupError: provisioned.error, setupErrorKind: provisioned.kind, steps: [] };
     }
+    // The account's own id is an INPUT the harness holds for both sides, not a
+    // relationship to be discovered, so give it a side-independent label. See
+    // createMaskContext(). Without this, an early step that succeeds on one
+    // side and 404s on the other makes every later `userId` echo disagree on
+    // its label alone — measured on document-scans, whose opening PATCH /me is
+    // owned by an unimplemented slice.
+    if (typeof vars.userId === 'string' && vars.userId) pinned.set(vars.userId, '<ID:@user>');
   }
 
   const steps = [];
-  for (const step of scenario.steps) {
+  for (const [index, step] of scenario.steps.entries()) {
     const { masks } = resolveMasks(options.baseMasks, step);
+    // Masked values are labelled by WHERE they first appear, and the step
+    // number is the first half of that location. See normalize.mjs.
+    const stepKey = `s${index + 1}`;
     let entry;
     try {
       const outcome = step.poll
@@ -178,6 +289,7 @@ export async function runScenario(baseUrl, scenario, side, options) {
         masks,
         literalPaths: step.literalPaths ?? [],
         compareHeaders: step.compareHeaders ?? [],
+        stepKey,
       });
       entry = {
         name: step.name,

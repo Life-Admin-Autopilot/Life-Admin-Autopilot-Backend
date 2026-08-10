@@ -14,7 +14,15 @@ import { loadContract } from './src/contract.mjs';
 import { loadScenarios, declaredCoverage } from './src/scenarios.mjs';
 import { runScenario } from './src/runner.mjs';
 import { compareScenario, buildMatrix } from './src/matrix.mjs';
-import { renderMatrix, renderCoverageGaps, renderFailures, renderSummary, buildJsonReport } from './src/report.mjs';
+import {
+  renderMatrix,
+  renderCoverageGaps,
+  renderFailures,
+  renderHeaderPolicy,
+  renderUnsettledPolls,
+  renderSummary,
+  buildJsonReport,
+} from './src/report.mjs';
 import { DEFAULT_MASKS } from './src/normalize.mjs';
 import { buildAuthSweepScenario } from './src/authSweep.mjs';
 import { createBudget, estimateCost, AUTH_WINDOW, STRICT_WINDOW } from './src/ratelimit.mjs';
@@ -23,6 +31,20 @@ import { probe } from './src/http.mjs';
 const EXIT_OK = 0;
 const EXIT_FAIL = 1;
 const EXIT_HARNESS = 2;
+
+// How a failure to provision the candidate's test user is reported. See
+// provisionUser() in src/runner.mjs for why these are distinguished at all.
+const CANDIDATE_SETUP_STATE = {
+  unreachable: 'UNREACHABLE',
+  'rate-limited': 'RATE-LIMITED',
+  'signup-broken': 'SETUP-FAILED',
+  'seed-command-broken': 'SETUP-FAILED',
+};
+const CANDIDATE_SETUP_MESSAGE = {
+  UNREACHABLE: 'unavailable',
+  'RATE-LIMITED': 'rate limited',
+  'SETUP-FAILED': 'could not be provisioned',
+};
 
 function selects(scenario, options) {
   if (scenario.skip) return { run: false, reason: scenario.skipReason || 'skip: true in scenario file' };
@@ -92,6 +114,7 @@ async function main() {
     timeoutMs: options.timeoutMs,
     maxWaitMs: options.maxWaitSeconds * 1000,
     budget,
+    seedCandidateUser: options.seedCandidateUser,
     onWait: (delay) => process.stdout.write(`  ...rate limited; waiting ${Math.round(delay / 1000)}s\n`),
   };
 
@@ -117,7 +140,9 @@ async function main() {
     const candidateRun = await runScenario(options.candidate, scenario, 'cand', runOptions);
 
     if (referenceRun.setupError) {
-      const state = referenceRun.setupRateLimited ? 'RATE-LIMITED' : 'ERROR';
+      // Anything wrong on the REFERENCE side is a harness/environment problem
+      // by definition — the reference is the thing being trusted.
+      const state = referenceRun.setupErrorKind === 'rate-limited' ? 'RATE-LIMITED' : 'ERROR';
       process.stdout.write(`  SETUP FAILED (reference): ${referenceRun.setupError}\n`);
       for (const step of scenario.steps) {
         stepResults.push(setupFailureStep(scenario, step, `reference setup failed: ${referenceRun.setupError}`, state));
@@ -125,13 +150,14 @@ async function main() {
       continue;
     }
     if (candidateRun.setupError) {
-      const state = candidateRun.setupRateLimited ? 'RATE-LIMITED' : 'UNREACHABLE';
-      for (const step of scenario.steps) {
-        stepResults.push(
-          setupFailureStep(scenario, step, `candidate setup failed: ${candidateRun.setupError}`, state),
-        );
-      }
-      process.stdout.write(`  candidate side ${candidateRun.setupRateLimited ? 'rate limited' : 'unavailable'}\n`);
+      const state = CANDIDATE_SETUP_STATE[candidateRun.setupErrorKind] ?? 'UNREACHABLE';
+      const note =
+        state === 'SETUP-FAILED'
+          ? `candidate provisioning is broken, so these rows were NEVER COMPARED — this is a defect in ` +
+            `the provisioning route, not in the rows: ${candidateRun.setupError}`
+          : `candidate setup failed: ${candidateRun.setupError}`;
+      for (const step of scenario.steps) stepResults.push(setupFailureStep(scenario, step, note, state));
+      process.stdout.write(`  candidate side ${CANDIDATE_SETUP_MESSAGE[state]}: ${candidateRun.setupError}\n`);
       continue;
     }
     const compared = compareScenario(scenario, referenceRun, candidateRun);
@@ -145,6 +171,8 @@ async function main() {
 
   process.stdout.write('\n' + renderMatrix(matrix, { colour: options.colour }) + '\n');
   process.stdout.write(renderCoverageGaps(matrix) + '\n');
+  process.stdout.write(renderHeaderPolicy(stepResults));
+  process.stdout.write(renderUnsettledPolls(stepResults));
   process.stdout.write(renderFailures(stepResults, { colour: options.colour }));
   process.stdout.write(renderSummary(matrix, { colour: options.colour, elapsedMs }) + '\n');
 
@@ -175,11 +203,24 @@ async function main() {
     );
   }
 
+  if (matrix.summary['SETUP-FAILED'] > 0) {
+    process.stdout.write(
+      `\n${matrix.summary['SETUP-FAILED']} row(s) are SETUP-FAILED — they were NEVER COMPARED.\n` +
+        'The candidate answered but could not provision the scenario\'s test user, so every\n' +
+        'authenticated row in those scenarios is blocked by ONE route rather than by its own\n' +
+        'behaviour. Fix that route, or break the coupling with --seed-candidate-user.\n' +
+        'See tools/parity/README.md section 8.1.\n',
+    );
+  }
+
   if (options.selfTest) {
-    const impossible = matrix.rows.filter((r) => ['FAIL', 'UNREACHABLE', 'ERROR'].includes(r.state));
-    if (impossible.length) {
+    const impossible = matrix.rows.filter((r) =>
+      ['FAIL', 'SETUP-FAILED', 'UNREACHABLE', 'ERROR'].includes(r.state),
+    );
+    if (impossible.length || matrix.summary.frameworkProbeFailures > 0) {
       process.stdout.write(
-        `\nSELF-TEST FAILED: ${impossible.length} row(s) are not green while comparing a server with itself. ` +
+        `\nSELF-TEST FAILED: ${impossible.length} row(s) and ${matrix.summary.frameworkProbeFailures} framework ` +
+          'probe(s) are not green while comparing a server with itself. ' +
           'That is a harness bug (normalizer or corpus), not a port bug.\n',
       );
     } else if (matrix.summary['RATE-LIMITED'] > 0) {
@@ -191,8 +232,13 @@ async function main() {
     }
   }
 
-  if (matrix.summary.ERROR > 0 || matrix.summary['RATE-LIMITED'] > 0) return EXIT_HARNESS;
-  return matrix.summary.FAIL > 0 ? EXIT_FAIL : EXIT_OK;
+  if (matrix.summary.ERROR > 0 || matrix.summary['RATE-LIMITED'] > 0 || matrix.summary['SETUP-FAILED'] > 0) {
+    return EXIT_HARNESS;
+  }
+  // Framework probes have no contract operation, so they are counted here
+  // rather than in matrix.summary.FAIL — without this a failing probe is
+  // printed and then ignored by the exit code.
+  return matrix.summary.FAIL > 0 || matrix.summary.frameworkProbeFailures > 0 ? EXIT_FAIL : EXIT_OK;
 }
 
 function setupFailureStep(scenario, step, note, state) {
