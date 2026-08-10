@@ -1,0 +1,54 @@
+using Life_Admin_Autopilot.BLL.Features.Clarifications;
+using Life_Admin_Autopilot.DAL.Features.Clarifications;
+using Life_Admin_Autopilot.DAL.Kernel;
+using Life_Admin_Autopilot_Backend.Kernel.Modules;
+using Microsoft.Extensions.DependencyInjection.Extensions;
+
+namespace Life_Admin_Autopilot_Backend.Features.Clarifications;
+
+/// <summary>
+/// The clarifications slice's one DI extension — <c>routes/me.clarifications.ts</c>.
+///
+/// <para>
+/// No <c>IMongoIndexProvider</c>: <c>KernelIndexProvider</c> already declares the
+/// card stack's <c>{userId, status, createdAt}</c> index and the partial-unique
+/// <c>{userId, sourceKey}</c> idempotency index, and this slice adds no further
+/// uniqueness invariant.
+/// </para>
+///
+/// <para>
+/// No worker either, even though one writes here: the reminder tick settles any
+/// question still open after seven days. That update lives in Node's
+/// <c>lib/reminderWorker.ts</c>, so it is ported where Node put it — see
+/// <c>StaleClarificationSettler</c>, registered by the notifications slice.
+/// </para>
+/// </summary>
+public static class ClarificationsFeature
+{
+    public static IServiceCollection AddClarificationsFeature(
+        this IServiceCollection services,
+        IConfiguration configuration)
+    {
+        services.TryAddScoped<ClarificationRepository>();
+        services.TryAddScoped<ClarificationTaskUpdater>();
+
+        // This slice owns the clarifications surface, so it owns the erasure. Node
+        // deletes the same rows in routes/me.ts's hand-maintained list; nothing had
+        // registered it on the .NET side yet.
+        services.AddUserDataEraser<ClarificationEraser>();
+
+        return services;
+    }
+}
+
+/// <summary>
+/// Found by the kernel's assembly scanner — no <c>Program.cs</c> edit.
+/// </summary>
+public sealed class ClarificationsModule : IEndpointModule
+{
+    public void AddServices(IServiceCollection services, IConfiguration configuration) =>
+        services.AddClarificationsFeature(configuration);
+
+    public void MapEndpoints(IEndpointRouteBuilder endpoints) =>
+        endpoints.MapClarificationEndpoints();
+}
