@@ -65,8 +65,16 @@ start_dotnet() {
     export Kernel__Workers__Enabled=true
     export LANGFLOW_BASE_URL="http://127.0.0.1:7860"
     export LANGFLOW_FLOW_ID="$LANGFLOW_FLOW"
+    # The Planning Agent has NO ChatInput node, so input_value alone reaches
+    # nothing: Langflow accepts the request, streams a healthy-looking turn, and
+    # hands the agent an empty prompt. Without this the whole AI surface answers
+    # with an empty envelope and nothing anywhere reports an error.
+    export LANGFLOW_INPUT_NODE="PlanningInput-v4"
     [ -f "$SCRATCH/langflow_api_key" ] && export LANGFLOW_API_KEY="$(cat "$SCRATCH/langflow_api_key")"
-    nohup dotnet run --project Life-Admin-Autopilot-Backend --no-launch-profile \
+    # The node name contains a hyphen, so it is not a valid shell identifier and
+    # cannot be `export`ed. `env` takes arbitrary names.
+    nohup env 'Ai__Langflow__Tweaks__PlanningInput-v4__mode=chat' \
+      dotnet run --project Life-Admin-Autopilot-Backend --no-launch-profile \
       > "$SCRATCH/log/dotnet.log" 2>&1 & )
   wait_for http://localhost:5080/health ".NET backend" 90
 }
