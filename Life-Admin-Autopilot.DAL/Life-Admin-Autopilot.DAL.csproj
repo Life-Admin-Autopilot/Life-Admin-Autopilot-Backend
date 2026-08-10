@@ -15,6 +15,12 @@
     <PackageReference Include="Google.Apis.Auth" Version="1.75.0" />
     <PackageReference Include="Microsoft.AspNetCore.Identity.EntityFrameworkCore" Version="10.0.10" />
     <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" Version="10.0.10" />
+    <!-- Transitive via Microsoft.EntityFrameworkCore.Sqlite 10.0.10 - NU1903 /
+         GHSA-2m69-gcr7-jv3q (high), a vulnerable bundled SQLite. The advisory
+         ranges <= 2.1.11; 2.1.12 is the first release outside it. Native binaries
+         only, so the rest of the SQLitePCLRaw family stays where EF put it.
+         Flows to BLL, PL and Tests through the project graph. -->
+    <PackageReference Include="SQLitePCLRaw.lib.e_sqlite3" Version="2.1.12" />
     <PackageReference Include="Microsoft.EntityFrameworkCore.SqlServer" Version="10.0.10" />
     <PackageReference Include="Microsoft.Extensions.Http.Polly" Version="10.0.10" />
     <PackageReference Include="MongoDB.Driver" Version="3.10.0" />

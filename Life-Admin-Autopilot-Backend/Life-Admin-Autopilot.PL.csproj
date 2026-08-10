@@ -11,6 +11,11 @@
   <ItemGroup>
     <PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="10.0.10" />
     <PackageReference Include="Microsoft.AspNetCore.OpenApi" Version="10.0.10" />
+    <!-- Transitive via Microsoft.AspNetCore.OpenApi 10.0.10, which still resolves
+         Microsoft.OpenApi 2.0.0 - NU1903 / GHSA-v5pm-xwqc-g5wc (high). No newer
+         10.0.x framework package exists, so the transitive is pinned directly to
+         the first patched release. -->
+    <PackageReference Include="Microsoft.OpenApi" Version="2.7.5" />
     <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="10.0.10">
       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
       <PrivateAssets>all</PrivateAssets>

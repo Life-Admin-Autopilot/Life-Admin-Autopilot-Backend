@@ -952,7 +952,7 @@ machine without it.
 | Key | Env fallback | Default | Meaning |
 | --- | --- | --- | --- |
 | `Kernel:Cors:Origins` | `CORS_ORIGINS` | empty | comma-separated allowlist |
-| `Kernel:Jwt:AccessSecret` | `JWT_ACCESS_SECRET`, then `Jwt:Key` | — | HS256 secret |
+| `Kernel:Jwt:AccessSecret` | `JWT_ACCESS_SECRET`, then `Jwt:Key` | — | HS256 secret — **required**, see §13.2 |
 | `Kernel:Jwt:ValidIssuer` / `ValidAudience` | — | off | Node signs neither |
 | `Kernel:RateLimit:Enabled` | — | `true` | |
 | `Kernel:Workers:Enabled` | — | `true` | |
@@ -1000,6 +1000,34 @@ signup schema is only `z.string().min(8).max(128)`, so a Node-valid password lik
 `password123` is REJECTED by Identity out of the box. Relax
 `IdentityOptions.Password` in the auth slice to match Node, or signup diverges on
 every simple password.
+
+### 13.2 The JWT secret is required, and startup enforces it
+
+`Kernel/Auth/KernelJwtSecret.cs` owns both halves: the three-key resolution chain
+above, and a guard `UseKernel()` runs before any middleware. The guard throws — the
+process never binds a port — when the resolved secret is **absent**, is still the
+`REPLACE_WITH…` placeholder, or is **under 32 bytes** (HS256's minimum per RFC 7518
+§3.2, measured in UTF-8 bytes, not characters).
+
+This closes a live forgery hole. `appsettings.json` shipped
+`Jwt:Key = "REPLACE_WITH_A_STRONG_SECRET_STORED_IN_USER_SECRETS"` and every reader
+took it with a null-forgiving `!`, so a deployment missing its environment override
+booted happily and signed access tokens with a value published in this repository.
+The placeholder is now gone from configuration, so a forgotten override resolves to
+nothing and stops the server rather than silently degrading it.
+
+**Where it runs, and why not earlier.** In `UseKernel()`, not `AddKernel()`.
+Configuration is only final after `builder.Build()` — which is exactly why the
+kernel's options `Bind` lazily rather than reading eagerly. A validator inside
+`AddKernel` would run before the test host's in-memory settings were layered in and
+would fail every suite. `UseKernel` still runs inside `CreateApp`, ahead of Kestrel,
+so nothing is served in the meantime.
+
+**Four readers, one chain.** `KernelAuthOptions` (verify), `AuthJwtConfiguration.Read`
+(sign), `GoogleIntegrationOptions` (OAuth state) and `AddJwtAuthentication` each
+resolve the secret independently but walk the same three keys, so validating the
+chain once covers all four. If you add a fifth reader, walk the same chain — or better,
+call `KernelJwtSecret.Resolve`.
 
 ---
 

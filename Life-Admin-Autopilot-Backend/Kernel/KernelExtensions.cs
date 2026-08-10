@@ -97,6 +97,13 @@ public static class KernelExtensions
     /// </summary>
     public static WebApplication UseKernel(this WebApplication app)
     {
+        // 0. Refuse to serve without a signable secret. Here rather than in
+        //    AddKernel because configuration is only final after Build() — the
+        //    options above bind lazily for the same reason. Still ahead of every
+        //    middleware and of Kestrel binding a port, so a misconfigured server
+        //    never answers a request. See Kernel/Auth/KernelJwtSecret.cs.
+        Auth.KernelJwtSecret.Validate(app.Configuration);
+
         // 1. Weak ETag, OUTERMOST. It hashes the FINISHED body, so it has to wrap
         //    every writer — including the error middleware below, which is what
         //    produces the error envelopes. Placing it inside error handling silently
