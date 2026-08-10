@@ -501,13 +501,48 @@ public sealed class DigestEndpointTests : IClassFixture<DigestWebApplicationFact
     /// local day serves — midday is simply the one furthest from either edge.
     /// </para>
     /// </summary>
-    private static DateTime MiddayTodayInTz()
+    private static DateTime MiddayTodayInTz() => MiddayTodayInTz(DateTime.UtcNow);
+
+    /// <summary>The clock-injectable form, so the invariant can be proved at every hour.</summary>
+    internal static DateTime MiddayTodayInTz(DateTime utcNow)
     {
         var zone = TimeZoneInfo.FindSystemTimeZoneById(Tz);
-        var localToday = TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow, zone).Date;
+        var localToday = TimeZoneInfo.ConvertTimeFromUtc(utcNow, zone).Date;
 
         return TimeZoneInfo.ConvertTimeToUtc(
             DateTime.SpecifyKind(localToday.AddHours(12), DateTimeKind.Unspecified), zone);
+    }
+
+    /// <summary>
+    /// The seeded instant lands on the caller's local TODAY at every hour of the day.
+    ///
+    /// <para>
+    /// The live test was watched going green at 19:14 UTC, inside the window that had
+    /// just failed at 19:07 — but the window's far edge was only ever arithmetic, and
+    /// an assertion nobody has watched hold is exactly the kind of claim this port has
+    /// been burned by. This proves the property instead of the instance: the helper is
+    /// hour-independent by construction, so there is no window left to observe.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public void the_seeded_instant_is_local_today_at_every_hour()
+    {
+        var zone = TimeZoneInfo.FindSystemTimeZoneById(Tz);
+
+        // A whole year of hours, so DST transitions are covered too — Cairo
+        // reintroduced them in 2023, and a transition day is 23 or 25 hours long.
+        var start = new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+
+        for (var hour = 0; hour < 24 * 365; hour++)
+        {
+            var utcNow = start.AddHours(hour);
+            var seeded = MiddayTodayInTz(utcNow);
+
+            var expectedLocalDate = TimeZoneInfo.ConvertTimeFromUtc(utcNow, zone).Date;
+            var seededLocalDate = TimeZoneInfo.ConvertTimeFromUtc(seeded, zone).Date;
+
+            Assert.Equal(expectedLocalDate, seededLocalDate);
+        }
     }
 
     private async Task<JsonElement> GetJsonAsync(string path, HttpStatusCode expected, ObjectId? userId = null)
