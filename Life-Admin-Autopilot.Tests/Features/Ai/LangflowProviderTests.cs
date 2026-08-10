@@ -1,4 +1,3 @@
-using System.Globalization;
 using System.Net;
 using System.Text;
 using System.Text.Json;
@@ -103,15 +102,44 @@ public sealed class LangflowProviderTests
         Assert.Equal("What is due?", tweaks.GetProperty("transcript").GetString());
         Assert.Equal("jwt-abc", tweaks.GetProperty("accessToken").GetString());
         Assert.Equal("plan", tweaks.GetProperty("mode").GetString());
-        // ISO-8601 WITH an offset, per PLANNING-AGENT.md §6. A bare yyyy-MM-dd is the
-        // v3 format the redesign replaced.
+
+        // Offset-bearing, always — see sends_current_date_with_the_callers_utc_offset
+        // for why a bare date is a silent three-hour error rather than a format nit.
         Assert.Matches(
             @"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[+-]\d{2}:\d{2}$",
             tweaks.GetProperty("currentDate").GetString()!);
     }
 
+    [Theory]
+    [InlineData("Africa/Cairo", "+03:00")]
+    [InlineData("Asia/Kolkata", "+05:30")]
+    [InlineData("UTC", "+00:00")]
+    public async Task sends_current_date_with_the_callers_utc_offset(string timezone, string offset)
+    {
+        if (Database is null)
+        {
+            return;
+        }
+
+        var handler = Handler(Ndjson("""{"event":"end","data":{}}"""));
+        var provider = Provider(handler, InputNodeBound);
+
+        await DrainAsync(provider, timezone: timezone);
+
+        var currentDate = JsonDocument.Parse(handler.LastRequestBody!)
+            .RootElement.GetProperty("tweaks").GetProperty("PlanningInput-v4")
+            .GetProperty("currentDate").GetString()!;
+
+        // A bare yyyy-MM-dd is the v3 format the flow was redesigned to REJECT, and
+        // it fails silently: the agent invents +00:00 rather than erroring, so every
+        // dueAt it derives lands out by the user's whole offset. Measured live with
+        // Africa/Cairo: a 12:00 local reminder was stored as 09:00Z.
+        Assert.EndsWith(offset, currentDate);
+        Assert.Matches(@"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[+-]\d{2}:\d{2}$", currentDate);
+    }
+
     [Fact]
-    public async Task anchors_current_date_in_the_users_zone_not_utc()
+    public async Task falls_back_to_utc_rather_than_failing_the_turn_on_a_bad_timezone()
     {
         if (Database is null)
         {
@@ -120,50 +148,57 @@ public sealed class LangflowProviderTests
 
         var handler = Handler(Ndjson("""{"event":"end","data":{}}"""));
 
-        var provider = Provider(handler, new Dictionary<string, string?>
-        {
-            ["Ai:Langflow:InputNode"] = "PlanningInput-v4",
-        });
-
-        await DrainAsync(provider, timezone: "Africa/Cairo");
+        // `timezone` is optional on the request, and a turn is worth more than a
+        // perfect offset. It still carries AN offset, which is the part that matters.
+        await DrainAsync(Provider(handler, InputNodeBound), timezone: "Mars/Olympus_Mons");
 
         var currentDate = JsonDocument.Parse(handler.LastRequestBody!)
             .RootElement.GetProperty("tweaks").GetProperty("PlanningInput-v4")
             .GetProperty("currentDate").GetString()!;
 
-        // Cairo is UTC+03:00 year-round since 2015. Sending +00:00 here is what made
-        // a 9am reminder land at noon Cairo time: the agent resolves the user's
-        // relative phrasing against whatever instant it is handed.
-        var parsed = DateTimeOffset.Parse(currentDate, CultureInfo.InvariantCulture);
-        Assert.Equal(TimeSpan.FromHours(3), parsed.Offset);
+        Assert.EndsWith("+00:00", currentDate);
     }
 
     [Fact]
-    public async Task falls_back_to_utc_when_the_zone_is_absent_or_unusable()
+    public async Task defaults_mode_to_chat_because_ask_is_the_chat_surface()
     {
         if (Database is null)
         {
             return;
         }
 
-        foreach (var zone in new string?[] { null, "Not/AZone", "Factory" })
-        {
-            var handler = Handler(Ndjson("""{"event":"end","data":{}}"""));
+        var handler = Handler(Ndjson("""{"event":"end","data":{}}"""));
 
-            var provider = Provider(handler, new Dictionary<string, string?>
-            {
-                ["Ai:Langflow:InputNode"] = "PlanningInput-v4",
-            });
+        await DrainAsync(Provider(handler, InputNodeBound));
 
-            await DrainAsync(provider, timezone: zone);
-
-            var currentDate = JsonDocument.Parse(handler.LastRequestBody!)
+        Assert.Equal(
+            "chat",
+            JsonDocument.Parse(handler.LastRequestBody!)
                 .RootElement.GetProperty("tweaks").GetProperty("PlanningInput-v4")
-                .GetProperty("currentDate").GetString()!;
+                .GetProperty("mode").GetString());
+    }
 
-            var parsed = DateTimeOffset.Parse(currentDate, CultureInfo.InvariantCulture);
-            Assert.Equal(TimeSpan.Zero, parsed.Offset);
+    [Fact]
+    public async Task lets_an_operators_static_mode_pin_win()
+    {
+        if (Database is null)
+        {
+            return;
         }
+
+        var handler = Handler(Ndjson("""{"event":"end","data":{}}"""));
+        var settings = new Dictionary<string, string?>(InputNodeBound)
+        {
+            ["Ai:Langflow:Tweaks:PlanningInput-v4:mode"] = "transcript",
+        };
+
+        await DrainAsync(Provider(handler, settings));
+
+        Assert.Equal(
+            "transcript",
+            JsonDocument.Parse(handler.LastRequestBody!)
+                .RootElement.GetProperty("tweaks").GetProperty("PlanningInput-v4")
+                .GetProperty("mode").GetString());
     }
 
     [Fact]
@@ -430,6 +465,12 @@ public sealed class LangflowProviderTests
     // ---- helpers ------------------------------------------------------------
 
     private static readonly ObjectId UserId = ObjectId.GenerateNewId();
+
+    /// <summary>The v4 flow's shape: no ChatInput, prompt delivered as a tweak.</summary>
+    private static readonly Dictionary<string, string?> InputNodeBound = new()
+    {
+        ["Ai:Langflow:InputNode"] = "PlanningInput-v4",
+    };
 
     private static LangflowAiProvider Provider(
         HttpMessageHandler handler,

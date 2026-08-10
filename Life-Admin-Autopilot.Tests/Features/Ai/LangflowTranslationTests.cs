@@ -155,6 +155,83 @@ public sealed class LangflowTranslationTests
     }
 
     [Fact]
+    public void announces_a_tool_once_when_langflow_redelivers_a_row_with_no_block_id()
+    {
+        // MEASURED on live 1.11.2: tool_use blocks carry NO id — their keys are
+        // exactly duration, error, header, name, output, tool_input, type — and
+        // Langflow redelivers the whole add_message row as it fills in. Deriving the
+        // call id from a counter over already-seen calls changed it on every
+        // redelivery and defeated the dedup: one queryTasks produced SEVEN tool_call
+        // frames, and one bulk delete produced seven confirmation cards.
+        var translator = new LangflowEventTranslator();
+        var row = IdlessToolUse("7d24d2ad-096a-47aa-a60b-d64552f66e1c", "queryTasks");
+
+        var frames = Enumerable.Range(0, 7)
+            .SelectMany(_ => translator.Accept(Frame("add_message", row)))
+            .ToList();
+
+        Assert.Single(frames);
+        Assert.Equal(AiStreamEvents.ToolCallKind, frames[0].Kind);
+        Assert.Single(translator.ToolCalls);
+    }
+
+    [Fact]
+    public void gives_two_tools_in_one_message_distinct_ids()
+    {
+        var translator = new LangflowEventTranslator();
+
+        var frames = translator.Accept(Frame("add_message", """
+            {
+              "id": "msg-1",
+              "content_blocks": [{
+                "contents": [
+                  {"type": "tool_use", "name": "createTask", "tool_input": {}},
+                  {"type": "tool_use", "name": "queryTasks", "tool_input": {}}
+                ]
+              }]
+            }
+            """)).ToList();
+
+        // Positional within the message, so both are stable across redeliveries and
+        // still distinct from each other.
+        Assert.Equal(2, frames.Count);
+        Assert.NotEqual(frames[0].Payload["callId"], frames[1].Payload["callId"]);
+    }
+
+    [Fact]
+    public void never_mints_the_same_call_id_in_two_different_turns()
+    {
+        // A per-turn counter restarted at 0 every turn, so a user's SECOND ever bulk
+        // delete minted a `#0` that collided with the first turn's already-resolved
+        // record — and its confirm button 404'd permanently. A pending call id must
+        // be unique for as long as the record can be confirmed.
+        var row = IdlessToolUse(messageId: null, "deleteAllTasks");
+
+        var first = new LangflowEventTranslator();
+        var second = new LangflowEventTranslator();
+
+        var firstId = Single(first.Accept(Frame("add_message", row))).Payload["callId"];
+        var secondId = Single(second.Accept(Frame("add_message", row))).Payload["callId"];
+
+        Assert.NotEqual(firstId, secondId);
+    }
+
+    [Fact]
+    public void prefers_the_message_id_so_two_turns_never_share_a_call_id()
+    {
+        var a = new LangflowEventTranslator();
+        var b = new LangflowEventTranslator();
+
+        var idA = Single(a.Accept(Frame("add_message", IdlessToolUse("msg-a", "deleteAllTasks"))))
+            .Payload["callId"];
+        var idB = Single(b.Accept(Frame("add_message", IdlessToolUse("msg-b", "deleteAllTasks"))))
+            .Payload["callId"];
+
+        Assert.Equal("msg-a#0", idA);
+        Assert.Equal("msg-b#0", idB);
+    }
+
+    [Fact]
     public void announces_a_tool_once_even_when_the_message_is_resent()
     {
         var translator = new LangflowEventTranslator();
@@ -386,37 +463,6 @@ public sealed class LangflowTranslationTests
 
     // ---- helpers ------------------------------------------------------------
 
-    [Fact]
-    public void announces_an_id_less_tool_call_once_however_often_its_row_is_resent()
-    {
-        var translator = new LangflowEventTranslator();
-
-        // Langflow re-sends the same row as it fills in. Measured live: seven times
-        // for a single queryTasks, the last few carrying the output.
-        var first = translator.Accept(Frame("add_message", AnonymousToolUse("row-1", "queryTasks", output: null))).ToList();
-        var again = translator.Accept(Frame("add_message", AnonymousToolUse("row-1", "queryTasks", output: null))).ToList();
-        var filled = translator.Accept(Frame("add_message", AnonymousToolUse("row-1", "queryTasks", output: """{"count":3}"""))).ToList();
-        var settled = translator.Accept(Frame("add_message", AnonymousToolUse("row-1", "queryTasks", output: """{"count":3}"""))).ToList();
-
-        Assert.Equal(AiStreamEvents.ToolCallKind, Single(first).Kind);
-        Assert.Empty(again);
-        Assert.Equal(AiStreamEvents.ToolResultKind, Single(filled).Kind);
-        Assert.Empty(settled);
-    }
-
-    [Fact]
-    public void keeps_id_less_calls_in_separate_rows_distinct()
-    {
-        var translator = new LangflowEventTranslator();
-
-        // Two genuine calls to the same tool must NOT collapse into one.
-        var one = translator.Accept(Frame("add_message", AnonymousToolUse("row-1", "queryTasks", output: null))).ToList();
-        var two = translator.Accept(Frame("add_message", AnonymousToolUse("row-2", "queryTasks", output: null))).ToList();
-
-        Assert.Equal(AiStreamEvents.ToolCallKind, Single(one).Kind);
-        Assert.Equal(AiStreamEvents.ToolCallKind, Single(two).Kind);
-    }
-
     private static LangflowFrame Frame(string name, string dataJson) => new(name, Parse(dataJson));
 
     private static JsonElement Parse(string json) => JsonDocument.Parse(json).RootElement.Clone();
@@ -424,6 +470,19 @@ public sealed class LangflowTranslationTests
     private static string EndWithText(string text) =>
         """{"result":{"outputs":[{"outputs":[{"results":{"message":{"text":__TEXT__}}}]}]}}"""
             .Replace("__TEXT__", JsonSerializer.Serialize(text), StringComparison.Ordinal);
+
+    /// <summary>
+    /// An <c>add_message</c> row shaped the way live Langflow 1.11.2 sends one: the
+    /// <c>tool_use</c> block has NO id of its own, only the keys observed on the
+    /// wire. <paramref name="messageId"/> null omits the row id too.
+    /// </summary>
+    private static string IdlessToolUse(string? messageId, string name) =>
+        """
+        {__ID__"content_blocks":[{"contents":[{"type":"tool_use","name":"__NAME__",
+        "tool_input":{},"duration":12,"header":{},"error":null,"output":null}]}]}
+        """
+            .Replace("__ID__", messageId is null ? string.Empty : $"\"id\":\"{messageId}\",", StringComparison.Ordinal)
+            .Replace("__NAME__", name, StringComparison.Ordinal);
 
     private static string ToolUse(string id, string name, string? output) =>
         $$"""
@@ -433,15 +492,4 @@ public sealed class LangflowTranslationTests
         """;
 
     private static AiStreamEvent Single(IEnumerable<AiStreamEvent> events) => Assert.Single(events.ToList());
-
-    /// <summary>
-    /// The id-less shape actually observed on Langflow 1.11.2 — the tool_use block
-    /// carries no id, only the enclosing row does.
-    /// </summary>
-    private static string AnonymousToolUse(string rowId, string name, string? output) =>
-        $$"""
-        {"id":{{JsonSerializer.Serialize(rowId)}},"content_blocks":[{"contents":[{"type":"tool_use",
-        "name":{{JsonSerializer.Serialize(name)}},"tool_input":{},"duration":12,"header":{}
-        {{(output is null ? string.Empty : $",\"output\":{output}")}}}]}]}
-        """;
 }

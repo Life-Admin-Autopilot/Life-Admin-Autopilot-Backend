@@ -35,6 +35,12 @@ public sealed class LangflowEventTranslator
     private readonly HashSet<string> _resolvedCalls = new(StringComparer.Ordinal);
     private readonly System.Text.StringBuilder _streamed = new();
 
+    /// <summary>
+    /// Identifies THIS turn, for call ids when Langflow supplies none. One per
+    /// translator, and a translator is one turn — see <see cref="CallIdFor"/>.
+    /// </summary>
+    private readonly string _turnId = Guid.NewGuid().ToString();
+
     private string? _fallbackText;
 
     /// <summary>Everything the model actually said, for the persisted assistant turn.</summary>
@@ -172,19 +178,13 @@ public sealed class LangflowEventTranslator
     {
         var events = new List<AiStreamEvent>();
 
-        // Measured on Langflow 1.11.2: the tool_use block carries NO id — its keys
-        // are duration, error, header, name, output, tool_input, type. The enclosing
-        // message row does carry a stable one, and the row is re-sent as it fills in,
-        // so (row id, position) is the identity that survives redelivery. Anything
-        // derived from how many calls have been seen changes between redeliveries and
-        // therefore defeats the very dedup below: measured, one queryTasks produced
-        // seven tool_call frames, which with a confirm-gated tool is seven cards.
-        var rowId = LangflowWireContract.ReadFirstString(data, "id", "message_id");
-        var position = -1;
+        // The MESSAGE's id, which is stable across redeliveries — see CallIdFor.
+        var messageId = LangflowWireContract.ReadFirstString(data, "id", "message_id");
+        var index = -1;
 
         foreach (var content in LangflowRunOutput.ToolUseContents(data))
         {
-            position++;
+            index++;
 
             var name = LangflowWireContract.ReadFirstString(content, "name", "tool_name", "tool");
             if (string.IsNullOrEmpty(name))
@@ -193,7 +193,7 @@ public sealed class LangflowEventTranslator
             }
 
             var callId = LangflowWireContract.ReadFirstString(content, "id", "tool_call_id", "call_id")
-                         ?? (string.IsNullOrEmpty(rowId) ? $"{name}#{position}" : $"{rowId}#{position}");
+                         ?? CallIdFor(messageId, index);
             var args = LangflowWireContract.ReadElement(content, "tool_input")
                        ?? LangflowWireContract.ReadElement(content, "input")
                        ?? LangflowWireContract.ReadElement(content, "args");
@@ -213,6 +213,38 @@ public sealed class LangflowEventTranslator
 
         return events;
     }
+
+    /// <summary>
+    /// A call id for a <c>tool_use</c> block that has none of its own.
+    ///
+    /// <para>
+    /// <b>Langflow's tool_use blocks carry NO id.</b> Their keys are exactly
+    /// <c>duration, error, header, name, output, tool_input, type</c> — measured off
+    /// the live 1.11.2 stream. The enclosing <c>add_message</c> row DOES carry a
+    /// stable id, and Langflow redelivers that same row repeatedly as it fills in, so
+    /// <c>{messageId}#{index}</c> is the same string on every redelivery and the
+    /// dedup holds.
+    /// </para>
+    ///
+    /// <para>
+    /// <b>Two bugs came from getting this wrong</b>, and a counter over already-seen
+    /// calls caused both. It changed on every redelivery, so it defeated the very
+    /// dedup that depended on it: one <c>queryTasks</c> produced 7 <c>tool_call</c>
+    /// frames, and one bulk delete produced 7 confirmation cards. It also restarted
+    /// at 0 each turn, so a user's SECOND ever bulk delete minted a <c>#0</c> that
+    /// collided with the first turn's resolved record — and its confirm button 404'd
+    /// permanently. Both measured on the live stack.
+    /// </para>
+    ///
+    /// <para>
+    /// The per-turn fallback keeps both properties when a message has no id either:
+    /// stable within the turn because the index is positional, unique across turns
+    /// because the prefix is a fresh GUID. Cross-turn uniqueness is what the confirm
+    /// route depends on — a pending call id must never repeat.
+    /// </para>
+    /// </summary>
+    private string CallIdFor(string? messageId, int index) =>
+        $"{messageId ?? _turnId}#{index}";
 
     private IEnumerable<AiStreamEvent> Announce(string callId, string langflowName, JsonElement? args)
     {

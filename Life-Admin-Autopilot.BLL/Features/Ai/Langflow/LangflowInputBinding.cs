@@ -1,4 +1,6 @@
+using System.Globalization;
 using System.Text.Json.Serialization;
+using Life_Admin_Autopilot.BLL.Kernel.Integrations;
 using Microsoft.Extensions.Configuration;
 
 namespace Life_Admin_Autopilot.BLL.Features.Ai.Langflow;
@@ -37,20 +39,34 @@ namespace Life_Admin_Autopilot.BLL.Features.Ai.Langflow;
 ///   <item><term><c>Ai:Langflow:Fields:Transcript</c></term><description><c>transcript</c></description></item>
 ///   <item><term><c>Ai:Langflow:Fields:AccessToken</c></term><description><c>accessToken</c></description></item>
 ///   <item><term><c>Ai:Langflow:Fields:CurrentDate</c></term><description><c>currentDate</c></description></item>
+///   <item><term><c>Ai:Langflow:Fields:Mode</c></term><description><c>mode</c></description></item>
 ///   <item>
 ///     <term><c>Ai:Langflow:Tweaks:&lt;node&gt;:&lt;field&gt;</c></term>
-///     <description>Any additional STATIC tweak, verbatim. This is the escape hatch
-///     for a per-flow constant such as <c>mode</c>, and it needs no code at
-///     all.</description>
+///     <description>Any additional STATIC tweak, verbatim. The escape hatch for a
+///     per-flow constant, and it needs no code at all.</description>
 ///   </item>
 /// </list>
 ///
 /// <para>
-/// <b>Not modelled: the per-turn dynamic tweaks.</b> A flow that wants
-/// <c>pendingTasks</c> or prior <c>answers</c> needs state this adapter does not
-/// assemble — those are conversation-shaped inputs, and inventing a shape for them
-/// without a flow to test against would be guessing. They belong in a follow-up that
-/// can measure the round trip.
+/// <b>Setting a static tweak from a shell needs care.</b> Langflow node ids contain a
+/// hyphen, so the double-underscore env form —
+/// <c>Ai__Langflow__Tweaks__PlanningInput-v4__mode</c> — is not a valid shell
+/// identifier and <c>export</c> rejects it. Use <c>env 'NAME=value' dotnet …</c>,
+/// appsettings, or <c>--Ai:Langflow:Tweaks:PlanningInput-v4:mode=…</c> on the command
+/// line. Nothing is broken; the shell simply cannot name the variable.
+/// </para>
+///
+/// <para>
+/// <b>Not modelled: the two clarification-mode inputs.</b> The flow also reads
+/// <c>pendingTasks</c> and <c>answers</c>, but ONLY when <c>mode=clarification</c> —
+/// a surface this adapter does not own, since <c>/ai/ask</c> is the chat route. The
+/// shapes are recorded here so the follow-up does not have to rediscover them; both
+/// are JSON-stringified arrays (measured against the live flow by n-flowfix):
+/// <c>pendingTasks</c> is
+/// <c>[{id,title,domain,kind,priority,dueAt,question}]</c> carrying each task's REAL
+/// id, and <c>answers</c> is <c>[{taskId,question,answer}]</c>. Wiring them means
+/// assembling open clarifications for the user, which is the clarifications slice's
+/// data, not this one's.
 /// </para>
 /// </summary>
 public sealed class LangflowInputBinding
@@ -58,6 +74,14 @@ public sealed class LangflowInputBinding
     public const string DefaultTranscriptField = "transcript";
     public const string DefaultAccessTokenField = "accessToken";
     public const string DefaultCurrentDateField = "currentDate";
+    public const string DefaultModeField = "mode";
+
+    /// <summary>
+    /// The only mode this adapter produces. <c>/ai/ask</c> IS the chat surface; the
+    /// flow's other three modes (<c>transcript</c>, <c>document</c>,
+    /// <c>clarification</c>) belong to routes this file knows nothing about.
+    /// </summary>
+    public const string ChatMode = "chat";
 
     /// <summary>Unset means "this flow has a ChatInput" — the whole binding is skipped.</summary>
     public string? InputNode { get; init; }
@@ -67,6 +91,8 @@ public sealed class LangflowInputBinding
     public string AccessTokenField { get; init; } = DefaultAccessTokenField;
 
     public string CurrentDateField { get; init; } = DefaultCurrentDateField;
+
+    public string ModeField { get; init; } = DefaultModeField;
 
     /// <summary>Static, per-node, from configuration. Applied before the dynamic values.</summary>
     public IReadOnlyDictionary<string, IReadOnlyDictionary<string, string>> StaticTweaks { get; init; } =
@@ -83,6 +109,8 @@ public sealed class LangflowInputBinding
                            ?? DefaultAccessTokenField,
         CurrentDateField = Read(configuration, "LANGFLOW_FIELD_CURRENT_DATE", "Ai:Langflow:Fields:CurrentDate")
                            ?? DefaultCurrentDateField,
+        ModeField = Read(configuration, "LANGFLOW_FIELD_MODE", "Ai:Langflow:Fields:Mode")
+                    ?? DefaultModeField,
         StaticTweaks = ReadStaticTweaks(configuration),
     };
 
@@ -101,7 +129,9 @@ public sealed class LangflowInputBinding
         string prompt,
         string sessionId,
         string? accessToken,
-        DateTimeOffset now)
+        DateTimeOffset now,
+        string? timezone = null,
+        string mode = ChatMode)
     {
         var request = new LangflowRunRequest
         {
@@ -131,20 +161,54 @@ public sealed class LangflowInputBinding
         {
             var target = Target(tweaks, InputNode!);
             target[TranscriptField] = prompt;
-
-            // ISO-8601 WITH the offset, per PLANNING-AGENT.md §6. A bare date is
-            // the v3 mistake the redesign exists to correct: the agent cannot tell
-            // what "tomorrow 9am" means without knowing which day it already is for
-            // this user, and given no offset it invents one rather than failing.
-            target[CurrentDateField] = now.ToString("yyyy-MM-dd'T'HH:mm:sszzz");
+            target[CurrentDateField] = CurrentDate(now, timezone);
 
             if (!string.IsNullOrEmpty(accessToken))
             {
                 target[AccessTokenField] = accessToken;
             }
+
+            // Mode is per-turn, but an explicit static tweak still wins: it is the
+            // operator's pin, and this adapter only ever produces `chat` anyway.
+            if (!target.ContainsKey(ModeField))
+            {
+                target[ModeField] = mode;
+            }
         }
 
         return request with { Tweaks = tweaks };
+    }
+
+    /// <summary>
+    /// <c>currentDate</c>, as ISO-8601 <b>carrying the user's UTC offset</b> —
+    /// <c>2026-08-10T14:23:00+03:00</c>.
+    ///
+    /// <para>
+    /// <b>The offset is the whole point, and omitting it fails silently.</b> A bare
+    /// <c>yyyy-MM-dd</c> is the v3 format the flow was redesigned to stop accepting
+    /// (PLANNING-AGENT.md §6): the agent does not reject it, it just invents
+    /// <c>+00:00</c>. Measured on the live stack with <c>Africa/Cairo</c> (+03:00),
+    /// that put every <c>dueAt</c> three hours early — a reminder for 12:00 local
+    /// fired at 09:00 — with nothing anywhere reporting an error.
+    /// </para>
+    ///
+    /// <para>
+    /// An absent or unrecognised zone falls back to the instant as given rather than
+    /// throwing. <c>timezone</c> is optional on the request and a turn is worth more
+    /// than a perfect offset; validity uses the kernel's own predicate so this agrees
+    /// with every other surface about which ids Node accepts.
+    /// </para>
+    /// </summary>
+    private static string CurrentDate(DateTimeOffset now, string? timezone)
+    {
+        var local = now;
+
+        if (ImportedTimeResolver.IsValidTimeZone(timezone))
+        {
+            local = TimeZoneInfo.ConvertTime(now, TimeZoneInfo.FindSystemTimeZoneById(timezone!));
+        }
+
+        return local.ToString("yyyy-MM-dd'T'HH:mm:sszzz", CultureInfo.InvariantCulture);
     }
 
     private static Dictionary<string, object?> Target(
