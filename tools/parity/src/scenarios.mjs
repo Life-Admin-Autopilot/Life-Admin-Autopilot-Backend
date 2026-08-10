@@ -136,3 +136,16 @@ export function declaredCoverage(scenarios) {
   }
   return map;
 }
+
+/**
+ * `expect: { status: 200 }` or `expect: { status: [200, 202] }`.
+ *
+ * A list is only for steps whose reference status legitimately depends on
+ * whether a background worker has finished — see the comment in
+ * compareScenario().
+ */
+export function expectedStatuses(step) {
+  const expected = step?.expect?.status;
+  if (expected === undefined) return null;
+  return Array.isArray(expected) ? expected : [expected];
+}

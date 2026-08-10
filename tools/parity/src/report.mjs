@@ -7,6 +7,7 @@ const COLOURS = {
   FAIL: '[31m',
   ERROR: '[35m',
   'RATE-LIMITED': '[33m',
+  'SETUP-FAILED': '[35m',
   UNREACHABLE: '[36m',
   SKIPPED: '[90m',
   'NOT-COVERED': '[33m',
@@ -113,15 +114,90 @@ export function renderFailures(stepResults, { colour = true } = {}) {
   return lines.join('\n');
 }
 
+/**
+ * Steps whose `poll` never reached a terminal state.
+ *
+ * These are the corpus's timing-sensitive rows: the response that got compared
+ * is a snapshot of work still in progress, so the verdict depends on which
+ * side's background worker got further before the deadline. Printed whatever
+ * the verdict — a row that passes today because both sides were equally
+ * unfinished is exactly the row that flips tomorrow.
+ */
+export function renderUnsettledPolls(stepResults) {
+  const unsettled = stepResults.filter((step) => (step.pollUnsettled ?? []).length);
+  if (!unsettled.length) return '';
+  const lines = ['', `POLLS THAT NEVER SETTLED — TIMING-SENSITIVE COMPARISONS (${unsettled.length})`];
+  for (const step of unsettled) {
+    lines.push(
+      `  - ${step.scenario} / ${step.name} [${step.state}] — not settled on: ${step.pollUnsettled.join(', ')}`,
+    );
+  }
+  lines.push(
+    '    A worker that had not finished is not a result. Re-run against the dev-mode',
+    '    reference (:4100, workers ON) before trusting these rows either way.',
+  );
+  return lines.join('\n') + '\n';
+}
+
+/**
+ * What the header policy in headers.mjs let through.
+ *
+ * A header divergence that is NOT failed still has to be visible, or the
+ * allowlist becomes the same kind of blind spot it was written to remove. Both
+ * sections are printed whenever they are non-empty, on a green run as well as a
+ * red one.
+ */
+export function renderHeaderPolicy(stepResults) {
+  const buckets = new Map();
+  for (const step of stepResults) {
+    for (const entry of step.headerPolicy ?? []) {
+      const key = [entry.kind, entry.header, entry.direction].join('\u0000');
+      if (!buckets.has(key)) buckets.set(key, { ...entry, steps: [] });
+      buckets.get(key).steps.push(`${step.scenario} / ${step.name}`);
+    }
+  }
+  if (!buckets.size) return '';
+
+  const lines = [];
+  const byKind = (kind) => [...buckets.values()].filter((b) => b.kind === kind);
+
+  const runMode = byKind('run-mode');
+  if (runMode.length) {
+    lines.push('');
+    lines.push(`HEADER DIFFERENCES ALLOWED BY THE RUN-MODE ALLOWLIST (${runMode.length})`);
+    for (const bucket of runMode) {
+      lines.push(`  - ${bucket.header} (${bucket.direction}) on ${bucket.steps.length} step(s)`);
+      lines.push(`      ${bucket.reason}`);
+      lines.push(`      first: ${bucket.steps[0]}`);
+    }
+  }
+
+  const declared = byKind('declared-exception');
+  if (declared.length) {
+    lines.push('');
+    lines.push(`DECLARED HEADER EXCEPTIONS — NOT FAILED, STILL DIVERGENT (${declared.length})`);
+    for (const bucket of declared) {
+      lines.push(`  - ${bucket.header} (${bucket.direction}) on ${bucket.steps.length} step(s)`);
+      lines.push(`      why not failed: ${bucket.reason}`);
+      lines.push(`      remove when:    ${bucket.removeWhen}`);
+    }
+  }
+  return lines.join('\n') + '\n';
+}
+
 export function renderSummary(matrix, { colour = true, elapsedMs } = {}) {
   const parts = STATES.filter((state) => matrix.summary[state] > 0).map(
     (state) => `${paint(state, state, colour)} ${matrix.summary[state]}`,
   );
-  return [
-    '',
-    `${matrix.summary.total} contract operations  |  ${parts.join('   ')}`,
-    `elapsed ${(elapsedMs / 1000).toFixed(1)}s`,
-  ].join('\n');
+  const lines = ['', `${matrix.summary.total} contract operations  |  ${parts.join('   ')}`];
+  if (matrix.summary.frameworkProbeFailures > 0) {
+    lines.push(
+      `${paint('plus ' + matrix.summary.frameworkProbeFailures + ' failing framework probe(s)', 'FAIL', colour)}` +
+        ' — steps with no contract operation, so they fold into no row above',
+    );
+  }
+  lines.push(`elapsed ${(elapsedMs / 1000).toFixed(1)}s`);
+  return lines.join('\n');
 }
 
 export function buildJsonReport(context, matrix, stepResults) {
