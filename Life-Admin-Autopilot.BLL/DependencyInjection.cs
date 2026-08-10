@@ -1,6 +1,5 @@
 using Life_Admin_Autopilot.BLL.Interfaces;
 using Life_Admin_Autopilot.BLL.Services;
-using Life_Admin_Autopilot.BLL.Settings;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 
@@ -10,10 +9,12 @@ namespace Life_Admin_Autopilot.BLL
     {
         public static IServiceCollection AddBusinessLogicLayer(this IServiceCollection services, IConfiguration configuration)
         {
-            services.Configure<JwtSettings>(configuration.GetSection("Jwt"));
-
-            services.AddScoped<IAuthService, AuthService>();
-            services.AddScoped<IJwtTokenService, JwtTokenService>();
+            // The legacy IAuthService / IJwtTokenService pair was removed with
+            // Controllers/AuthController.cs: it signed tokens from Jwt:Key and
+            // authenticated with UserManager.CheckPasswordAsync, which neither
+            // increments AccessFailedCount nor honours lockout. Every route it
+            // served now lives under Features/Auth, behind the kernel's rate
+            // limiters. See docs/KERNEL.md §13.
             services.AddScoped<INotificationService, NotificationService>();
             services.AddScoped<ISpeechToTextService, SpeechToTextService>();
 

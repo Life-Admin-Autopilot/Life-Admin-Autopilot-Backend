@@ -11,11 +11,11 @@ Interactive version while the API is running: **https://localhost:7276/swagger**
 
 Most endpoints need a **bearer token** — a short-lived JWT proving who you are.
 
-1. `POST /api/auth/register` (or `/login`) → you get an `accessToken` and a `refreshToken`
+1. `POST /auth/signup` (or `/auth/signin`) → you get an `accessToken` and a `refreshToken`
 2. Send the access token on every later request: `Authorization: Bearer <accessToken>`
-3. Access tokens expire after **15 minutes**. When one does, call `/api/auth/refresh` with
-   your refresh token to get a fresh pair — the user doesn't log in again.
-4. Refresh tokens last **7 days** and are single-use: refreshing revokes the old one.
+3. When one expires, call `POST /auth/refresh` with your refresh token to get a fresh
+   pair — the user doesn't log in again.
+4. Refresh tokens are single-use: refreshing revokes the old one.
 
 In Swagger, click **Authorize** and paste the access token. Endpoints that need it show a
 padlock.
@@ -23,36 +23,27 @@ padlock.
 The user's identity always comes from the token, never from the request body. You cannot
 act on another user's data by passing their id.
 
+**The server will not start without a real signing secret.** `Jwt:Key` used to ship as the
+literal placeholder `REPLACE_WITH_A_STRONG_SECRET_STORED_IN_USER_SECRETS`, so a deployment
+that forgot its environment override signed tokens with a string published in this
+repository. The placeholder is gone, and `UseKernel()` now refuses to boot if the resolved
+secret is absent, still a placeholder, or shorter than the 32 bytes HS256 needs. Set one of
+`Kernel:Jwt:AccessSecret`, `JWT_ACCESS_SECRET` or `Jwt:Key`.
+
 ---
 
-## Auth — `/api/auth`
+## Auth — `/auth`
 
-| Endpoint | Auth | What it does |
-| --- | --- | --- |
-| `POST /register` | No | Creates an account and logs you straight in. |
-| `POST /login` | No | Exchanges email + password for tokens. |
-| `POST /refresh` | No* | Trades a valid refresh token for a new token pair. |
-| `POST /logout` | No* | Revokes a refresh token so it can't be used again. |
+Signup, signin, refresh, signout, sessions, email verification, password reset and magic
+links all live under `Features/Auth`, ported from the Node reference and rate-limited by
+the kernel. They are frozen in `docs/contract/*.yaml`, which is the authority on their
+exact shapes — this page does not restate them.
 
-\* The refresh token *is* the credential for these two, so no bearer header is needed.
-
-**Register / login**
-
-```json
-POST /api/auth/register
-{ "email": "user@example.com", "password": "Passw0rd!23" }
-```
-Password must be at least 8 characters. Email must be unique.
-
-```json
-200 OK
-{ "accessToken": "eyJ...", "refreshToken": "base64...", "accessTokenExpiresAt": "2026-08-01T18:15:00Z" }
-```
-
-Failures return `400` (register) or `401` (login) with a list of reasons.
-
-**Refresh / logout** take `{ "refreshToken": "..." }`. Refresh returns a new pair; logout
-returns `204 No Content`, or `404` if the token was already revoked or never existed.
+The old `/api/auth/{register,login,refresh,logout}` controller **has been removed**. It
+duplicated those routes on an unrated-limited path, and authenticated with
+`UserManager.CheckPasswordAsync`, which neither increments `AccessFailedCount` nor honours
+lockout — an unbounded credential-stuffing target. Nothing referenced it: not the contract,
+not the tests, not the frontend.
 
 ---
 
@@ -137,35 +128,13 @@ reached nobody can't be mistaken for a pass.
 
 ---
 
-## Tasks (test) — `/api/usertaskstest`
+## Tasks and documents
 
-⚠️ **Temporary scaffolding, not the real API.** No authentication, and `userId` is passed
-in by the caller. To be replaced by the proper Task CRUD API (story #31).
+Real, token-scoped APIs under `Features/Tasks` and `Features/DocumentScans`, frozen in
+`docs/contract/*.yaml`.
 
-| Endpoint | What it does |
-| --- | --- |
-| `POST /` | Creates a task from a raw JSON body. |
-| `GET /{id}` | Fetches one task. |
-| `GET /user/{userId}` | Lists all tasks for a user id. |
-| `PUT /{id}` | Replaces a task. |
-| `DELETE /{id}` | Deletes a task **and every document attached to it**. |
-
----
-
-## Documents (test) — `/api/documentstest`
-
-⚠️ **Temporary scaffolding, same caveats as above.**
-
-| Endpoint | What it does |
-| --- | --- |
-| `POST /` | Creates a document record. |
-| `GET /{id}` | Fetches one document. |
-| `GET /user/{userId}` | Lists a user's documents. |
-| `PUT /{id}` | Replaces a document. |
-| `DELETE /{id}` | Deletes a document. |
-
-Note `blobUrl` is just a string the caller supplies — **there is no file upload yet**.
-Azure Blob Storage (story #18) is not built, so nothing actually stores a file.
+The `UserTasksTest` and `DocumentsTest` controllers that used to be documented here **have
+been removed** — see the note below.
 
 ---
 
@@ -176,17 +145,23 @@ OpenAPI document.
 
 ---
 
-## ⚠️ Known security gap
+## Closed: the NFR-5 gap
 
-The two `...Test` controllers are **unauthenticated and take a `userId` as a parameter**.
-Anyone who can reach the API can read, edit or delete any user's tasks and documents.
+`UserTasksTestController` and `DocumentsTestController` were **unauthenticated and took a
+`userId` as a parameter**. Anyone who could reach the API could read, edit or delete any
+user's tasks and documents — a textbook IDOR, and a direct contradiction of **NFR-5**
+(*"A user shall only be able to access their own tasks, reminders, and documents, enforced
+at the API layer via UserId"*).
 
-That contradicts **NFR-5** (*"A user shall only be able to access their own tasks,
-reminders, and documents, enforced at the API layer via UserId"*).
+They were scaffolding from before the Node parity port. Every route they exposed now exists
+properly under `Features/`, scoped to the caller's token, so **both controllers and their
+DTOs have been deleted** rather than patched. The only dependency ever recorded on them —
+an old Langflow tool calling `GET /api/UserTasksTest/user/{id}`, described in `docs/ai-flow.md`
+— lives on `origin/feature/langflow-agent-integration` and never reached this branch; the
+replacement flows in `langflow/` do not call the API directly at all.
 
-Acceptable while they're local development scaffolding. **They must not reach a deployed
-environment.** The fix is stories #31 (Task CRUD API) and #35 (commit endpoint), which take
-the user id from the token like `/api/devices` already does.
+`NotificationsTestController` is a different animal and stays: it is `[Authorize]`d and
+takes the user id from the token, never from the caller.
 
 ---
 

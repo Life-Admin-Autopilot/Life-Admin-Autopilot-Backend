@@ -217,6 +217,20 @@ Full list in `docs/KERNEL.md` §2. The ones that bite hardest:
 - Delete idempotency varies: document-scan DELETE is idempotent, ICS and Google DELETE 404 on the second call.
 - Document-scan reprocess returns **200** on a non-failed scan (idempotent no-op) and **202** only when re-queueing a genuinely failed one.
 
-## Security work, tracked separately
+## Security work
 
-Rotate the credentials pasted into chat plus the Mistral key `langflow/README.md:175` self-reports as leaked — the Azure Storage account key is the urgent one. Delete or authorize the unauthenticated `*TestController`s (live IDOR; `docs/ai-flow.md:91` shows the Langflow agent depending on one). Fail-fast on `Jwt:Key`. Add lockout + rate limiting to login. Stop echoing `ex.Message` in `PlanningController` 500s. Upgrade `Microsoft.OpenApi` 2.0.0 (advisory GHSA-v5pm-xwqc-g5wc).
+**Still open — credential rotation.** Rotate the credentials pasted into chat plus the Mistral key `langflow/README.md:175` self-reports as leaked. **The Azure Storage account key is the urgent one.** Deferred by the owner, not done here.
+
+**Done on `slice/o-security`:**
+
+- **The IDOR controllers are gone.** `UserTasksTestController` and `DocumentsTestController` were unauthenticated and took `userId` from the caller; both are deleted along with the three DTOs (`CreateDocument`, `UpdateDocument`, `DocumentResponse`) that existed only for them. Nothing on this branch referenced them — not the contract, not the tests, not the frontend. The one recorded dependency, the Langflow tool at `docs/ai-flow.md:91` calling `GET /api/UserTasksTest/user/{id}`, exists only on `origin/feature/langflow-agent-integration`; neither that file nor the old flow assets are on `feat/node-parity`, and the replacement flows in `langflow/` do not call the API directly. `NotificationsTestController` is `[Authorize]`d and token-scoped, so it stays.
+- **`Jwt:Key` fails fast.** The `REPLACE_WITH…` placeholder is deleted from `appsettings.json`, and `UseKernel()` refuses to start on a secret that is absent, still a placeholder, or under 32 bytes. See KERNEL.md §13.2. `AddJwtAuthentication` no longer builds its key from `Jwt:Key` with a `!` — it reads the same resolved chain as everything else, which also closed a divergence where a deployment setting only `Kernel:Jwt:AccessSecret` left that scheme validating against the placeholder.
+- **The legacy login path is gone.** `Controllers/AuthController.cs` was deleted, not rate-limited: it duplicated `/auth/signup|signin|refresh|signout` on an unlimited `/api/auth/*` path and authenticated via `UserManager.CheckPasswordAsync`, which neither increments `AccessFailedCount` nor honours lockout. `Features/Auth` already carries `KernelRateLimiters.Auth` / `StrictAuth` and is parity-bound, so **no lockout was added there** — the Node reference has none and adding one breaks parity. The orphaned BLL island went with it: `IAuthService`/`AuthService`, `IJwtTokenService`/`JwtTokenService`, `AuthRequests`, `AuthResult`, `JwtSettings`.
+- **Both NU1903 packages are patched.** `Microsoft.OpenApi` 2.0.0 → **2.7.5** (GHSA-v5pm-xwqc-g5wc; first patched) and `SQLitePCLRaw.lib.e_sqlite3` 2.1.11 → **2.1.12** (GHSA-2m69-gcr7-jv3q; advisory ranges `<= 2.1.11`). Both are transitive and no newer 10.0.x framework package exists, so each is pinned directly in the project that pulls it. `dotnet list package --vulnerable --include-transitive` is clean across all four projects.
+- **`PlanningController` does not exist on this branch**, so the `ex.Message` leak has nothing to fix. `/api/planning/*` is still listed under "Not built yet" in `docs/api.md`. Whoever builds it must not echo `ex.Message` — the kernel's `AppException` envelope is the way.
+
+**Left deliberately, for the kernel owner:**
+
+- `IUserTaskRepository` and `IDocumentRepository` (DAL, registered in `MongoDbExtensions`) are now unreferenced — the test controllers were their only consumers. Left in place: they are not an exposed surface, and `Features/` may yet adopt them.
+- `IRefreshTokenRepository`, `RefreshTokenRepository` and the `RefreshToken` entity are likewise orphaned, but the entity is in the EF model. Removing it is a schema change with a migration behind it, not a security fix.
+- `AddJwtAuthentication` registers a "Bearer" scheme that nothing selects — `AddKernel` runs after it and wins the default, so every bare `[Authorize]` resolves to `KernelBearer`. It is dead and a fair candidate for deletion, but removing it edits `Program.CreateApp`, which slices must not touch.
