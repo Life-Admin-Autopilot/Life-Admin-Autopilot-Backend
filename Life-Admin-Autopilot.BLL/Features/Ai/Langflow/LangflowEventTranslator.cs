@@ -202,7 +202,23 @@ public sealed class LangflowEventTranslator
 
             var error = LangflowWireContract.ReadFirstString(content, "error");
             var output = LangflowWireContract.ReadElement(content, "output");
-            if (output is not null || !string.IsNullOrEmpty(error))
+
+            // A confirmation-gated call is NOT resolved by what the flow returns.
+            // Langflow still runs the component and redelivers the finished row
+            // inside the same turn, but for deleteAllTasks that output is the
+            // DRY-RUN PREVIEW — its own payload says "executed": false. Resolving
+            // on it overwrote pending_confirmation with executed, and the confirm
+            // route only accepts a pending record, so every confirmation 404'd.
+            //
+            // This was invisible until the duplicate-frame fix landed: the seven
+            // redelivered rows used to mint seven records, and whichever one had
+            // not yet been resolved happened to satisfy the route. Removing the
+            // duplication removed the accident, which is why the first bulk delete
+            // now fails where previously only the second did.
+            var gated = AiToolCatalog.RequiresConfirmation(
+                LangflowToolNames.ToContractName(name));
+
+            if (!gated && (output is not null || !string.IsNullOrEmpty(error)))
             {
                 events.AddRange(Resolve(callId, output, error));
             }

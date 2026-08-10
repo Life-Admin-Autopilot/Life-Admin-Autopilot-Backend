@@ -476,6 +476,54 @@ public sealed class LangflowTranslationTests
     /// <c>tool_use</c> block has NO id of its own, only the keys observed on the
     /// wire. <paramref name="messageId"/> null omits the row id too.
     /// </summary>
+    [Fact]
+    public void keeps_a_confirmation_gated_call_pending_when_langflow_returns_its_preview()
+    {
+        // MEASURED: Langflow runs the component anyway and redelivers the finished
+        // row inside the same turn. For deleteAllTasks that output is the DRY-RUN
+        // PREVIEW — the payload's own "executed" is false, nothing was deleted.
+        // Resolving on it marked the record executed, and /ai/tools/confirm only
+        // accepts a pending one, so the confirmation button 404'd permanently.
+        var translator = new LangflowEventTranslator();
+        var row = GatedToolUseWithPreview("row-9", "DeleteAllTasksTool-v4");
+
+        var frames = Enumerable.Range(0, 5)
+            .SelectMany(_ => translator.Accept(Frame("add_message", row)))
+            .ToList();
+
+        var call = Assert.Single(translator.ToolCalls);
+        Assert.Equal("pending_confirmation", call.Status);
+
+        // One announcement, and no tool_result — the outcome is not known yet.
+        Assert.Equal(AiStreamEvents.ToolCallKind, Assert.Single(frames).Kind);
+    }
+
+    [Fact]
+    public void still_resolves_an_ordinary_call_from_the_same_shape()
+    {
+        // The guard above must be specific to gated tools, not a blanket stop.
+        var translator = new LangflowEventTranslator();
+        var row = GatedToolUseWithPreview("row-10", "QueryTasksTool-v4");
+
+        var frames = translator.Accept(Frame("add_message", row)).ToList();
+
+        Assert.Equal(
+            new[] { AiStreamEvents.ToolCallKind, AiStreamEvents.ToolResultKind },
+            frames.Select(f => f.Kind).ToArray());
+        Assert.Equal("executed", Assert.Single(translator.ToolCalls).Status);
+    }
+
+    /// <summary>A finished row carrying the flow's own preview payload.</summary>
+    private static string GatedToolUseWithPreview(string messageId, string name) =>
+        """
+        {"id":"__ID__","content_blocks":[{"contents":[{"type":"tool_use",
+        "name":"__NAME__","tool_input":{"domain":"car","status_filter":"done"},
+        "duration":31,"header":{},"error":null,
+        "output":{"executed":false,"affectedCount":4,"args":{"domain":"car","status":"done"}}}]}]}
+        """
+            .Replace("__ID__", messageId, StringComparison.Ordinal)
+            .Replace("__NAME__", name, StringComparison.Ordinal);
+
     private static string IdlessToolUse(string? messageId, string name) =>
         """
         {__ID__"content_blocks":[{"contents":[{"type":"tool_use","name":"__NAME__",
