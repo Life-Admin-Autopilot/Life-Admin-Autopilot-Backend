@@ -149,7 +149,7 @@ public static class KernelMappers
     public static ClarificationDto ToDto(this ClarificationDocument doc) => new()
     {
         UserId = doc.UserId.ToId(),
-        TaskId = doc.TaskId.ToId(),
+        TaskId = doc.TaskId.ToIdOrNull(),
         Status = doc.Status,
         Draft = new ClarificationDraftDto
         {
