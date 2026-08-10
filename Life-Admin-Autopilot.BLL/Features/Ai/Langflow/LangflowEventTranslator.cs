@@ -172,8 +172,20 @@ public sealed class LangflowEventTranslator
     {
         var events = new List<AiStreamEvent>();
 
+        // Measured on Langflow 1.11.2: the tool_use block carries NO id — its keys
+        // are duration, error, header, name, output, tool_input, type. The enclosing
+        // message row does carry a stable one, and the row is re-sent as it fills in,
+        // so (row id, position) is the identity that survives redelivery. Anything
+        // derived from how many calls have been seen changes between redeliveries and
+        // therefore defeats the very dedup below: measured, one queryTasks produced
+        // seven tool_call frames, which with a confirm-gated tool is seven cards.
+        var rowId = LangflowWireContract.ReadFirstString(data, "id", "message_id");
+        var position = -1;
+
         foreach (var content in LangflowRunOutput.ToolUseContents(data))
         {
+            position++;
+
             var name = LangflowWireContract.ReadFirstString(content, "name", "tool_name", "tool");
             if (string.IsNullOrEmpty(name))
             {
@@ -181,7 +193,7 @@ public sealed class LangflowEventTranslator
             }
 
             var callId = LangflowWireContract.ReadFirstString(content, "id", "tool_call_id", "call_id")
-                         ?? $"{name}#{_announcedCalls.Count}";
+                         ?? (string.IsNullOrEmpty(rowId) ? $"{name}#{position}" : $"{rowId}#{position}");
             var args = LangflowWireContract.ReadElement(content, "tool_input")
                        ?? LangflowWireContract.ReadElement(content, "input")
                        ?? LangflowWireContract.ReadElement(content, "args");

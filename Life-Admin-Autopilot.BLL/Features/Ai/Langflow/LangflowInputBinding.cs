@@ -131,7 +131,12 @@ public sealed class LangflowInputBinding
         {
             var target = Target(tweaks, InputNode!);
             target[TranscriptField] = prompt;
-            target[CurrentDateField] = now.ToString("yyyy-MM-dd");
+
+            // ISO-8601 WITH the offset, per PLANNING-AGENT.md §6. A bare date is
+            // the v3 mistake the redesign exists to correct: the agent cannot tell
+            // what "tomorrow 9am" means without knowing which day it already is for
+            // this user, and given no offset it invents one rather than failing.
+            target[CurrentDateField] = now.ToString("yyyy-MM-dd'T'HH:mm:sszzz");
 
             if (!string.IsNullOrEmpty(accessToken))
             {

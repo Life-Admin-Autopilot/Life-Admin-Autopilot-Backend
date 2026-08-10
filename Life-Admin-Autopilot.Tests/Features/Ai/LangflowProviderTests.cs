@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Net;
 using System.Text;
 using System.Text.Json;
@@ -102,7 +103,67 @@ public sealed class LangflowProviderTests
         Assert.Equal("What is due?", tweaks.GetProperty("transcript").GetString());
         Assert.Equal("jwt-abc", tweaks.GetProperty("accessToken").GetString());
         Assert.Equal("plan", tweaks.GetProperty("mode").GetString());
-        Assert.Matches(@"^\d{4}-\d{2}-\d{2}$", tweaks.GetProperty("currentDate").GetString()!);
+        // ISO-8601 WITH an offset, per PLANNING-AGENT.md §6. A bare yyyy-MM-dd is the
+        // v3 format the redesign replaced.
+        Assert.Matches(
+            @"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[+-]\d{2}:\d{2}$",
+            tweaks.GetProperty("currentDate").GetString()!);
+    }
+
+    [Fact]
+    public async Task anchors_current_date_in_the_users_zone_not_utc()
+    {
+        if (Database is null)
+        {
+            return;
+        }
+
+        var handler = Handler(Ndjson("""{"event":"end","data":{}}"""));
+
+        var provider = Provider(handler, new Dictionary<string, string?>
+        {
+            ["Ai:Langflow:InputNode"] = "PlanningInput-v4",
+        });
+
+        await DrainAsync(provider, timezone: "Africa/Cairo");
+
+        var currentDate = JsonDocument.Parse(handler.LastRequestBody!)
+            .RootElement.GetProperty("tweaks").GetProperty("PlanningInput-v4")
+            .GetProperty("currentDate").GetString()!;
+
+        // Cairo is UTC+03:00 year-round since 2015. Sending +00:00 here is what made
+        // a 9am reminder land at noon Cairo time: the agent resolves the user's
+        // relative phrasing against whatever instant it is handed.
+        var parsed = DateTimeOffset.Parse(currentDate, CultureInfo.InvariantCulture);
+        Assert.Equal(TimeSpan.FromHours(3), parsed.Offset);
+    }
+
+    [Fact]
+    public async Task falls_back_to_utc_when_the_zone_is_absent_or_unusable()
+    {
+        if (Database is null)
+        {
+            return;
+        }
+
+        foreach (var zone in new string?[] { null, "Not/AZone", "Factory" })
+        {
+            var handler = Handler(Ndjson("""{"event":"end","data":{}}"""));
+
+            var provider = Provider(handler, new Dictionary<string, string?>
+            {
+                ["Ai:Langflow:InputNode"] = "PlanningInput-v4",
+            });
+
+            await DrainAsync(provider, timezone: zone);
+
+            var currentDate = JsonDocument.Parse(handler.LastRequestBody!)
+                .RootElement.GetProperty("tweaks").GetProperty("PlanningInput-v4")
+                .GetProperty("currentDate").GetString()!;
+
+            var parsed = DateTimeOffset.Parse(currentDate, CultureInfo.InvariantCulture);
+            Assert.Equal(TimeSpan.Zero, parsed.Offset);
+        }
     }
 
     [Fact]
@@ -410,11 +471,12 @@ public sealed class LangflowProviderTests
     private static async Task<List<AiStreamEvent>> DrainAsync(
         LangflowAiProvider provider,
         ObjectId? userId = null,
-        string? accessToken = null)
+        string? accessToken = null,
+        string? timezone = null)
     {
         var events = new List<AiStreamEvent>();
 
-        var request = new AiAskRequest((userId ?? UserId).ToString(), "What is due?", null)
+        var request = new AiAskRequest((userId ?? UserId).ToString(), "What is due?", timezone)
         {
             AccessToken = accessToken,
         };

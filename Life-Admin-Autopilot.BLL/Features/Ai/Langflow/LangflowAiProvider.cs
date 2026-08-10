@@ -2,6 +2,7 @@ using System.Net.Http.Headers;
 using System.Runtime.CompilerServices;
 using System.Text;
 using System.Text.Json;
+using Life_Admin_Autopilot.BLL.Kernel.Integrations;
 using Life_Admin_Autopilot.DAL.Features.Ai;
 using Life_Admin_Autopilot.DAL.Kernel.Errors;
 using MongoDB.Bson;
@@ -104,6 +105,7 @@ public sealed class LangflowAiProvider : IAiProvider
             ObjectId.Parse(request.UserId),
             request.Question,
             request.AccessToken,
+            request.Timezone,
             persistUserTurn: true,
             cancellationToken);
 
@@ -124,6 +126,7 @@ public sealed class LangflowAiProvider : IAiProvider
             ObjectId.Parse(request.UserId),
             ContinuationPrompt(request),
             request.AccessToken,
+            request.Timezone,
             persistUserTurn: false,
             cancellationToken);
 
@@ -148,12 +151,42 @@ public sealed class LangflowAiProvider : IAiProvider
     private static string Describe(object? value) =>
         value is null ? "{}" : JsonSerializer.Serialize(value, AiStreamJson.Frame);
 
+    /// <summary>
+    /// Re-anchors "now" to the user's own zone so the agent resolves relative
+    /// phrases the way the user meant them.
+    ///
+    /// <para>
+    /// Measured: with <c>Africa/Cairo</c> and a UTC-anchored instant the agent
+    /// emitted <c>+00:00</c> and a 9am reminder was stored as 09:00Z — noon in
+    /// Cairo. It fails silently because the agent simply invents an offset when
+    /// the one it is given is wrong, so nothing errors; the reminder just fires at
+    /// the wrong time.
+    /// </para>
+    ///
+    /// <para>
+    /// Validation goes through <see cref="ImportedTimeResolver.IsValidTimeZone"/>
+    /// rather than <c>FindSystemTimeZoneById</c> directly, so the zones accepted
+    /// here are exactly the ones the rest of the port accepts — on .NET 6+ the
+    /// framework call also resolves Windows ids, which Node rejects.
+    /// </para>
+    /// </summary>
+    private static DateTimeOffset AtUserOffset(DateTimeOffset utcNow, string? timezone)
+    {
+        if (!ImportedTimeResolver.IsValidTimeZone(timezone))
+        {
+            return utcNow;
+        }
+
+        return TimeZoneInfo.ConvertTime(utcNow, TimeZoneInfo.FindSystemTimeZoneById(timezone!));
+    }
+
     // ---- the streaming turn -------------------------------------------------
 
     private async IAsyncEnumerable<AiStreamEvent> RunTurnAsync(
         ObjectId userId,
         string prompt,
         string? accessToken,
+        string? timezone,
         bool persistUserTurn,
         [EnumeratorCancellation] CancellationToken cancellationToken)
     {
@@ -173,7 +206,7 @@ public sealed class LangflowAiProvider : IAiProvider
         var translator = new LangflowEventTranslator();
         yield return translator.Start();
 
-        await foreach (var frame in ReadFramesAsync(userId, prompt, accessToken, cancellationToken)
+        await foreach (var frame in ReadFramesAsync(userId, prompt, accessToken, timezone, cancellationToken)
                            .ConfigureAwait(false))
         {
             foreach (var translated in translator.Accept(frame))
@@ -210,12 +243,13 @@ public sealed class LangflowAiProvider : IAiProvider
         ObjectId userId,
         string prompt,
         string? accessToken,
+        string? timezone,
         [EnumeratorCancellation] CancellationToken cancellationToken)
     {
         using var client = _clients.CreateClient(LangflowOptions.HttpClientName);
         client.Timeout = _options.Timeout;
 
-        using var request = BuildRequest(userId, prompt, accessToken);
+        using var request = BuildRequest(userId, prompt, accessToken, timezone);
 
         HttpResponseMessage response;
         try
@@ -265,7 +299,7 @@ public sealed class LangflowAiProvider : IAiProvider
         }
     }
 
-    private HttpRequestMessage BuildRequest(ObjectId userId, string prompt, string? accessToken)
+    private HttpRequestMessage BuildRequest(ObjectId userId, string prompt, string? accessToken, string? timezone)
     {
         // WHERE the prompt goes is LangflowInputBinding's business, not this file's —
         // a flow with no ChatInput takes it as a tweak instead, and which is which is
@@ -278,7 +312,11 @@ public sealed class LangflowAiProvider : IAiProvider
             // accounts. The conversation of record is still ours, in Mongo.
             sessionId: userId.ToString(),
             accessToken,
-            _time.GetUtcNow());
+
+            // In the USER's zone, not UTC. "next month" and "tomorrow 9am" are
+            // resolved by the agent against this instant, so sending UTC makes
+            // every relative phrase wrong by the offset. See LangflowInputBinding.
+            AtUserOffset(_time.GetUtcNow(), timezone));
 
         var request = new HttpRequestMessage(HttpMethod.Post, _options.RunUri)
         {
