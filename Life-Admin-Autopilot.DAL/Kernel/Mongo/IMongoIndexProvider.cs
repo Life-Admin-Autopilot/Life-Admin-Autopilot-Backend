@@ -122,6 +122,28 @@ public sealed class KernelIndexProvider : IMongoIndexProvider
             new BsonDocument { ["userId"] = 1, ["tags"] = 1 },
             cancellationToken).ConfigureAwait(false);
 
+        // Five single-field indexes that exist only because Mongoose puts
+        // `index: true` on those schema fields. They are redundant with the
+        // compounds above for every query we issue - but they are NOT redundant to
+        // the query PLANNER, and that turns out to be observable.
+        //
+        // A filter-based bulk preview runs find(filter).limit(501) with NO sort on
+        // both servers, so the row order is whatever index the planner picked. With a
+        // different index set it picks differently and sample[0] is a different task.
+        // That is exactly how this was found: one harness row disagreeing on
+        // $.sample[0].id, .priority and .priorityRank.
+        //
+        // Matching the index set is the honest fix. Adding a sort on our side would
+        // make us deterministic AND divergent, since the reference has none.
+        foreach (var field in new[] { "userId", "domain", "kind", "status", "priority" })
+        {
+            await PlainAsync(
+                database,
+                MongoCollections.Tasks,
+                new BsonDocument { [field] = 1 },
+                cancellationToken).ConfigureAwait(false);
+        }
+
         // Reminder-worker claim: open tasks with an un-fired reminder due now.
         await PlainAsync(
             database,

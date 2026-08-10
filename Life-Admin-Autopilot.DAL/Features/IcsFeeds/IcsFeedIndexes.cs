@@ -53,13 +53,32 @@ public sealed class IcsFeedIndexes : IMongoIndexProvider
                 cancellationToken)
             .ConfigureAwait(false);
 
-        // The reconcile probe and the unsubscribe sweep both key on this triple.
-        // Not declared in Mongoose, but every sync does one lookup per occurrence
-        // and a collection scan per event is what makes a 400-occurrence series slow.
+        // The reconcile probe and the unsubscribe sweep both key on this triple, so
+        // the index is needed for speed — a collection scan per event is what makes a
+        // 400-occurrence series slow.
+        //
+        // But it MUST be unique and partial, matching `models/Task.ts:427`. An earlier
+        // comment here claimed it was "not declared in Mongoose"; it is, and the
+        // reference's own note says why: without the constraint a re-sync can split a
+        // single reminder out into duplicates. A plain index of the same shape is
+        // worse than none, because it satisfies the "does an index exist" check while
+        // silently dropping the guarantee that makes imports idempotent.
+        //
+        // Partial so only IMPORTED rows are constrained — manual, voice and document
+        // matters carry no externalId, and a unique index over missing fields would
+        // collapse them all into one.
         await CreateAsync(
                 database.GetCollection<BsonDocument>(MongoCollections.Tasks),
                 new BsonDocument { ["userId"] = 1, ["externalSource"] = 1, ["externalId"] = 1 },
-                new CreateIndexOptions<BsonDocument>(),
+                new CreateIndexOptions<BsonDocument>
+                {
+                    Unique = true,
+                    PartialFilterExpression = new BsonDocument
+                    {
+                        ["externalSource"] = new BsonDocument("$type", "string"),
+                        ["externalId"] = new BsonDocument("$type", "string"),
+                    },
+                },
                 cancellationToken)
             .ConfigureAwait(false);
     }

@@ -62,7 +62,7 @@ public sealed class WeakETagMiddleware
         {
             await _next(context);
 
-            if (!context.Response.HasStarted && buffer.Length > 0 && !context.Response.Headers.ContainsKey("ETag"))
+            if (ShouldTag(context.Response, buffer.Length))
             {
                 context.Response.Headers.ETag = Compute(buffer.GetBuffer().AsSpan(0, (int)buffer.Length));
             }
@@ -75,6 +75,26 @@ public sealed class WeakETagMiddleware
             context.Response.Body = original;
         }
     }
+
+    /// <summary>
+    /// Express generates the ETag inside <c>res.send()</c>, so anything that writes
+    /// its body another way never gets one. Measured on the reference:
+    ///
+    /// <list type="bullet">
+    ///   <item>200, 201, 400, 401 with a JSON body — tagged</item>
+    ///   <item>204 — not tagged, there is no body</item>
+    ///   <item>the fall-through 404 — not tagged; <c>finalhandler</c> writes it</item>
+    ///   <item><b>3xx redirects — NOT tagged</b>, even though they carry a body.
+    ///         <c>res.redirect()</c> calls <c>res.end()</c> directly and bypasses
+    ///         <c>res.send()</c> entirely. Verified: the Google OAuth callback answers
+    ///         302 with a 66-byte <c>Found. Redirecting to …</c> body and no ETag.</item>
+    /// </list>
+    /// </summary>
+    private static bool ShouldTag(HttpResponse response, long bodyLength) =>
+        !response.HasStarted
+        && bodyLength > 0
+        && response.StatusCode is < 300 or >= 400
+        && !response.Headers.ContainsKey("ETag");
 
     /// <summary>
     /// <c>W/"&lt;len:x&gt;-&lt;base64(sha1)[..27]&gt;"</c>. The length is the BYTE count, not the

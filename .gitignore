@@ -25,3 +25,7 @@ Thumbs.db
 *.db
 *.db-shm
 *.db-wal
+
+# Runtime blob storage for voice notes and document scans.
+uploads/
+**/uploads/
