@@ -81,7 +81,30 @@ public static class ImportedTimeResolver
         return (int.Parse(match.Groups[1].Value), int.Parse(match.Groups[2].Value));
     }
 
-    /// <summary>Validate an IANA zone by asking the runtime to resolve it. Cheap and authoritative.</summary>
+    /// <summary>
+    /// Accept exactly the zone ids Node's <c>Intl</c> accepts — IANA only.
+    ///
+    /// <para><b>Resolving the id is not enough</b>, which is what this used to do.
+    /// Measured against the reference via <c>PATCH /me</c>, where 400 means rejected:</para>
+    ///
+    /// <list type="table">
+    ///   <item><term><c>Europe/London</c></term><description>Node 200 · resolves, HasIanaId=true</description></item>
+    ///   <item><term><c>GMT Standard Time</c></term><description>Node <b>400</b> · resolves, HasIanaId=<b>false</b></description></item>
+    ///   <item><term><c>Factory</c></term><description>Node <b>400</b> · resolves, HasIanaId=<b>true</b></description></item>
+    ///   <item><term><c>Not/AZone</c></term><description>Node 400 · does not resolve</description></item>
+    /// </list>
+    ///
+    /// <para>So it takes BOTH guards. <see cref="TimeZoneInfo.HasIanaId"/> rejects the
+    /// Windows ids that .NET 6+ resolves on every platform — Outlook-published
+    /// calendar feeds emit those constantly — and <c>Factory</c> is a tzdata
+    /// placeholder that carries a real IANA id yet is absent from Intl's set.</para>
+    ///
+    /// <para><b>Why it is not cosmetic:</b> under the import rules a zone-less time
+    /// is low-confidence and lands as <c>kind:'list'</c>, passive and never fired,
+    /// while a resolved one becomes a <c>kind:'reminder'</c> that DOES fire. Accepting
+    /// a zone Node rejects makes the port fire reminders the reference deliberately
+    /// withholds.</para>
+    /// </summary>
     public static bool IsValidTimeZone(string? timeZone)
     {
         if (string.IsNullOrEmpty(timeZone))
@@ -89,10 +112,16 @@ public static class ImportedTimeResolver
             return false;
         }
 
+        // tzdata ships this as a "no zone configured" placeholder. It has an IANA
+        // id, so HasIanaId alone lets it through; Intl does not list it.
+        if (string.Equals(timeZone, "Factory", StringComparison.Ordinal))
+        {
+            return false;
+        }
+
         try
         {
-            TimeZoneInfo.FindSystemTimeZoneById(timeZone);
-            return true;
+            return TimeZoneInfo.FindSystemTimeZoneById(timeZone).HasIanaId;
         }
         catch (Exception)
         {
