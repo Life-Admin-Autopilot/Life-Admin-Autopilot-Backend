@@ -32,6 +32,19 @@ public readonly record struct AiAskRequest(string UserId, string Question, strin
     /// </para>
     /// </summary>
     public string? AccessToken { get; init; }
+
+    /// <summary>
+    /// Which entry path produced this turn: <c>chat</c>, <c>transcript</c>,
+    /// <c>document</c> or <c>clarification</c>. Null ⇒ <c>chat</c>.
+    ///
+    /// <para>
+    /// Init-only for the same reason as <see cref="AccessToken"/> — every existing
+    /// construction site keeps compiling. A provider that has no notion of modes
+    /// (Gemini) ignores it; the Langflow flow branches on it, because typed,
+    /// dictated and extracted text want different handling of the same sentence.
+    /// </para>
+    /// </summary>
+    public string? Mode { get; init; }
 }
 
 /// <summary>Inputs for the post-confirmation continuation of a turn.</summary>

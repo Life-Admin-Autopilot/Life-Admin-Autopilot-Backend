@@ -21,6 +21,22 @@ public sealed class AskBody
 
     [JsonPropertyName("timezone")]
     public JsonElement Timezone { get; init; }
+
+    /// <summary>
+    /// Which entry path this turn came from — <c>chat</c>, <c>transcript</c>,
+    /// <c>document</c> or <c>clarification</c>.
+    ///
+    /// <para>
+    /// <b>Additive, and a deliberate divergence from Node.</b> The reference has no
+    /// such field and strips it, so a client that sends one sees identical behaviour
+    /// there. It exists because every path in the product converges on ONE planning
+    /// agent, and the agent needs to know which one it is: the same sentence means
+    /// different things typed, dictated, and extracted from a scan. Absent ⇒
+    /// <c>chat</c>, which is what every existing caller already gets.
+    /// </para>
+    /// </summary>
+    [JsonPropertyName("mode")]
+    public JsonElement Mode { get; init; }
 }
 
 /// <summary><c>confirmToolBodySchema</c>. One required enum, nothing else.</summary>
@@ -59,6 +75,22 @@ internal static class AiRequests
     public static readonly IReadOnlyList<string> Scopes = new[] { "personal" };
 
     public static readonly IReadOnlyList<string> ConfirmActions = new[] { "confirm", "decline" };
+
+    /// <summary>
+    /// The planning agent's four entry paths. This list IS the contract — the flow
+    /// branches on exactly these strings, so an unrecognised one must be rejected
+    /// at the edge rather than passed through to be silently ignored by the agent.
+    /// </summary>
+    public static readonly IReadOnlyList<string> AskModes =
+        new[] { "chat", "transcript", "document", "clarification" };
+
+    /// <summary>
+    /// What an absent <c>mode</c> means. Declared here rather than borrowed from
+    /// the Langflow binding on purpose: this route also serves
+    /// <c>NotConfiguredAiProvider</c>, and a provider-agnostic route must not name a
+    /// provider's type to validate its own request.
+    /// </summary>
+    public const string DefaultAskMode = "chat";
 
     /// <summary>
     /// Reads the body with express's semantics, then hands the bytes to the kernel

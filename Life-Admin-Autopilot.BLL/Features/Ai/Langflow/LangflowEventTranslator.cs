@@ -36,6 +36,12 @@ public sealed class LangflowEventTranslator
     private readonly System.Text.StringBuilder _streamed = new();
 
     /// <summary>
+    /// Unwraps the planning agent's JSON envelope so the chat renders the reply
+    /// rather than the document carrying it. Passes prose through untouched.
+    /// </summary>
+    private readonly PlanningEnvelopeReader _envelope = new();
+
+    /// <summary>
     /// Identifies THIS turn, for call ids when Langflow supplies none. One per
     /// translator, and a translator is one turn — see <see cref="CallIdFor"/>.
     /// </summary>
@@ -130,8 +136,17 @@ public sealed class LangflowEventTranslator
             return Array.Empty<AiStreamEvent>();
         }
 
-        _streamed.Append(chunk);
-        return new[] { AiStreamEvents.Token(chunk) };
+        // The agent speaks a JSON envelope; the chat prints tokens verbatim. Emit
+        // only what is inside `reply`, and emit it as it decodes so the answer
+        // still streams. Most chunks are envelope scaffolding and yield nothing.
+        var spoken = _envelope.Push(chunk);
+        if (spoken.Length == 0)
+        {
+            return Array.Empty<AiStreamEvent>();
+        }
+
+        _streamed.Append(spoken);
+        return new[] { AiStreamEvents.Token(spoken) };
     }
 
     // ---- tool activity ------------------------------------------------------
@@ -326,10 +341,17 @@ public sealed class LangflowEventTranslator
 
     private void RememberFallback(string? text)
     {
-        if (!string.IsNullOrWhiteSpace(text))
+        if (string.IsNullOrWhiteSpace(text))
         {
-            _fallbackText = text;
+            return;
         }
+
+        // The `end` frame repeats the whole answer, envelope and all, and a flow
+        // with streaming off sends ONLY this. Unwrap it the same way, or the
+        // non-streaming path prints the raw JSON the streaming path just stopped
+        // printing. Prose is returned unchanged, so a plain-text flow is unaffected.
+        var spoken = PlanningEnvelopeReader.ExtractReply(text);
+        _fallbackText = spoken.Length > 0 ? spoken : text;
     }
 }
 

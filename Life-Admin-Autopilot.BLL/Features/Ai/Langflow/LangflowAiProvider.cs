@@ -105,6 +105,7 @@ public sealed class LangflowAiProvider : IAiProvider
             request.Question,
             request.AccessToken,
             request.Timezone,
+            request.Mode,
             persistUserTurn: true,
             cancellationToken);
 
@@ -126,6 +127,12 @@ public sealed class LangflowAiProvider : IAiProvider
             ContinuationPrompt(request),
             request.AccessToken,
             request.Timezone,
+
+            // The continuation is always `chat`, whatever started the turn: the
+            // prompt here is OUR synthetic report of what the confirmed tool did,
+            // not the user's dictation or a scan. Replaying the original mode would
+            // tell the agent to re-parse a transcript that no longer exists.
+            LangflowInputBinding.ChatMode,
             persistUserTurn: false,
             cancellationToken);
 
@@ -157,6 +164,7 @@ public sealed class LangflowAiProvider : IAiProvider
         string prompt,
         string? accessToken,
         string? timezone,
+        string? mode,
         bool persistUserTurn,
         [EnumeratorCancellation] CancellationToken cancellationToken)
     {
@@ -176,7 +184,7 @@ public sealed class LangflowAiProvider : IAiProvider
         var translator = new LangflowEventTranslator();
         yield return translator.Start();
 
-        await foreach (var frame in ReadFramesAsync(userId, prompt, accessToken, timezone, cancellationToken)
+        await foreach (var frame in ReadFramesAsync(userId, prompt, accessToken, timezone, mode, cancellationToken)
                            .ConfigureAwait(false))
         {
             foreach (var translated in translator.Accept(frame))
@@ -214,12 +222,13 @@ public sealed class LangflowAiProvider : IAiProvider
         string prompt,
         string? accessToken,
         string? timezone,
+        string? mode,
         [EnumeratorCancellation] CancellationToken cancellationToken)
     {
         using var client = _clients.CreateClient(LangflowOptions.HttpClientName);
         client.Timeout = _options.Timeout;
 
-        using var request = BuildRequest(userId, prompt, accessToken, timezone);
+        using var request = BuildRequest(userId, prompt, accessToken, timezone, mode);
 
         HttpResponseMessage response;
         try
@@ -271,7 +280,8 @@ public sealed class LangflowAiProvider : IAiProvider
         ObjectId userId,
         string prompt,
         string? accessToken,
-        string? timezone)
+        string? timezone,
+        string? mode)
     {
         // WHERE the prompt goes is LangflowInputBinding's business, not this file's —
         // a flow with no ChatInput takes it as a tweak instead, and which is which is
@@ -289,7 +299,12 @@ public sealed class LangflowAiProvider : IAiProvider
             // The caller's zone. Without it `currentDate` goes out offset-free and
             // the agent silently assumes +00:00, putting every dueAt it derives out
             // by the user's whole UTC offset.
-            timezone);
+            timezone,
+
+            // Which entry path this turn came from. The flow branches on it, so a
+            // dictated sentence is parsed as a transcript rather than answered as
+            // chat. Absent ⇒ chat, which is every caller that predates this.
+            mode: string.IsNullOrWhiteSpace(mode) ? LangflowInputBinding.ChatMode : mode);
 
         var request = new HttpRequestMessage(HttpMethod.Post, _options.RunUri)
         {

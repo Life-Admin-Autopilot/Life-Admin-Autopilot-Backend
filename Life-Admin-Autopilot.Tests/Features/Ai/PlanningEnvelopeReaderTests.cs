@@ -1,0 +1,170 @@
+using Life_Admin_Autopilot.BLL.Features.Ai;
+using Life_Admin_Autopilot.BLL.Features.Ai.Langflow;
+
+namespace Life_Admin_Autopilot.Tests.Features.Ai;
+
+/// <summary>
+/// Unwrapping the planning agent's envelope, one streamed chunk at a time.
+///
+/// <para>
+/// The shipped chat prints every <c>token</c> frame verbatim, so before this the
+/// user read <c>{ "mode": "chat", "reply": "Hi!", … }</c> in the message bubble.
+/// The cases below are mostly about CHUNK BOUNDARIES, because that is the only
+/// thing an incremental reader can get wrong that a whole-string parser cannot:
+/// the model's chunks split wherever the tokeniser happened to split them, which
+/// is routinely mid-key, mid-escape, and mid-word.
+/// </para>
+/// </summary>
+public sealed class PlanningEnvelopeReaderTests
+{
+    private const string Envelope =
+        """{"mode":"chat","reply":"Filed. Next Tuesday at 10am.","tasks":[],"clarifications":[],"pendingConfirmations":[]}""";
+
+    /// <summary>Feed the text one character at a time — the worst case for any scanner.</summary>
+    private static string ReadCharByChar(string text)
+    {
+        var reader = new PlanningEnvelopeReader();
+        var seen = new System.Text.StringBuilder();
+
+        foreach (var c in text)
+        {
+            seen.Append(reader.Push(c.ToString()));
+        }
+
+        seen.Append(reader.Flush());
+        return seen.ToString();
+    }
+
+    [Fact]
+    public void emits_only_the_reply_when_the_whole_envelope_arrives_at_once()
+    {
+        Assert.Equal("Filed. Next Tuesday at 10am.", PlanningEnvelopeReader.ExtractReply(Envelope));
+    }
+
+    [Fact]
+    public void emits_the_same_reply_however_the_chunks_fall()
+    {
+        // One character at a time splits `"reply"`, the colon, and every escape.
+        Assert.Equal("Filed. Next Tuesday at 10am.", ReadCharByChar(Envelope));
+    }
+
+    [Theory]
+    [InlineData(1)]
+    [InlineData(3)]
+    [InlineData(7)]
+    [InlineData(11)]
+    [InlineData(29)]
+    public void is_independent_of_chunk_size(int size)
+    {
+        var reader = new PlanningEnvelopeReader();
+        var seen = new System.Text.StringBuilder();
+
+        for (var i = 0; i < Envelope.Length; i += size)
+        {
+            seen.Append(reader.Push(Envelope.Substring(i, Math.Min(size, Envelope.Length - i))));
+        }
+
+        seen.Append(reader.Flush());
+        Assert.Equal("Filed. Next Tuesday at 10am.", seen.ToString());
+    }
+
+    [Fact]
+    public void decodes_escapes_including_ones_split_across_chunks()
+    {
+        var json = """{"reply":"Line one\nLine \"two\"—done","tasks":[]}""";
+
+        Assert.Equal("Line one\nLine \"two\"—done", PlanningEnvelopeReader.ExtractReply(json));
+        Assert.Equal("Line one\nLine \"two\"—done", ReadCharByChar(json));
+    }
+
+    [Fact]
+    public void passes_plain_prose_straight_through()
+    {
+        // A flow that answers in text, or a model that ignored its instructions.
+        // Swallowing this would leave the chat blank, which is worse than showing
+        // something unexpected — so the ambiguous case resolves toward the user.
+        const string prose = "Sure — I've added that for Tuesday.";
+
+        Assert.Equal(prose, PlanningEnvelopeReader.ExtractReply(prose));
+        Assert.Equal(prose, ReadCharByChar(prose));
+    }
+
+    [Fact]
+    public void keeps_what_it_decoded_when_the_envelope_is_cut_off_mid_reply()
+    {
+        // Mistral's free tier 429s mid-turn. The half sentence the user was already
+        // reading should survive rather than vanish on the error frame.
+        var reader = new PlanningEnvelopeReader();
+        var seen = reader.Push("""{"mode":"chat","reply":"Filed. Next Tue""");
+
+        Assert.Equal("Filed. Next Tue", seen + reader.Flush());
+    }
+
+    [Fact]
+    public void emits_nothing_for_an_empty_reply()
+    {
+        // The agent did the work through tools and said nothing. The pills carry the
+        // turn; an empty bubble is correct.
+        Assert.Equal(string.Empty, PlanningEnvelopeReader.ExtractReply(
+            """{"mode":"chat","reply":"","tasks":[{"id":"1"}]}"""));
+    }
+
+    [Fact]
+    public void ignores_a_reply_key_that_is_not_a_string()
+    {
+        Assert.Equal(string.Empty, PlanningEnvelopeReader.ExtractReply("""{"reply":null,"tasks":[]}"""));
+    }
+
+    [Fact]
+    public void does_not_mistake_a_later_key_for_the_reply()
+    {
+        // `tasks` comes first here; the reader must not start emitting at the first
+        // string it meets.
+        Assert.Equal("done", PlanningEnvelopeReader.ExtractReply(
+            """{"tasks":[{"title":"Renew insurance"}],"reply":"done"}"""));
+    }
+}
+
+/// <summary>The same unwrapping, observed through the translator the route uses.</summary>
+public sealed class LangflowEnvelopeTranslationTests
+{
+    [Fact]
+    public void the_chat_receives_prose_rather_than_the_envelope()
+    {
+        var translator = new LangflowEventTranslator();
+
+        // Chunked the way Mistral actually streams it — mid-key and mid-word.
+        var chunks = new[]
+        {
+            "{\n", "  \"mode\":", " \"chat\",\n ", " \"reply\": \"Hi!", " What can I",
+            " do for you?\",\n", "  \"tasks\": [],\n", "  \"clarifications\": []\n}",
+        };
+
+        var text = string.Concat(chunks
+            .SelectMany(c => translator.Accept(Frame(c)))
+            .Where(e => e.Kind == AiStreamEvents.TokenKind)
+            .Select(e => (string)e.Payload["text"]!));
+
+        Assert.Equal("Hi! What can I do for you?", text);
+        Assert.Equal("Hi! What can I do for you?", translator.AssistantText);
+    }
+
+    [Fact]
+    public void a_non_streaming_flow_also_gets_prose_from_its_end_frame()
+    {
+        var translator = new LangflowEventTranslator();
+        translator.Accept(new LangflowFrame("end", System.Text.Json.JsonDocument.Parse(
+            """{"result":{"outputs":[{"outputs":[{"results":{"message":{"text":"{\"mode\":\"chat\",\"reply\":\"All set.\",\"tasks\":[]}"}}}]}]}}""")
+            .RootElement.Clone())).ToList();
+
+        var tail = translator.Complete().ToList();
+
+        Assert.Equal(AiStreamEvents.TokenKind, tail[0].Kind);
+        Assert.Equal("All set.", tail[0].Payload["text"]);
+    }
+
+    private static LangflowFrame Frame(string chunk) =>
+        new("token", System.Text.Json.JsonDocument
+            .Parse(System.Text.Json.JsonSerializer.Serialize(new { chunk }))
+            .RootElement.Clone());
+}

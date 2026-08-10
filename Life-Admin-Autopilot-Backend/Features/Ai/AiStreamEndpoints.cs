@@ -83,6 +83,9 @@ public static class AiStreamEndpoints
             var question = AiRequests.ReadQuestion(issues, body.Question);
             AiRequests.ReadEnum(issues, body.Scope, "scope", AiRequests.Scopes, fallback: "personal", required: false);
             var timezone = AiRequests.ReadTimezone(issues, body.Timezone);
+            var mode = AiRequests.ReadEnum(
+                issues, body.Mode, "mode", AiRequests.AskModes,
+                fallback: AiRequests.DefaultAskMode, required: false);
             issues.ThrowIfInvalid("invalid_body", "Invalid ask payload.");
 
             // 4. Availability.
@@ -109,6 +112,7 @@ public static class AiStreamEndpoints
                     new AiAskRequest(caller.IdString, question!, timezone)
                     {
                         AccessToken = BearerTokenOf(context),
+                        Mode = mode,
                     },
                     cancellationToken)
                 .ConfigureAwait(false);
