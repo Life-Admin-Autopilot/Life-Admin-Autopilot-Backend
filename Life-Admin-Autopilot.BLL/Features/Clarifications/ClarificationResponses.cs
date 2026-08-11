@@ -29,6 +29,36 @@ public sealed class ClarificationListResponse
 }
 
 /// <summary>
+/// <c>POST /me/clarifications</c> — <c>{clarification, task, queueFull}</c>.
+///
+/// <para>
+/// The task is ALWAYS present: a held item is a real matter with a question attached,
+/// never a withheld one.
+/// </para>
+/// </summary>
+public sealed class ClarificationCreateResponse
+{
+    /// <summary>
+    /// Explicitly <c>null</c> — never omitted — when the open-question queue was
+    /// already full. The caller has to be able to tell "no question was filed" from
+    /// "the key is missing because the server is an older build".
+    /// </summary>
+    [JsonPropertyName("clarification")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.Never)]
+    public ClarificationDto? Clarification { get; init; }
+
+    [JsonPropertyName("task")]
+    public TaskDto Task { get; init; } = new();
+
+    /// <summary>
+    /// True when the cap turned the hold into a plain create. Always present, so a
+    /// caller can branch on it without treating absence as false.
+    /// </summary>
+    [JsonPropertyName("queueFull")]
+    public bool QueueFull { get; init; }
+}
+
+/// <summary>
 /// <c>POST /me/clarifications/{id}/defer</c> and <c>/drop</c> — <c>{clarification}</c>.
 /// </summary>
 public sealed class ClarificationEnvelope

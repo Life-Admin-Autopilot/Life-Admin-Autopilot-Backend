@@ -310,34 +310,42 @@ Conversation history is a run parameter (`session_id`), not a tweak; the Agent c
 
 ---
 
-## 7. The clarification write gap
+## 7. The clarification write gap — CLOSED
 
-**The backend has no endpoint that creates a clarification.** `/me/clarifications` exposes
-only `GET`, `POST /{id}/resolve`, `POST /{id}/defer`, `POST /{id}/drop`. In the Node
-reference the row is written by an in-process module call (`createClarification.ts`), not
-over HTTP, so a flow calling the public API cannot reproduce it.
+**Was:** the backend had no endpoint that created a clarification. `/me/clarifications`
+exposed only `GET`, `POST /{id}/resolve`, `POST /{id}/defer`, `POST /{id}/drop`, because in
+the Node reference the row is written by an in-process module call
+(`createClarification.ts`), never over HTTP — so a flow calling the public API could not
+reproduce it. `hold_for_clarification` created the task via `POST /me/tasks` and handed the
+question back in its result for somebody downstream to persist. Nobody did. **Held questions
+produced a task and no question row**, measured: *"Remind me that I have math lec tomorrow"*
+→ the tool fired, the reply asked *"What time is your math lecture tomorrow?"*, and
+`db.clarifications` gained nothing. No card, no way to answer.
 
-v4 handles this without inventing a route:
+**Now:** the backend exposes an authenticated **`POST /me/clarifications`**, and the tool
+makes exactly one call to it. The route creates the task AND the question and links them by
+`taskId`, porting `runHoldForClarification` from
+`server/src/modules/ai/toolRunner.ts`. Response: `201 {clarification, task, queueFull}`.
 
-1. `hold_for_clarification` creates the **task** over the real API (`POST /me/tasks`), so
-   the item is never lost — the iron rule holds.
-2. It returns a fully-formed `clarification` object.
-3. The agent copies that object into the envelope's `clarifications` array.
-4. **The backend persists it**, linking by `taskId`.
+This is the **recommended** option from the two originally listed, not the minimum one: the
+model is out of the persistence path, so the `clarification` the tool returns is a
+**receipt** rather than a data channel, and a model that mangles the echo can no longer lose
+a question. It is a route rather than a service-authenticated `/internal/…` one because the
+tool already carries the caller's own bearer token, so the row is written **as that user**
+with no ambient authority — a service credential would have been a second, broader trust
+path for no benefit.
 
-Step 4 does not exist yet and must be built. Two options:
+The route also owns the rule the whole feature turns on: a `cost_of_wrong: 'high'` hold
+lands as `kind:'list'`, so a **guessed** date can never fire. That check used to live in this
+component's Python, where a prompt-tuning pass could quietly change it; it is now server-side
+and covered by tests.
 
-- **Recommended:** a service-authenticated `POST /internal/clarifications`, called by the
-  tool component directly. This takes the model out of the persistence path entirely — step 3
-  becomes a receipt rather than a data channel, and a model that mangles the echo can no
-  longer lose a question.
-- **Minimum:** the .NET layer reads `clarifications[]` off the flow response and writes the
-  rows itself. No new endpoint, but correctness now depends on the model echoing a
-  structured object faithfully.
+The envelope's `clarifications[]` array is unchanged and still worth filling — it is what the
+turn reports having done — but nothing depends on it any more.
 
-Until one of them lands, **held questions produce a task but no question row.** The task is
-correct and visible; the clarification is dropped. That is the intended failure direction —
-the item survives — but it is a real gap, not a theoretical one.
+Recorded as a deliberate non-match with Node in `docs/DIVERGENCES.md` §6, together with the
+one guarantee that is weaker here: `sourceText` is supplied by the caller over HTTP, where
+Node passes it in as a non-tool argument the model cannot touch.
 
 ---
 

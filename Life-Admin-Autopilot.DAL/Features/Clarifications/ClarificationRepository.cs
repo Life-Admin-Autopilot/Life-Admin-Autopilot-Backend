@@ -74,6 +74,34 @@ public sealed class ClarificationRepository : MongoRepositoryBase<ClarificationD
     }
 
     /// <summary>
+    /// <c>Clarification.create(...)</c> — the one INSERT, used by the hold route.
+    ///
+    /// <para>
+    /// The caller sets <c>createdAt</c>/<c>updatedAt</c> itself: Mongoose stamps them
+    /// from <c>timestamps: true</c> and the .NET driver stamps nothing, so a document
+    /// handed here already carries both. Same for <c>__v</c>.
+    /// </para>
+    /// </summary>
+    public Task InsertAsync(ClarificationDocument document, CancellationToken cancellationToken = default) =>
+        Collection.InsertOneAsync(document, cancellationToken: cancellationToken);
+
+    /// <summary>
+    /// <c>countOpenClarifications</c> — a bare <c>{userId, status:'open'}</c> count,
+    /// backing the create route's queue cap.
+    ///
+    /// <para>
+    /// <b>Deliberately not <c>VisibleOpen()</c>.</b> Everything that lists or counts
+    /// held items FOR DISPLAY composes that predicate; this is backpressure, and a
+    /// question the user deferred is still queued and still returns, so it still
+    /// occupies a slot.
+    /// </para>
+    /// </summary>
+    public Task<long> CountOpenAsync(ObjectId userId, CancellationToken cancellationToken = default) =>
+        Collection.CountDocumentsAsync(
+            Filter.And(UserScoped(userId), Filter.Eq(c => c.Status, "open")),
+            cancellationToken: cancellationToken);
+
+    /// <summary>
     /// <c>findOne({_id, userId})</c>. Note there is NO status filter and no
     /// <c>VisibleOpen</c> here — resolve/defer/drop must be able to find an
     /// already-closed row so they can answer idempotently instead of 404ing.

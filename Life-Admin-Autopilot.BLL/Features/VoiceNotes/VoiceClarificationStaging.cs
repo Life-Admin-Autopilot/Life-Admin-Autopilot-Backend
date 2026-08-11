@@ -1,3 +1,4 @@
+using Life_Admin_Autopilot.BLL.Features.Clarifications;
 using Life_Admin_Autopilot.DAL.Features.VoiceNotes;
 using Life_Admin_Autopilot.DAL.Kernel.Documents;
 using Life_Admin_Autopilot.DAL.Kernel.Mongo;
@@ -36,9 +37,11 @@ public sealed class VoiceClarificationStaging : IVoiceClarificationStaging
     /// <summary>
     /// Longest quote kept on a Clarification — roughly a short paragraph, well past
     /// what the card shows. <c>MAX_SOURCE_TEXT</c> in
-    /// <c>modules/clarifications/sourceQuote.ts</c>.
+    /// <c>modules/clarifications/sourceQuote.ts</c>, which is where the port keeps it
+    /// too: this is an alias for <see cref="SourceQuote.MaxSourceText"/>, not a second
+    /// ceiling.
     /// </summary>
-    public const int MaxSourceText = 600;
+    public const int MaxSourceText = SourceQuote.MaxSourceText;
 
     private readonly IVoiceNoteTaskPersistence _tasks;
     private readonly IMongoCollection<BsonDocument> _clarifications;
@@ -168,17 +171,13 @@ public sealed class VoiceClarificationStaging : IVoiceClarificationStaging
     /// <summary>
     /// Trim, cap, and drop the empty case. Returns <c>null</c> rather than an empty
     /// string so the field is simply ABSENT on rows with nothing worth quoting.
+    ///
+    /// <para>
+    /// Forwards to <see cref="SourceQuote.Clamp"/>. It used to be a second
+    /// implementation, written before the clarifications slice had one; the two
+    /// writers of <c>sourceText</c> must clamp identically or the same transcript
+    /// gets two different quotes depending on which lane stored it.
+    /// </para>
     /// </summary>
-    public static string? ClampSourceText(string? text)
-    {
-        var trimmed = text?.Trim();
-        if (string.IsNullOrEmpty(trimmed))
-        {
-            return null;
-        }
-
-        return trimmed.Length <= MaxSourceText
-            ? trimmed
-            : $"{trimmed[..(MaxSourceText - 1)].TrimEnd()}…";
-    }
+    public static string? ClampSourceText(string? text) => SourceQuote.Clamp(text);
 }

@@ -32,6 +32,12 @@ public static class ClarificationsFeature
         services.TryAddScoped<ClarificationRepository>();
         services.TryAddScoped<ClarificationTaskUpdater>();
 
+        // The create route's whole behaviour. It composes the Matters slice's
+        // TaskWriteService rather than owning a second create, because a held item's
+        // task must be indistinguishable from any other — the entire point of
+        // creating it up front is that it shows up in Matters like everything else.
+        services.TryAddScoped<ClarificationHoldService>();
+
         // This slice owns the clarifications surface, so it owns the erasure. Node
         // deletes the same rows in routes/me.ts's hand-maintained list; nothing had
         // registered it on the .NET side yet.

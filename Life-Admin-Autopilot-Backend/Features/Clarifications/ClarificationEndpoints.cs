@@ -17,10 +17,25 @@ namespace Life_Admin_Autopilot_Backend.Features.Clarifications;
 /// powering the home banner and the <c>/clarify</c> card stack.
 ///
 /// <para>
-/// None of the four routes is rate limited, and only the list reads a query
+/// None of the four ported routes is rate limited, and only the list reads a query
 /// parameter. There is no query SCHEMA, so unknown parameters are ignored rather
 /// than rejected — <c>QueryReader</c> is deliberately absent, exactly as in
 /// <c>me.notifications</c>.
+/// </para>
+///
+/// <para>
+/// <b>A FIFTH route has no Node counterpart: <c>POST /me/clarifications</c>.</b> The
+/// reference exposes GET, defer, drop and resolve and no create, because in Node a
+/// clarification is only ever written IN-PROCESS — by
+/// <c>toolRunner.runHoldForClarification</c> for chat and by the voice transcriber
+/// for recordings. Both live inside the server, so no endpoint was ever needed. The
+/// port's planning agent runs in Langflow, OUTSIDE the API, and its
+/// <c>holdForClarification</c> tool could therefore create the task and nothing else:
+/// the reply said "Filed. What time?" and <c>db.clarifications</c> gained no row, so
+/// the question the model had just asked was unanswerable and no uncertainty card
+/// ever appeared. This route is the missing write path. Recorded in
+/// <c>docs/DIVERGENCES.md</c> §6; it adds no parity row, because Node has no
+/// behaviour here to differ from.
 /// </para>
 ///
 /// <para>
@@ -77,6 +92,36 @@ public static class ClarificationEndpoints
                 Clarifications = page.Select(d => d.ToDto()).ToList(),
                 HasMore = hasMore,
                 NextCursor = hasMore ? page[^1].CreatedAt : null,
+            });
+        })
+        .RequireAuthorization();
+
+        // POST /me/clarifications — file an uncertain item AND the question about it.
+        //
+        // NO NODE COUNTERPART. See the class summary and docs/DIVERGENCES.md §6.
+        endpoints.MapPost("/me/clarifications", async (
+            HttpContext context,
+            ClarificationHoldService holds,
+            CancellationToken cancellationToken) =>
+        {
+            var caller = context.RequireUser();
+
+            var body = await KernelBody
+                .ReadAsync<HoldBody>(
+                    context,
+                    KernelBodyOptions.Lenient(HoldBinder.Message, HoldBinder.Code),
+                    cancellationToken)
+                .ConfigureAwait(false);
+
+            var outcome = await holds
+                .HoldAsync(caller.Id, HoldBinder.Parse(body), cancellationToken: cancellationToken)
+                .ConfigureAwait(false);
+
+            return Results.Created((string?)null, new ClarificationCreateResponse
+            {
+                Clarification = outcome.Clarification?.ToDto(),
+                Task = outcome.Task.ToDto(),
+                QueueFull = outcome.QueueFull,
             });
         })
         .RequireAuthorization();

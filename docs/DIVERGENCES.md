@@ -277,6 +277,88 @@ Register a size-limit middleware scoped to `/ai/voice/transcribe` **before**
 `UseAuthorization()` in `UseKernel()`, returning the same 500 the malformed-body path
 produces. Do not make it global.
 
+## 6. `POST /me/clarifications` exists here and not in Node
+
+**Decided:** the hold-route slice, taking the option `langflow/PLANNING-AGENT.md` §7
+already recommended — "a route the tool component calls directly", so the model is out
+of the persistence path.
+**Status:** implemented. Adds no parity row — Node has no behaviour here to differ
+from — and changes no existing route. Measured after the change: **PASS 84 /
+SKIPPED 3**, candidate booted without the `LANGFLOW_*` variables.
+
+### What Node does
+
+Nothing. `routes/me.clarifications.ts` exposes `GET /me/clarifications` and the three
+terminal actions (`/{id}/resolve`, `/{id}/defer`, `/{id}/drop`) — and **no create**.
+
+That is not an oversight. In Node a Clarification is only ever written
+**in-process**: `toolRunner.runHoldForClarification` for chat, and the voice-note
+transcriber for recordings. Both live inside the server, so an HTTP create would have
+been a route with no caller.
+
+### What .NET does
+
+Adds `POST /me/clarifications`, authenticated, which performs the whole hold: it
+creates the Task, then the Clarification, linked by `taskId`. It is a port of
+`runHoldForClarification` — same argument schema (`holdForClarificationArgs`), same
+guess precedence (explicit `dueAtGuess`, else the first option's date), same
+`costOfWrong` default of `high`, same `MAX_OPEN_CLARIFICATIONS` degradation, same
+`sourceQuote` clamp. Responds `201 {clarification, task, queueFull}`.
+
+### Why
+
+**Our planning agent runs in Langflow, outside the API.** All it can do is make HTTP
+requests, so a behaviour with no route does not exist for it. The consequence was
+measured, not theorised: asking Kitto *"Remind me that I have math lec tomorrow"*
+fired the `holdForClarification` tool, the tool created the task via `POST /me/tasks`,
+the reply said *"Filed. What time is your math lecture tomorrow?"* — and
+`db.clarifications` gained nothing. The model asked a question the product had no way
+to receive an answer to, and no uncertainty card could ever appear.
+
+The alternative — have the .NET adapter read `clarifications[]` off the flow's
+response envelope and write the rows itself — needs no new route, but makes
+correctness depend on a language model echoing a structured object faithfully every
+turn. PLANNING-AGENT.md §7 called that the "minimum" option for exactly that reason.
+
+**The route also owns the rule, which is the stronger argument for it.** The thing
+that must not go wrong is that a *guessed* date fires: a high-cost hold has to land as
+`kind:'list'`. Split across two calls, that rule lives in the tool component's Python
+— model-adjacent code a prompt-tuning pass can silently change. Behind one route it is
+server-side and testable, pinned by
+`ClarificationHoldTests.a_high_cost_guess_files_a_passive_task_and_links_the_question_to_it`.
+
+### What it costs
+
+Nothing observable on any ported route, and no contract operation. Three things worth
+knowing:
+
+- **`sourceText` is caller-supplied here, and in Node it structurally cannot be.**
+  Node passes the user's verbatim words into `runTool` as a *non-tool* argument, with
+  an explicit comment that the model "must never get to edit, summarise, or invent
+  what the user said". Our agent is the HTTP caller, so the field arrives in the body
+  and a model *could* paraphrase it. It is bounded (2000 in, clamped to 600 stored)
+  and display-only — nothing reads it back into a prompt — but the guarantee is
+  weaker. Closing it properly means the backend tweaking the value into the tool node
+  per run, the way `access_token` is meant to be delivered; `LangflowInputBinding`
+  only tweaks the input node today.
+- **The queue cap counts every open row, deferred ones included.** Node's
+  `countOpenClarifications` is a bare `{userId, status:'open'}`, deliberately not
+  `VisibleOpen()`. A skipped question is still queued and still returns, so it still
+  occupies a slot. This is the one place a clarification count legitimately does not
+  compose that predicate.
+- **`timezone` is accepted and honoured, but the flow does not send it.** See the next
+  section: `HoldTimeNormalizer` is a faithful port of `timeNormalize.ts`, so this route
+  *is* the "dedicated agent-facing route that normalises" the gap below asks for. The
+  tool component has no IANA zone to pass it, so a naive date still falls back to UTC
+  on this path too. The server half now exists; the wiring does not.
+
+### How to revert
+
+Delete the `MapPost("/me/clarifications", …)` block, `ClarificationHoldService`,
+`HoldRequest.cs` and `HoldTimeNormalizer`, and point the flow's
+`HoldForClarificationTool` back at `POST /me/tasks`. Doing so reinstates the measured
+defect above: held questions produce a task and no question.
+
 ## AI guards: what Node has that the Langflow path does not
 
 Two guards live in Node's AI module. Neither was ported during the port, because
@@ -322,3 +404,102 @@ model is handed source ids it can cite. Our flow retrieves its own context and
 reports no source list — the `sources` frame is always empty — so there are no
 citations to guard. If grounding ever hands the agent citable ids, this must be
 ported with it.
+
+> **⚠️ That condition has now fired.** §7 below ports Node's `MY TASKS` block, which
+> hands the agent up to twenty real `[task:<id>]` and `<subtask:<id>>` tokens on every
+> turn. The guard is still NOT ported. What keeps it from being live today is that the
+> ids the agent *acts* on come from tool results, and the only prose the client renders
+> is the envelope's `reply` — but the model can now see the citation syntax, so a
+> `[task:…]` in prose has become possible where it was not before. The `sources` frame
+> is also still empty even though the data to fill it now exists in
+> `AiGroundingRepository`; Node populates it from exactly this list. Both are open, and
+> both belong to whoever next owns the AI stream.
+
+---
+
+## 7. The agent's grounding is ported; a missing timezone means UTC, not the server's zone
+
+**Decided:** slice m-grounding, porting `modules/ai/contextBuilder.ts`.
+**Status:** implemented. The port is byte-identical to Node everywhere the caller
+supplies a timezone; the single difference is what an absent or unusable one means.
+
+### What was ported, and why it is not optional
+
+Node assembles a grounding block for **every** AI turn. Until now the Langflow adapter
+sent four fields — `transcript`, `currentDate`, `accessToken`, `mode` — so the model did
+relative-date arithmetic unaided and could not see the user's existing matters at all.
+Both halves are now sent, as two new tweaks on `PlanningInput-v4`:
+
+| Tweak | Node source | What it carries |
+| --- | --- | --- |
+| `currentDate` | `formatNow()` | local ISO **with offset** and the weekday — `2026-08-11T14:23:45+03:00 (Tuesday)` |
+| `dateReference` | `buildDateReference()` | 14-day weekday→date table + literal anchors (`this weekend = Sat … & Sun …`, `end of this month = …`) |
+| `myTasks` | the `=== MY TASKS ===` block | open + snoozed matters, **capped at 20**, each with its real `[task:<id>]` |
+
+The comment above the anchor code in the reference states the motive: *"Literal anchors
+for common relative phrases the model otherwise guesses."*
+
+`currentDate` gained the trailing ` (Weekday)` in this change — it is part of
+`formatNow()`, and the port is now that one function rather than a partial copy of it.
+
+### The one difference
+
+`DateGrounding` treats an **absent, unknown or malformed** timezone as **UTC**.
+
+Node's no-timezone branch prints the instant with `Date#toISOString()` — a `Z`
+timestamp — but takes the weekday, and the entire 14-day table, from
+`Intl.DateTimeFormat` with no `timeZone`, i.e. **the server process's own zone**.
+Measured: for `2026-12-31T22:10:00Z` on a machine set to `Africa/Cairo`, Node emits
+`2026-12-31T22:10:00.000Z (Friday)` — a UTC instant labelled with Cairo's weekday, over
+a table whose "today" is 1 January.
+
+### Why not matched
+
+The reference's output on that path is **not reproducible and not self-consistent**. It
+depends on the deployment's `TZ`, so a laptop in Cairo and a container in UTC answer the
+same request with different tables; and the weekday disagrees with the timestamp printed
+beside it. Reproducing it would mean making the port's behaviour a function of
+`TimeZoneInfo.Local`, which is an accident of where the process runs.
+
+Treating an unusable zone as UTC makes the fallback coherent, machine-independent, and
+byte-identical to Node's own `timezone: 'UTC'` output. It also preserves the existing
+`+00:00` contract — an offset-free `currentDate` is the failure that put every derived
+`dueAt` out by the user's whole offset.
+
+### What it costs
+
+Nothing observable through the API. `/ai/ask` is **503 on the parity target** (Node with
+no `GEMINI_API_KEY`), so no harness row reaches any of this, and the frontend always
+sends a timezone. The difference is reachable only by a caller that omits `timezone`
+entirely, and only in the weekday word — the dates in the table are then UTC's, which is
+the honest answer when the caller has not said where they are.
+
+### What was verified, and how
+
+Not by re-reading the TypeScript. Node's `formatNow()` and `buildDateReference()` were
+run under a frozen clock over a grid of 9 instants × 7 zones and the 63 resulting strings
+compared to the port: **identical, both functions, every row** (month and year rollovers
+under +14:00 and −09:30, both DST transitions, leap February, and the weekend anchor on a
+Saturday and on a Sunday). `AiDateGroundingTests` keeps eleven of those pairs as
+literals.
+
+The `MY TASKS` block was compared the same way: Node's own `buildPersonalContext()` was
+run against the seeded demo account (142 open matters) in the isolated parity Mongo, and
+its twenty rendered rows diffed against this port's, reading the same database.
+**Byte-identical**, including the sort — undated matters lead, because a missing `dueAt`
+sorts before any date in Mongo's ordering, and the cap then truncates *that* order.
+
+### A hazard the cap introduces, handled in the prompt rather than the code
+
+Twenty rows over 142 matters is a window, not a census, so a model reading it as complete
+will confidently answer "you have nothing like that". Node has the same cap and the same
+exposure. The flow's input block therefore states that the list is capped, that absence
+from it is not proof, and that `queryTasks` is the answer when certainty is the point —
+with `(no open tasks)` called out as the one value that does mean exactly what it says.
+
+### How to revert
+
+Unset `Ai:Langflow:Fields:DateReference` / `:MyTasks`? No — the fields are always sent
+when a node is bound. Reverting means removing the two `target[…]` assignments in
+`LangflowInputBinding.BuildRequest` and the two inputs from `PlanningInput-v4`. Doing so
+restores the guessing this entry exists to remove.
