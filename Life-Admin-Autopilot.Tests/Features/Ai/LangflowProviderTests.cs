@@ -508,6 +508,59 @@ public sealed class LangflowProviderTests
     }
 
     [Fact]
+    public async Task a_stubbed_create_turn_satisfies_the_behavioural_invariants_too()
+    {
+        if (Database is null)
+        {
+            return;
+        }
+
+        // The other half of what makes a live pass mean something. Every wire shape
+        // below was MEASURED off Langflow 1.11.2 and is here replayed through the real
+        // translator: the double-encoded tool result, the envelope arriving as token
+        // chunks, and the same add_message row redelivered as it fills in. Then the
+        // very assertions the smoke suite runs are applied to the output.
+        //
+        // This does supply its own input, so it proves nothing about today's Langflow.
+        // What it proves is that the checker works — LangflowTurnInvariantsTests then
+        // proves the same checker rejects each defect. Between them, a green live run
+        // is a statement about Langflow rather than about the test.
+        const string row =
+            """{"event":"add_message","data":{"id":"bb209266-1f6e-4a3f-9d21-6f0f9e2a1c77","content_blocks":[{"contents":[{"type":"tool_use","name":"createTask","tool_input":{"title":"call the dentist"}__OUT__}]}]}}""";
+
+        // Exactly as captured: `content` holds a JSON *string* holding another JSON
+        // string. Unwrapped wrongly, result.task is undefined and the card degrades.
+        const string wrapped =
+            ""","output":{"content":"{\"value\": \"{\\\"ok\\\": true, \\\"task\\\": {\\\"id\\\": \\\"6a7a6dc8522aceb15af17b33\\\"}}\"}","status":"success"}""";
+
+        var handler = Handler(Ndjson(
+            row.Replace("__OUT__", string.Empty, StringComparison.Ordinal),
+            row.Replace("__OUT__", wrapped, StringComparison.Ordinal),
+            """{"event":"token","data":{"chunk":"{\"mode\":\"chat\",\"reply\":\"Added"}}""",
+            """{"event":"token","data":{"chunk":" it — 3 PM.\",\"tasks\":[],"}}""",
+            """{"event":"token","data":{"chunk":"\"clarifications\":[]}"}}""",
+            """{"event":"end","data":{}}"""));
+
+        var events = await DrainAsync(Provider(handler), ObjectId.GenerateNewId());
+
+        LangflowTurnInvariants.AssertTurnShape(events);
+
+        Assert.Equal(
+            "6a7a6dc8522aceb15af17b33",
+            LangflowTurnInvariants.AssertToolResultCarriesTaskAtTopLevel(events, "createTask"));
+
+        // The row arrived twice; the user must see one pill, and the store would have
+        // gained one matter.
+        LangflowTurnInvariants.AssertOneFramePerToolInvocation(events);
+        LangflowTurnInvariants.AssertToolCallCountMatchesSideEffects(events, "createTask", 1);
+
+        // Three chunks of envelope, one sentence of prose.
+        Assert.Equal(
+            "Added it — 3 PM.",
+            LangflowTurnInvariants.AssertTokensCarryProseNotTheEnvelope(events));
+    }
+
+    [Fact]
     public async Task declines_a_pending_call_that_outlived_the_stale_window()
     {
         var database = Database;

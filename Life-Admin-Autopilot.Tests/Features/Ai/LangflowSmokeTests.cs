@@ -1,122 +1,215 @@
-using Life_Admin_Autopilot.BLL.Features.Ai;
-using Life_Admin_Autopilot.BLL.Features.Ai.Langflow;
-using Life_Admin_Autopilot.DAL.Features.Ai;
-using Life_Admin_Autopilot.DAL.Kernel.Mongo;
-using Life_Admin_Autopilot.Tests.Kernel;
-using Microsoft.Extensions.Configuration;
-using MongoDB.Bson;
-using MongoDB.Driver;
-
 namespace Life_Admin_Autopilot.Tests.Features.Ai;
 
 /// <summary>
-/// <b>One real turn against a live Langflow.</b> The only test in this slice that
-/// touches the boundary every defect in it has come from.
+/// <b>Real turns against a live Langflow.</b> The only tests in this slice that touch
+/// the boundary every defect in it has come from.
 ///
 /// <para>
-/// <b>Why it exists.</b> Every bug found in this adapter came from an assumption
-/// about what Langflow emits — that a <c>tool_use</c> block carries an id, that a row
-/// arrives once, that an <c>output</c> means the call ran. None was wrong about the
-/// translation; each was fed a wire shape that did not exist. The synthetic tests now
-/// encode measured shapes, but they will keep passing if Langflow changes on a
-/// version bump, precisely because they supply the input. This one does not supply
-/// the input, so it is the only thing that can notice.
+/// <b>Why they exist.</b> The suite has well over a thousand tests and not one of them
+/// could have caught the defects found by hand this week: a created matter rendering
+/// as a bare ledger row, a stated time silently defaulted away, the agent's JSON
+/// envelope printed into the chat bubble. Every one came from an assumption about what
+/// Langflow emits — that a <c>tool_use</c> block carries an id, that a row arrives
+/// once, that an <c>output</c> means the call ran, that a tool result is a plain
+/// object. None was a translation error. Each was fed a wire shape that did not exist.
+/// More synthetic frames cannot help, because the synthetic frames ARE the wrong
+/// assumption. Only a test that does not supply its own input can notice.
 /// </para>
 ///
 /// <para>
-/// <b>OPT-IN, and silent by default.</b> It runs only when
-/// <c>LANGFLOW_SMOKE_BASE_URL</c> and <c>LANGFLOW_SMOKE_FLOW_ID</c> are set, so it
-/// never fails a normal run and never pretends to have checked anything:
+/// <b>Nothing below is asserted against the reply.</b> Every claim is settled in Mongo
+/// or through the API — a row count, a stored status, a stored <c>dueAt</c>. In all
+/// those defects the reply read perfectly, which is precisely why they shipped.
+/// </para>
+///
+/// <para>
+/// <b>OPT-IN, and silent by default.</b> They run only when
+/// <c>LANGFLOW_SMOKE_BASE_URL</c> and <c>LANGFLOW_SMOKE_FLOW_ID</c> are set, so a
+/// normal <c>dotnet test</c> stays offline and green:
 /// </para>
 ///
 /// <code>
 /// LANGFLOW_SMOKE_BASE_URL=http://127.0.0.1:7860 \
 /// LANGFLOW_SMOKE_FLOW_ID=&lt;flow&gt; \
 /// LANGFLOW_SMOKE_INPUT_NODE=PlanningInput-v4 \
+/// LANGFLOW_SMOKE_API_KEY="$(cat "${TMPDIR:-/tmp}"/kitto-stack/langflow_api_key)" \
+/// LANGFLOW_SMOKE_REQUIRED=1 \
 /// dotnet test --filter FullyQualifiedName~LangflowSmokeTests
 /// </code>
 ///
 /// <para>
-/// <b>NOT YET EXECUTED.</b> Written from a worktree with no Langflow reachable, so
-/// the live path has never run once. The assertions below are the same invariants
-/// <c>LangflowProviderTests</c> checks against a stub, and those do run — but until
-/// someone points this at a real instance, treat it as unproven scaffolding rather
-/// than as coverage. A skipping test that is quietly broken is worse than no test.
+/// <b>They need the whole stack, not just Langflow.</b> The flow's eleven tools are
+/// HTTP wrappers that call this backend back as the caller, so the backend must be up
+/// (<c>LANGFLOW_SMOKE_API_BASE_URL</c>, default <c>http://localhost:5080</c>) and the
+/// suite must be pointed at the database it writes to
+/// (<c>LANGFLOW_SMOKE_MONGO_DB</c>, default <c>kitto_dev</c>). A mismatch fails loudly
+/// at signup rather than confusingly later. <c>./tools/dev/stack.sh up</c> provides
+/// all of it.
 /// </para>
 ///
 /// <para>
-/// <b>What it asserts is deliberately prompt-agnostic</b> — the four invariants that
-/// actually broke, all of which must hold for any turn, so the test needs no seeded
-/// data and causes no writes beyond the conversation row. It does NOT confirm
-/// anything: a gated tool is only dry-run before confirmation, so asking about a bulk
-/// delete here would still delete nothing.
+/// <b>Two model rounds and one confirm, shared.</b> See <see cref="LangflowSmokeStack"/>
+/// — the turns are taken once by the fixture and every test here asserts one invariant
+/// about them. Turns are spaced (<c>LANGFLOW_SMOKE_SPACING_SECONDS</c>, default 45) and
+/// retried on a fresh account (<c>LANGFLOW_SMOKE_ATTEMPTS</c>, default 3), because the
+/// free-tier 429 arrives as an <c>error</c> frame inside a healthy 200 and would
+/// otherwise read as a flow defect.
 /// </para>
 /// </summary>
-public sealed class LangflowSmokeTests
+public sealed class LangflowSmokeTests : IClassFixture<LangflowSmokeStack>
 {
+    private readonly LangflowSmokeStack _stack;
+
+    public LangflowSmokeTests(LangflowSmokeStack stack) => _stack = stack;
+
+    // ---- 1. the tool result the card reads ----------------------------------
+
     [Fact]
-    public async Task one_real_turn_still_matches_the_shapes_the_translator_expects()
+    public void a_created_matter_arrives_as_something_the_chat_can_render_as_a_card()
     {
-        var options = SmokeOptions();
-        var database = TryGetDatabase();
-
-        // Partial configuration is ALWAYS a failure, never a silent pass. A base URL
-        // with no flow id means someone meant to run this and the wiring broke — the
-        // exact case where returning early would hide the problem.
-        AssertConfigurationIsUsable(options, database);
-
-        if (options is null || database is null)
+        if (!Live())
         {
             return;
         }
 
-        var provider = new LangflowAiProvider(
-            new SmokeHttpClientFactory(),
-            options,
-            SmokeBinding(),
-            new AiConversationRepository(database),
-            new AiGroundingRepository(database));
+        // `task` must be at the TOP level of tool_result.result. Langflow wraps a
+        // tool's return in `content` and our tool wraps its body in `value`, both as
+        // JSON *strings*; unwrapped wrongly, ToolCallCard's `result.task` is undefined
+        // and the matter the agent just created is invisible behind a plain row.
+        var taskId = LangflowTurnInvariants.AssertToolResultCarriesTaskAtTopLevel(
+            _stack.Created.Events, "createTask");
 
-        var events = new List<AiStreamEvent>();
-        var request = new AiAskRequest(
-            ObjectId.GenerateNewId().ToString(),
-            "What is on my list this week?",
-            "Europe/London");
-
-        await foreach (var value in provider.AskAsync(request))
-        {
-            events.Add(value);
-        }
-
-        LangflowTurnInvariants.AssertTurnShape(events);
+        // And the id it carries names a row that really exists.
+        LangflowTurnInvariants.AssertClaimedMatterIsInTheStore(taskId, _stack.Created.StoredDueAtById);
     }
 
+    // ---- 2. the envelope stays out of the bubble ----------------------------
+
+    [Fact]
+    public void the_agents_json_envelope_never_reaches_the_chat_bubble()
+    {
+        if (!Live())
+        {
+            return;
+        }
+
+        LangflowTurnInvariants.AssertTokensCarryProseNotTheEnvelope(_stack.Created.Events);
+    }
+
+    // ---- 3. one frame per invocation ----------------------------------------
+
+    [Fact]
+    public void one_tool_call_frame_is_emitted_for_each_thing_the_agent_actually_did()
+    {
+        if (!Live())
+        {
+            return;
+        }
+
+        LangflowTurnInvariants.AssertOneFramePerToolInvocation(_stack.Created.Events);
+        LangflowTurnInvariants.AssertOneFramePerToolInvocation(_stack.Gated.AskEvents);
+
+        // The version that cannot be argued with: the client was shown N createTask
+        // pills, and the store gained exactly N matters.
+        LangflowTurnInvariants.AssertToolCallCountMatchesSideEffects(
+            _stack.Created.Events, "createTask", _stack.Created.MattersCreated);
+    }
+
+    // ---- 4. confirmation gating ---------------------------------------------
+
+    [Fact]
+    public void a_bulk_wipe_is_staged_until_the_user_confirms_and_only_then_deletes()
+    {
+        if (!Live())
+        {
+            return;
+        }
+
+        // Before: a card, no result, a pending record, and NOTHING removed — Langflow
+        // runs the dry run and redelivers the row with its output populated inside the
+        // same turn, and reading that as an outcome killed every confirmation.
+        var callId = LangflowTurnInvariants.AssertGatedCallIsStagedNotRun(
+            _stack.Gated.AskEvents,
+            _stack.Gated.StatusesAfterAsk,
+            _stack.Gated.OpenBeforeAsk,
+            _stack.Gated.OpenAfterAsk);
+
+        // After: the gate opens. A trailing error frame on the continuation does not
+        // mean it failed, so the open-matter count is what settles it.
+        LangflowTurnInvariants.AssertConfirmedCallActuallyRan(
+            _stack.Gated.ConfirmEvents,
+            callId,
+            _stack.Gated.StatusesAfterConfirm,
+            _stack.Gated.OpenAfterAsk,
+            _stack.Gated.OpenAfterConfirm,
+            _stack.Gated.ConfirmFailure);
+    }
+
+    // ---- 5. the time the user said ------------------------------------------
+
+    [Fact]
+    public void a_time_the_user_stated_round_trips_into_the_stored_matter()
+    {
+        if (!Live())
+        {
+            return;
+        }
+
+        var taskId = LangflowTurnInvariants.AssertToolResultCarriesTaskAtTopLevel(
+            _stack.Created.Events, "createTask");
+
+        var storedDueAt = LangflowTurnInvariants.AssertClaimedMatterIsInTheStore(
+            taskId, _stack.Created.StoredDueAtById);
+
+        // 15:00 in Africa/Cairo, which is 12:00Z through the summer. Computed via the
+        // zone rather than hard-coded, because Egypt observes DST and a winter run of
+        // the same prompt is correctly 13:00Z.
+        LangflowTurnInvariants.AssertStatedTimeRoundTrips(
+            _stack.Created.ExpectedDueAtUtc, storedDueAt, _stack.Created.StatedLocally);
+    }
+
+    // ---- 0. the shape both turns must have ----------------------------------
+
+    [Fact]
+    public void one_real_turn_still_matches_the_shapes_the_translator_expects()
+    {
+        if (!Live())
+        {
+            return;
+        }
+
+        LangflowTurnInvariants.AssertTurnShape(_stack.Created.Events);
+        LangflowTurnInvariants.AssertTurnShape(_stack.Gated.AskEvents);
+    }
+
+    // ---- the honesty guard ---------------------------------------------------
+
     /// <summary>
-    /// The honesty guard, and the reason this test does not simply return early.
+    /// Runs the configuration guard and reports whether the live assertions should
+    /// execute at all.
     ///
     /// <para>
-    /// <b>The failure mode being defended against</b> is a CI summary reporting a
-    /// pass for a test that did nothing, on the day the credentials stop being
-    /// injected — nobody reads a green line. A real "skipped" result would say so,
-    /// but <c>Assert.Skip</c> and <c>SkipTestWithoutData</c> are both xUnit v3, and
-    /// this suite is on 2.9.3 where <c>Skip</c> is a compile-time constant. Both were
-    /// checked rather than assumed. Adding a skip package to the shared Tests project
-    /// mid-merge is a poor trade for one opt-in test.
+    /// <b>The failure mode being defended against</b> is a CI summary reporting a pass
+    /// for a test that did nothing, on the day the credentials stop being injected —
+    /// nobody reads a green line. A real "skipped" result would say so, but
+    /// <c>Assert.Skip</c> and <c>SkipTestWithoutData</c> are both xUnit v3, and this
+    /// suite is on 2.9.3 where <c>Skip</c> is a compile-time constant. Both were
+    /// checked rather than assumed.
     /// </para>
     ///
     /// <para>
-    /// So the protection is put where it actually bites, and it is arguably stronger
-    /// than a skip: any pipeline that MEANS to run this sets
-    /// <c>LANGFLOW_SMOKE_REQUIRED=1</c>, and the day the rest of the environment goes
-    /// missing the test FAILS instead of quietly passing. Half-configured fails the
-    /// same way, because that is always a mistake. Only a completely unconfigured
-    /// developer machine returns early.
+    /// So the protection is put where it bites, and it is arguably stronger than a
+    /// skip: any pipeline that MEANS to run this sets <c>LANGFLOW_SMOKE_REQUIRED=1</c>,
+    /// and the day the rest of the environment goes missing the tests FAIL instead of
+    /// quietly passing. Half-configured fails the same way, because that is always a
+    /// mistake — a base URL with no flow id means someone meant to run this and the
+    /// wiring broke. Only a completely unconfigured developer machine returns early.
     /// </para>
     ///
     /// <para>If this suite ever moves to xUnit v3, replace all of this with
     /// <c>Assert.Skip</c> and delete the environment variable.</para>
     /// </summary>
-    private static void AssertConfigurationIsUsable(LangflowOptions? options, IMongoDatabase? database)
+    private bool Live()
     {
         var required = Environment.GetEnvironmentVariable("LANGFLOW_SMOKE_REQUIRED") == "1";
         var baseUrl = Environment.GetEnvironmentVariable("LANGFLOW_SMOKE_BASE_URL");
@@ -126,125 +219,41 @@ public sealed class LangflowSmokeTests
         if (required)
         {
             Assert.True(
-                options is not null,
-                "LANGFLOW_SMOKE_REQUIRED=1 but LANGFLOW_SMOKE_BASE_URL / LANGFLOW_SMOKE_FLOW_ID are missing or "
-                + "unusable — this run would have reported a pass without contacting Langflow at all.");
+                LangflowSmokeStack.SmokeOptions() is not null,
+                "LANGFLOW_SMOKE_REQUIRED=1 but LANGFLOW_SMOKE_BASE_URL / LANGFLOW_SMOKE_FLOW_ID are missing "
+                + "or unusable — this run would have reported a pass without contacting Langflow at all.");
+
             Assert.True(
-                database is not null,
-                "LANGFLOW_SMOKE_REQUIRED=1 but the parity Mongo is unreachable, so the turn could not be "
-                + "persisted and the test would have reported a pass without running.");
-            return;
+                LangflowSmokeStack.TryGetDatabase() is not null,
+                "LANGFLOW_SMOKE_REQUIRED=1 but the backend's Mongo is unreachable, so nothing could be "
+                + "asserted against the store and the test would have reported a pass without running.");
+
+            Assert.True(
+                _stack.Configured,
+                $"LANGFLOW_SMOKE_REQUIRED=1 but the backend at {LangflowSmokeStack.ApiBaseUrl} did not answer "
+                + "/health. The flow's tools call it back as the caller, so without it no turn can create, "
+                + "read or delete anything — run ./tools/dev/stack.sh up, or set LANGFLOW_SMOKE_API_BASE_URL.");
+        }
+        else
+        {
+            Assert.False(
+                anySet && LangflowSmokeStack.SmokeOptions() is null,
+                $"Langflow smoke configuration is incomplete: BASE_URL={Describe(baseUrl)}, "
+                + $"FLOW_ID={Describe(flowId)}. Set both (and an absolute URL), or neither.");
         }
 
-        Assert.False(
-            anySet && options is null,
-            $"Langflow smoke configuration is incomplete: BASE_URL={Describe(baseUrl)}, "
-            + $"FLOW_ID={Describe(flowId)}. Set both (and an absolute URL), or neither.");
+        if (!_stack.Configured)
+        {
+            return false;
+        }
+
+        Assert.True(
+            _stack.SetupFailure is null,
+            $"the live turns could not be taken, so nothing below was checked: {_stack.SetupFailure}");
+
+        return true;
     }
 
     private static string Describe(string? value) =>
         string.IsNullOrWhiteSpace(value) ? "<unset>" : "<set>";
-
-    // ---- opt-in configuration ----------------------------------------------
-
-    private static LangflowOptions? SmokeOptions()
-    {
-        var options = LangflowOptions.FromConfiguration(SmokeConfiguration());
-        return options.IsConfigured ? options : null;
-    }
-
-    private static LangflowInputBinding SmokeBinding() =>
-        LangflowInputBinding.FromConfiguration(SmokeConfiguration());
-
-    /// <summary>
-    /// Reads the SMOKE-prefixed variables into the adapter's own keys, so pointing
-    /// this at an instance cannot accidentally reconfigure anything else.
-    /// </summary>
-    private static IConfiguration SmokeConfiguration() =>
-        new ConfigurationBuilder()
-            .AddInMemoryCollection(new Dictionary<string, string?>
-            {
-                ["Ai:Langflow:BaseUrl"] = Environment.GetEnvironmentVariable("LANGFLOW_SMOKE_BASE_URL"),
-                ["Ai:Langflow:FlowId"] = Environment.GetEnvironmentVariable("LANGFLOW_SMOKE_FLOW_ID"),
-                ["Ai:Langflow:ApiKey"] = Environment.GetEnvironmentVariable("LANGFLOW_SMOKE_API_KEY"),
-                ["Ai:Langflow:InputNode"] = Environment.GetEnvironmentVariable("LANGFLOW_SMOKE_INPUT_NODE"),
-            })
-            .Build();
-
-    private static IMongoDatabase? TryGetDatabase()
-    {
-        try
-        {
-            MongoKernelConventions.Register();
-
-            var client = new MongoClient(
-                $"{KernelWebApplicationFactory.ParityMongoUri}/?serverSelectionTimeoutMS=800");
-            var database = client.GetDatabase("kitto_parity_dotnet_m_smoke");
-            database.RunCommand<BsonDocument>(new BsonDocument("ping", 1));
-            return database;
-        }
-        catch (Exception)
-        {
-            return null;
-        }
-    }
-
-    private sealed class SmokeHttpClientFactory : IHttpClientFactory
-    {
-        public HttpClient CreateClient(string name) => new();
-    }
-}
-
-/// <summary>
-/// The invariants one Langflow turn must satisfy, each one a bug that actually
-/// shipped in this adapter.
-///
-/// <para>
-/// Deliberately NOT on the test class: a public non-test method there is an xUnit1013
-/// warning, and more usefully, these belong to the turn rather than to the test that
-/// happens to run them. <c>LangflowProviderTests</c> runs them against a stubbed turn
-/// so the assertions are proven even where no Langflow exists — which is what makes a
-/// live pass mean something later.
-/// </para>
-/// </summary>
-public static class LangflowTurnInvariants
-{
-    public static void AssertTurnShape(IReadOnlyList<AiStreamEvent> events)
-    {
-        Assert.NotEmpty(events);
-
-        // 1. The turn opens with sources and closes with done.
-        Assert.Equal(AiStreamEvents.SourcesKind, events[0].Kind);
-        Assert.Equal(AiStreamEvents.DoneKind, events[^1].Kind);
-
-        var calls = events.Where(e => e.Kind == AiStreamEvents.ToolCallKind).ToList();
-        var callIds = calls.Select(c => (string)c.Payload["callId"]!).ToList();
-
-        // 2. No tool is announced twice. A redelivered add_message row whose blocks
-        //    carry no id used to mint a fresh id each time — seven frames for one
-        //    call, and seven confirmation cards for one bulk delete.
-        Assert.Equal(callIds.Count, callIds.Distinct(StringComparer.Ordinal).Count());
-
-        var resultIds = events
-            .Where(e => e.Kind == AiStreamEvents.ToolResultKind)
-            .Select(e => (string)e.Payload["callId"]!)
-            .ToHashSet(StringComparer.Ordinal);
-
-        foreach (var call in calls)
-        {
-            var callId = (string)call.Payload["callId"]!;
-
-            // 3. A gated call is never resolved by the stream — Langflow's dry-run
-            //    output is a preview, and treating it as an outcome killed every
-            //    confirmation. The confirm route emits the only tool_result.
-            if ((bool)call.Payload["needsConfirmation"]!)
-            {
-                Assert.DoesNotContain(callId, resultIds);
-            }
-        }
-
-        // 4. Every result belongs to a call that was announced.
-        Assert.All(resultIds, id => Assert.Contains(id, callIds));
-    }
-
 }
