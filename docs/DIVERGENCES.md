@@ -276,3 +276,49 @@ recognised as this decision rather than investigated as a regression.
 Register a size-limit middleware scoped to `/ai/voice/transcribe` **before**
 `UseAuthorization()` in `UseKernel()`, returning the same 500 the malformed-body path
 produces. Do not make it global.
+
+## AI guards: what Node has that the Langflow path does not
+
+Two guards live in Node's AI module. Neither was ported during the port, because
+AI was deferred; their absence was an accident rather than a decision. Recording
+the decision now.
+
+### `timeNormalize.ts` — NOT ported, and there is a measured risk
+
+Node's tool runner normalises the model's dates before writing, on the principle
+its own header states: *"the server is the source of truth, not the prompt."* A
+naive datetime is treated as WALL-CLOCK IN THE USER'S ZONE and converted.
+
+Our agent does not go through a server-side tool runner — its tools call the
+public `POST /me/tasks` like any client. Measured on that route:
+
+| `dueAt` sent | .NET stores | as Cairo local |
+|---|---|---|
+| `2026-09-20T09:00:00` (naive) | `09:00:00Z` | **12:00** |
+| `2026-09-20T09:00:00+03:00`   | `06:00:00Z` | 09:00 |
+| `2026-09-20` (bare date)      | 400 `invalid_body` | — |
+
+So a naive datetime is read as UTC and lands **wrong by the user's whole offset**.
+Node's AI path would have stored 09:00 local; ours stores 12:00.
+
+**Not fixed on `/me/tasks`, deliberately** — that is a parity-frozen public route
+and changing how it reads a naive datetime would diverge from the reference for
+every client, not just the agent.
+
+**Why it is latent rather than live:** the flow's system prompt requires an
+explicit offset ("NEVER emit a naive datetime … rejected by the server"), and the
+agent was measured emitting correct offsets — "3pm" Cairo → `12:00Z`, "11am" →
+`08:00Z`. The risk is that a prompt is not a guarantee. The right home for a fix
+is the AI path, not the shared route: either the flow's tool normalises against
+the caller's zone before POSTing, or the tool passes the zone and a dedicated
+agent-facing route normalises. Until then, treat a naive datetime as a bug in the
+flow's output, not in the route.
+
+### `hallucinationGuard.ts` — NOT ported, and not applicable
+
+It strips `[task:id]` / `[voice:id]` citations the model was never shown, replacing
+them with `(unverified)`. It guards Node's `contextBuilder` grounding, where the
+model is handed source ids it can cite. Our flow retrieves its own context and
+reports no source list — the `sources` frame is always empty — so there are no
+citations to guard. If grounding ever hands the agent citable ids, this must be
+ported with it.
