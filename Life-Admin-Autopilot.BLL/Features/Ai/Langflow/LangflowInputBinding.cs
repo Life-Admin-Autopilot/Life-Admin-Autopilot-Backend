@@ -1,6 +1,5 @@
-using System.Globalization;
 using System.Text.Json.Serialization;
-using Life_Admin_Autopilot.BLL.Kernel.Integrations;
+using Life_Admin_Autopilot.BLL.Features.Ai.Grounding;
 using Microsoft.Extensions.Configuration;
 
 namespace Life_Admin_Autopilot.BLL.Features.Ai.Langflow;
@@ -18,6 +17,17 @@ namespace Life_Admin_Autopilot.BLL.Features.Ai.Langflow;
 /// agent an EMPTY prompt every single time — a failure with no error frame anywhere.
 /// That was measured against a live Langflow 1.11.2 in the n-flowfix worktree; it
 /// could not be reproduced from here, where nothing was listening on :7860.</para>
+///
+/// <para>
+/// <b>What a bound turn actually carries.</b> Not just the prompt: the flow is handed
+/// the same grounding Node assembles for EVERY AI turn in
+/// <c>modules/ai/contextBuilder.ts</c> — <c>currentDate</c> (offset-bearing now),
+/// <c>dateReference</c> (the 14-day weekday table plus literal phrase anchors) and
+/// <c>myTasks</c> (the user's existing open matters, capped). Sending only the
+/// transcript left the model doing relative-date arithmetic unaided and blind to what
+/// the user already had, so it guessed weekdays and created duplicates. See
+/// <see cref="DateGrounding"/> and <see cref="TaskGrounding"/>.
+/// </para>
 ///
 /// <para>
 /// <b>Everything below is configuration, and the whole mechanism is off by
@@ -40,6 +50,8 @@ namespace Life_Admin_Autopilot.BLL.Features.Ai.Langflow;
 ///   <item><term><c>Ai:Langflow:Fields:AccessToken</c></term><description><c>accessToken</c></description></item>
 ///   <item><term><c>Ai:Langflow:Fields:CurrentDate</c></term><description><c>currentDate</c></description></item>
 ///   <item><term><c>Ai:Langflow:Fields:Mode</c></term><description><c>mode</c></description></item>
+///   <item><term><c>Ai:Langflow:Fields:DateReference</c></term><description><c>dateReference</c></description></item>
+///   <item><term><c>Ai:Langflow:Fields:MyTasks</c></term><description><c>myTasks</c></description></item>
 ///   <item>
 ///     <term><c>Ai:Langflow:Tweaks:&lt;node&gt;:&lt;field&gt;</c></term>
 ///     <description>Any additional STATIC tweak, verbatim. The escape hatch for a
@@ -84,6 +96,8 @@ public sealed class LangflowInputBinding
     public const string DefaultAccessTokenField = "accessToken";
     public const string DefaultCurrentDateField = "currentDate";
     public const string DefaultModeField = "mode";
+    public const string DefaultDateReferenceField = "dateReference";
+    public const string DefaultMyTasksField = "myTasks";
 
     /// <summary>
     /// The only mode this adapter produces. <c>/ai/ask</c> IS the chat surface; the
@@ -103,6 +117,18 @@ public sealed class LangflowInputBinding
 
     public string ModeField { get; init; } = DefaultModeField;
 
+    /// <summary>
+    /// The 14-day weekday→date table and the phrase anchors. See
+    /// <see cref="DateGrounding"/> for why the model is handed a lookup table instead
+    /// of being trusted with weekday arithmetic.
+    /// </summary>
+    public string DateReferenceField { get; init; } = DefaultDateReferenceField;
+
+    /// <summary>
+    /// The user's existing open matters, capped. See <see cref="TaskGrounding"/>.
+    /// </summary>
+    public string MyTasksField { get; init; } = DefaultMyTasksField;
+
     /// <summary>Static, per-node, from configuration. Applied before the dynamic values.</summary>
     public IReadOnlyDictionary<string, IReadOnlyDictionary<string, string>> StaticTweaks { get; init; } =
         new Dictionary<string, IReadOnlyDictionary<string, string>>(StringComparer.Ordinal);
@@ -120,6 +146,10 @@ public sealed class LangflowInputBinding
                            ?? DefaultCurrentDateField,
         ModeField = Read(configuration, "LANGFLOW_FIELD_MODE", "Ai:Langflow:Fields:Mode")
                     ?? DefaultModeField,
+        DateReferenceField = Read(configuration, "LANGFLOW_FIELD_DATE_REFERENCE", "Ai:Langflow:Fields:DateReference")
+                             ?? DefaultDateReferenceField,
+        MyTasksField = Read(configuration, "LANGFLOW_FIELD_MY_TASKS", "Ai:Langflow:Fields:MyTasks")
+                       ?? DefaultMyTasksField,
         StaticTweaks = ReadStaticTweaks(configuration),
     };
 
@@ -133,6 +163,16 @@ public sealed class LangflowInputBinding
     /// and only to the configured Langflow host — it is never logged and never put in
     /// a query string.
     /// </para>
+    ///
+    /// <para>
+    /// <paramref name="myTasks"/> is the rendered <c>MY TASKS</c> block. It arrives as
+    /// a parameter rather than being built here because it needs a database read, and
+    /// this type is deliberately pure. The date grounding beside it is NOT a parameter
+    /// for the mirror-image reason: it is a total function of
+    /// <paramref name="now"/> and <paramref name="timezone"/>, both of which are
+    /// already here, so making the caller pass it would only create a second place to
+    /// forget it.
+    /// </para>
     /// </summary>
     public LangflowRunRequest BuildRequest(
         string prompt,
@@ -140,7 +180,8 @@ public sealed class LangflowInputBinding
         string? accessToken,
         DateTimeOffset now,
         string? timezone = null,
-        string mode = ChatMode)
+        string mode = ChatMode,
+        string? myTasks = null)
     {
         var request = new LangflowRunRequest
         {
@@ -170,7 +211,13 @@ public sealed class LangflowInputBinding
         {
             var target = Target(tweaks, InputNode!);
             target[TranscriptField] = prompt;
-            target[CurrentDateField] = CurrentDate(now, timezone);
+            target[CurrentDateField] = DateGrounding.FormatNow(now, timezone);
+            target[DateReferenceField] = DateGrounding.BuildDateReference(now, timezone);
+
+            // Always sent, never omitted. "(no open tasks)" is a fact the agent needs
+            // to state; skipping the tweak instead falls back to the node's stored
+            // empty string, which reads as a missing block rather than an empty one.
+            target[MyTasksField] = myTasks ?? TaskGrounding.NoTasks;
 
             if (!string.IsNullOrEmpty(accessToken))
             {
@@ -186,38 +233,6 @@ public sealed class LangflowInputBinding
         }
 
         return request with { Tweaks = tweaks };
-    }
-
-    /// <summary>
-    /// <c>currentDate</c>, as ISO-8601 <b>carrying the user's UTC offset</b> —
-    /// <c>2026-08-10T14:23:00+03:00</c>.
-    ///
-    /// <para>
-    /// <b>The offset is the whole point, and omitting it fails silently.</b> A bare
-    /// <c>yyyy-MM-dd</c> is the v3 format the flow was redesigned to stop accepting
-    /// (PLANNING-AGENT.md §6): the agent does not reject it, it just invents
-    /// <c>+00:00</c>. Measured on the live stack with <c>Africa/Cairo</c> (+03:00),
-    /// that put every <c>dueAt</c> three hours early — a reminder for 12:00 local
-    /// fired at 09:00 — with nothing anywhere reporting an error.
-    /// </para>
-    ///
-    /// <para>
-    /// An absent or unrecognised zone falls back to the instant as given rather than
-    /// throwing. <c>timezone</c> is optional on the request and a turn is worth more
-    /// than a perfect offset; validity uses the kernel's own predicate so this agrees
-    /// with every other surface about which ids Node accepts.
-    /// </para>
-    /// </summary>
-    private static string CurrentDate(DateTimeOffset now, string? timezone)
-    {
-        var local = now;
-
-        if (ImportedTimeResolver.IsValidTimeZone(timezone))
-        {
-            local = TimeZoneInfo.ConvertTime(now, TimeZoneInfo.FindSystemTimeZoneById(timezone!));
-        }
-
-        return local.ToString("yyyy-MM-dd'T'HH:mm:sszzz", CultureInfo.InvariantCulture);
     }
 
     private static Dictionary<string, object?> Target(

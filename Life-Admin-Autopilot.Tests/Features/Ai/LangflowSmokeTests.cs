@@ -74,7 +74,8 @@ public sealed class LangflowSmokeTests
             new SmokeHttpClientFactory(),
             options,
             SmokeBinding(),
-            new AiConversationRepository(database));
+            new AiConversationRepository(database),
+            new AiGroundingRepository(database));
 
         var events = new List<AiStreamEvent>();
         var request = new AiAskRequest(

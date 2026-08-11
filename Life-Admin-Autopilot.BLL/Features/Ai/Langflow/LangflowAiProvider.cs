@@ -2,6 +2,7 @@ using System.Net.Http.Headers;
 using System.Runtime.CompilerServices;
 using System.Text;
 using System.Text.Json;
+using Life_Admin_Autopilot.BLL.Features.Ai.Grounding;
 using Life_Admin_Autopilot.DAL.Features.Ai;
 using Life_Admin_Autopilot.DAL.Kernel.Errors;
 using MongoDB.Bson;
@@ -50,6 +51,7 @@ public sealed class LangflowAiProvider : IAiProvider
     private readonly LangflowOptions _options;
     private readonly LangflowInputBinding _binding;
     private readonly AiConversationRepository _conversations;
+    private readonly AiGroundingRepository _grounding;
     private readonly TimeProvider _time;
 
     public LangflowAiProvider(
@@ -57,12 +59,14 @@ public sealed class LangflowAiProvider : IAiProvider
         LangflowOptions options,
         LangflowInputBinding binding,
         AiConversationRepository conversations,
+        AiGroundingRepository grounding,
         TimeProvider? time = null)
     {
         _clients = clients;
         _options = options;
         _binding = binding;
         _conversations = conversations;
+        _grounding = grounding;
         _time = time ?? TimeProvider.System;
     }
 
@@ -228,7 +232,17 @@ public sealed class LangflowAiProvider : IAiProvider
         using var client = _clients.CreateClient(LangflowOptions.HttpClientName);
         client.Timeout = _options.Timeout;
 
-        using var request = BuildRequest(userId, prompt, accessToken, timezone, mode);
+        // Read the user's matters BEFORE the run, on every turn — Node's
+        // contextBuilder does the same and accepts the query cost even on small talk.
+        // The alternative it rejects is worth repeating: the agent holds the full tool
+        // surface at all times, so a turn that reaches deleteTask/updateTask with no
+        // grounded ids in front of it invents one.
+        var tasks = await _grounding
+            .ListForPromptAsync(userId, TaskGrounding.PromptStatuses, TaskGrounding.TaskCap, cancellationToken)
+            .ConfigureAwait(false);
+
+        using var request = BuildRequest(
+            userId, prompt, accessToken, timezone, mode, TaskGrounding.BuildTaskBlock(tasks));
 
         HttpResponseMessage response;
         try
@@ -281,7 +295,8 @@ public sealed class LangflowAiProvider : IAiProvider
         string prompt,
         string? accessToken,
         string? timezone,
-        string? mode)
+        string? mode,
+        string myTasks)
     {
         // WHERE the prompt goes is LangflowInputBinding's business, not this file's —
         // a flow with no ChatInput takes it as a tweak instead, and which is which is
@@ -304,7 +319,11 @@ public sealed class LangflowAiProvider : IAiProvider
             // Which entry path this turn came from. The flow branches on it, so a
             // dictated sentence is parsed as a transcript rather than answered as
             // chat. Absent ⇒ chat, which is every caller that predates this.
-            mode: string.IsNullOrWhiteSpace(mode) ? LangflowInputBinding.ChatMode : mode);
+            mode: string.IsNullOrWhiteSpace(mode) ? LangflowInputBinding.ChatMode : mode,
+
+            // The user's existing matters, with their real ids. Without this the
+            // agent cannot see what it already filed and re-creates it.
+            myTasks: myTasks);
 
         var request = new HttpRequestMessage(HttpMethod.Post, _options.RunUri)
         {

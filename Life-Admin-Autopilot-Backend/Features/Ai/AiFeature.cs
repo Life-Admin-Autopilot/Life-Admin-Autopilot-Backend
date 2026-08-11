@@ -40,6 +40,12 @@ public static class AiFeature
         {
             services.TryAddSingleton(LangflowInputBinding.FromConfiguration(configuration));
             services.AddHttpClient(LangflowOptions.HttpClientName);
+
+            // The read behind the agent's MY TASKS block. Registered here rather than
+            // unconditionally because nothing else consults it: with no Langflow
+            // configured the provider is NotConfiguredAiProvider and no prompt is
+            // ever assembled.
+            services.TryAddScoped<AiGroundingRepository>();
             services.TryAddScoped<IAiProvider, LangflowAiProvider>();
         }
         else

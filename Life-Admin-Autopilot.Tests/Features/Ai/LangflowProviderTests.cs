@@ -2,6 +2,7 @@ using System.Net;
 using System.Text;
 using System.Text.Json;
 using Life_Admin_Autopilot.BLL.Features.Ai;
+using Life_Admin_Autopilot.BLL.Features.Ai.Grounding;
 using Life_Admin_Autopilot.BLL.Features.Ai.Langflow;
 using Life_Admin_Autopilot.DAL.Features.Ai;
 using Life_Admin_Autopilot.DAL.Kernel.Errors;
@@ -105,9 +106,19 @@ public sealed class LangflowProviderTests
 
         // Offset-bearing, always — see sends_current_date_with_the_callers_utc_offset
         // for why a bare date is a silent three-hour error rather than a format nit.
+        // The trailing weekday is Node's formatNow() shape, not decoration.
         Assert.Matches(
-            @"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[+-]\d{2}:\d{2}$",
+            @"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[+-]\d{2}:\d{2} \([A-Z][a-z]+day\)$",
             tweaks.GetProperty("currentDate").GetString()!);
+
+        // The grounding blocks ride on the same node. Their CONTENT is asserted
+        // against Node's own output in AiDateGroundingTests / AiTaskGroundingTests;
+        // what matters here is that the binding actually sends them, because the
+        // failure mode when it does not is a perfectly healthy-looking empty turn.
+        Assert.StartsWith(
+            DateGrounding.ReferenceHeader,
+            tweaks.GetProperty("dateReference").GetString()!);
+        Assert.Equal(TaskGrounding.NoTasks, tweaks.GetProperty("myTasks").GetString());
     }
 
     [Theory]
@@ -134,8 +145,10 @@ public sealed class LangflowProviderTests
         // it fails silently: the agent invents +00:00 rather than erroring, so every
         // dueAt it derives lands out by the user's whole offset. Measured live with
         // Africa/Cairo: a 12:00 local reminder was stored as 09:00Z.
-        Assert.EndsWith(offset, currentDate);
-        Assert.Matches(@"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[+-]\d{2}:\d{2}$", currentDate);
+        Assert.Contains(offset + " (", currentDate);
+        Assert.Matches(
+            @"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[+-]\d{2}:\d{2} \([A-Z][a-z]+day\)$",
+            currentDate);
     }
 
     [Fact]
@@ -156,7 +169,7 @@ public sealed class LangflowProviderTests
             .RootElement.GetProperty("tweaks").GetProperty("PlanningInput-v4")
             .GetProperty("currentDate").GetString()!;
 
-        Assert.EndsWith("+00:00", currentDate);
+        Assert.Contains("+00:00 (", currentDate);
     }
 
     [Fact]
@@ -569,7 +582,8 @@ public sealed class LangflowProviderTests
             new SingleHandlerHttpClientFactory(handler),
             LangflowOptions.FromConfiguration(configuration),
             LangflowInputBinding.FromConfiguration(configuration),
-            conversations ?? new AiConversationRepository(Database!));
+            conversations ?? new AiConversationRepository(Database!),
+            new AiGroundingRepository(Database!));
     }
 
     private static IConfiguration Configuration(IDictionary<string, string?> values) =>

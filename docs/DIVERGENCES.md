@@ -503,3 +503,114 @@ Unset `Ai:Langflow:Fields:DateReference` / `:MyTasks`? No — the fields are alw
 when a node is bound. Reverting means removing the two `target[…]` assignments in
 `LangflowInputBinding.BuildRequest` and the two inputs from `PlanningInput-v4`. Doing so
 restores the guessing this entry exists to remove.
+
+---
+
+## 8. The conversation document carries a `sessionKey` Node does not write
+
+**Decided:** slice M (Langflow), session identity.
+**Status:** implemented, and verified live against Langflow 1.11.2.
+
+### What Node does
+
+`modules/ai/conversationService.ts` `resetConversation()` is one write:
+
+```ts
+await AiConversation.updateOne(keyFilter, { $set: { messages: [] } }, { upsert: true })
+```
+
+That is the whole of a reset, and for Node it is enough: Gemini is stateless
+between calls, so the conversation Node sends is the conversation Node stores.
+Emptying `messages` really does erase the model's entire memory of the user.
+
+### What .NET does
+
+The same write, plus `$set: { sessionKey: <a fresh ObjectId> }`. A new field, and
+the only field in `aiconversations` that has no counterpart in
+`server/src/models/AiConversation.ts`.
+
+It is **absent until the first reset**. The value the port actually uses is
+`sessionKey ?? _id` (`AiConversationDocument.SessionGeneration`), so a conversation
+that has never been reset stores nothing extra and is byte-identical to the row
+Mongoose writes.
+
+### Why
+
+Our agent is **not** stateless. Langflow keeps its own conversation memory, keyed on
+the `session_id` we send with every run — the Agent component replays up to
+`n_messages: 100` of it. The adapter sent `session_id = userId`, which is a
+permanent per-user session: it never changes, for the life of the account.
+
+So Node's reset semantics stop being sufficient. Emptying our `messages` cleared the
+history the user can see and left the history the agent answers from, and two
+user-visible failures followed:
+
+- **The reset button lied.** The UI empties, the agent remembers everything, and the
+  next answer is drawn from a conversation the user believes they deleted.
+- **Stale replay.** Re-asking a question inside the immortal session returned a
+  memorised envelope with **no tool call** — the agent replaying its previous answer
+  instead of acting. That is indistinguishable from the agent hallucinating a
+  completed action, and it cost a debugging session. It also meant anyone
+  re-verifying AI behaviour on an existing account was measuring a cache.
+
+A stored generation is what a reset can rotate. `session_id` is now
+`<userId>:<generation>`: the user half keeps one account's memory out of another's
+(Langflow has no notion of our tenancy — the key is the only separation), and the
+generation half changes on reset and at no other time.
+
+**Why the document id and not a timestamp or a counter.** The generation must be
+stable for the whole life of a conversation — a turn and the continuation that
+follows its confirmation have to share a session or the agent forgets its own plan
+halfway through — and it must never repeat across users. An id Mongo already mints
+satisfies both, and, because `SessionGeneration` falls back to `_id`, no insert path
+can forget to stamp one. The three upsert sites (`LoadAsync`, `AppendTurnAsync`,
+`ResetAsync`) would otherwise each have to remember, and one that forgot would
+produce a conversation with no session at all.
+
+**Why not delete the document on reset instead**, which would give a fresh `_id` for
+free: because `GET /me/export` dumps `aiconversations` raw, and a reset that removes
+the row makes an export taken afterwards differ from Node's by a whole missing
+document rather than by one extra key. Rotating a field also keeps `createdAt` and
+the unique key intact.
+
+### The second half: Langflow is asked to forget the retired session
+
+Rotation alone is sufficient for correctness — the old session is never addressed
+again. But the transcript is still sitting in Langflow's `message` table after a user
+pressed "clear", so the reset also issues
+`DELETE /api/v1/monitor/messages/session/<retired session>`.
+
+That is a deletion on another system, so it is **best-effort by construction**:
+it runs last, after the local write has committed; a failure is logged and the reset
+still answers 200; and it is not given the request's cancellation token, because
+abandoning it when the client hangs up would orphan the transcript permanently. The
+seam is `IAgentSessionMemory`, whose default registration is a no-op — a deployment
+with no external agent has nothing to forget and makes no outbound call.
+
+### What it costs
+
+Nothing on the parity target, which is the state that defines parity: with no
+`LANGFLOW_*` configured the provider is `NotConfiguredAiProvider`, the session memory
+is `NoAgentSessionMemory`, and `POST /ai/conversation/reset` makes exactly the writes
+it always made. Parity re-run at **84 PASS / 3 SKIPPED** with this change in.
+
+The one reachable difference is `GET /me/export` for a user who has reset a
+conversation: the exported `conversations[]` row carries a `sessionKey` the reference
+does not have. No harness row exercises it — the export scenario's fresh user never
+opens the AI surface — and no client reads the field.
+
+### What was verified, and how
+
+On a **fresh account** against live Langflow, because an existing account already
+carries the memory being tested:
+
+1. A task-creating question, asked twice, acted **both** times — a real `tool_call`
+   and `tool_result` each turn, not a replayed envelope.
+2. Ask → `POST /ai/conversation/reset` → "what did I just ask you to do?" The agent
+   did **not** know, and Langflow's session list showed the retired session gone and
+   a new one in its place.
+3. A confirm-gated turn followed by `POST /ai/tools/confirm/{callId}` continued in
+   the **same** session, so the continuation still had the plan's context.
+
+`AiSessionIdentityTests` pins all three properties, and the reset/continuity pair was
+confirmed to fail when the provider is reverted to `session_id = userId`.
