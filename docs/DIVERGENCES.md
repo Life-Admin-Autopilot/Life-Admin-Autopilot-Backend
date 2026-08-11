@@ -396,6 +396,20 @@ the caller's zone before POSTing, or the tool passes the zone and a dedicated
 agent-facing route normalises. Until then, treat a naive datetime as a bug in the
 flow's output, not in the route.
 
+**Update — the second option now exists on ONE path, server half only.**
+`POST /me/clarifications` (§6, commit `9931082`) accepts a `timezone` and runs
+`HoldTimeNormalizer`, a faithful port of `timeNormalize.ts`. So the route this
+paragraph asks for is built, for the hold lane. **The wiring is not**: the flow's
+`HoldForClarificationTool` has no IANA zone to send it, so a naive date still lands
+as UTC there exactly as described above, and `POST /me/tasks` is untouched. Recorded
+by the grounding slice on the clarifications slice's report, not independently
+measured here.
+
+The missing half is a mechanism, not a policy: the backend would have to tweak the
+user's zone into the TOOL nodes per run, the way `access_token` already reaches them.
+`LangflowInputBinding` tweaks only the input node today (§7), so that is where such a
+change would start.
+
 ### `hallucinationGuard.ts` — NOT ported, and not applicable
 
 It strips `[task:id]` / `[voice:id]` citations the model was never shown, replacing
