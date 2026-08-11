@@ -237,11 +237,32 @@ instance before the flow will run:
 
 | Global variable | Bound to | Purpose |
 |---|---|---|
-| `MISTRAL_API_KEY` | `MistralModel-v4.api_key` | model credential |
+| `GEMINI_API_KEY` | `GeminiModel-v4.api_key` | model credential |
 | `STEWARD_API_BASE_URL` | `base_url` on all 11 tool components | backend origin, e.g. `https://api.example.com` |
 
 Both are bound with `load_from_db: true`, which is Langflow's reference-a-global-variable
 mechanism: the field stores the *name*, never the value.
+
+### The model — `gemini-3-flash-preview` at temperature 0.1
+
+`GeminiModel-v4` is `ext:google:GoogleGenerativeAIComponent@official`, built from the live
+component template rather than hand-written, with `tool_model_enabled: true`.
+
+**It replaced `mistral-medium-latest`, and the reason is measured, not aesthetic.** Mistral
+at the same temperature, against this same 24,989-character prompt, failed §5's most
+explicit rule — *A DAY WITH NO HOUR: ASK WHO SET THE HOUR*, which names `"math lec
+tomorrow"` **literally** as an example. It invented 09:00 and filed the lecture with no
+clarification at all. The flow on disk and the flow registered in Langflow were verified
+byte-identical first, so this was the model ignoring a rule it had been handed, not drift.
+On the same sentence Gemini calls `holdForClarification` 4 runs out of 4, with 2–4 options
+each carrying a resolved `dueAt`.
+
+Do not read `tool_model_enabled` as the thing that makes tool calling work — the component
+only consults it in `update_build_config`, to filter the UI dropdown, and never in
+`build_model`. Worse, that filter is unreliable: `get_models` removes from the list it is
+iterating and probes `self.model_name` instead of each candidate, so opening the canvas
+narrows the dropdown to an arbitrary four models. The selected value survives, and tool
+calling is proved by the behavioural runs, not by that list.
 
 `base_url` is **not** agent-controllable (`tool_mode: false`). Letting the model choose a
 host would be an SSRF hole. An empty or non-`http(s)` base URL fails loudly with a

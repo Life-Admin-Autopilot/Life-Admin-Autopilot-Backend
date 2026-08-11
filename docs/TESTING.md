@@ -78,10 +78,18 @@ available — see `git log` for `LangflowEventTranslator` and `LangflowInputBind
 `sources → token* → done`, and the agent answers an empty envelope with **no error
 anywhere**. `stack.sh` sets it; if you boot the server yourself, set it too.
 
-The flow needs a **Mistral API key** as a Langflow global variable. The free tier
-rate-limits hard — a 429 arrives as an `error` frame inside a healthy 200, and on a
-post-confirm continuation the action has *already* succeeded, so a trailing error
-frame must not be read as "it didn't happen".
+The flow needs a **Google API key** as the Langflow global variable `GEMINI_API_KEY`.
+Rate limits still arrive as an `error` frame inside a healthy 200, and on a post-confirm
+continuation the action has *already* succeeded, so a trailing error frame must not be
+read as "it didn't happen".
+
+**The model is `gemini-3-flash-preview`, and it was chosen for instruction-following,
+not for cost.** `mistral-medium-latest` at temperature 0.1 failed the flow's most
+explicit rule — "A DAY WITH NO HOUR: ASK WHO SET THE HOUR", which names *"math lec
+tomorrow"* literally — by inventing 09:00 and filing the lecture with no uncertainty
+card. Same flow, same 24,989-character prompt, same temperature: Gemini calls
+`holdForClarification` on that sentence 4 times out of 4. The prompt was never the
+problem.
 
 Still not working, both non-blocking for the chat surface:
 
