@@ -49,12 +49,52 @@ public sealed class LangflowEventTranslator
 
     private string? _fallbackText;
 
+    /// <summary>
+    /// The <c>end</c> / <c>add_message</c> text before the reply was extracted from it.
+    /// A flow with streaming off sends the envelope ONLY here, so this is where the
+    /// structured half lives on that path.
+    /// </summary>
+    private string? _fallbackRaw;
+
     /// <summary>Everything the model actually said, for the persisted assistant turn.</summary>
     public string AssistantText =>
         _streamed.Length > 0 ? _streamed.ToString() : _fallbackText ?? string.Empty;
 
     /// <summary>Every tool call seen this turn, with its final status.</summary>
     public IReadOnlyList<TranslatedToolCall> ToolCalls => _toolCalls;
+
+    /// <summary>
+    /// What this turn CLAIMS it did — the envelope's <c>tasks</c>,
+    /// <c>clarifications</c> and <c>pendingConfirmations</c> rows, for
+    /// <see cref="FabricatedActionGuard"/> to check against
+    /// <see cref="ToolCalls"/>.
+    ///
+    /// <para>
+    /// Read from the streamed copy first and from the <c>end</c> frame's repeat
+    /// second, so a turn whose stream was cut mid-envelope is still judged on the
+    /// complete copy when Langflow sends one. Neither parsing means no verdict.
+    /// </para>
+    /// </summary>
+    public PlanningEnvelopeClaims Claims
+    {
+        get
+        {
+            var streamed = PlanningEnvelopeClaims.Read(_envelope.Envelope);
+            return streamed.Parsed ? streamed : PlanningEnvelopeClaims.Read(_fallbackRaw);
+        }
+    }
+
+    /// <summary>
+    /// Drop the buffered answer, because it asserted work that did not happen.
+    ///
+    /// <para>
+    /// Only the UNSTREAMED copy can be withheld — anything already emitted as a
+    /// <c>token</c> is on the user's screen, which is why the guard's remedy is an
+    /// <c>error</c> frame rather than silence. This stops <see cref="Complete"/>
+    /// printing the same claim a second time on the non-streaming path.
+    /// </para>
+    /// </summary>
+    public void WithholdAnswer() => _fallbackText = null;
 
     /// <summary>True once an <c>end</c> frame arrived. A stream that stops without one still completes.</summary>
     public bool Ended { get; private set; }
@@ -357,6 +397,7 @@ public sealed class LangflowEventTranslator
         // with streaming off sends ONLY this. Unwrap it the same way, or the
         // non-streaming path prints the raw JSON the streaming path just stopped
         // printing. Prose is returned unchanged, so a plain-text flow is unaffected.
+        _fallbackRaw = text;
         var spoken = PlanningEnvelopeReader.ExtractReply(text);
         _fallbackText = spoken.Length > 0 ? spoken : text;
     }

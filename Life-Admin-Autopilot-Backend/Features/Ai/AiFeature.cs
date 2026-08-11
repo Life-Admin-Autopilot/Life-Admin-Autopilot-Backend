@@ -47,10 +47,20 @@ public static class AiFeature
             // ever assembled.
             services.TryAddScoped<AiGroundingRepository>();
             services.TryAddScoped<IAiProvider, LangflowAiProvider>();
+
+            // Reset rotates the conversation's session generation, which is what
+            // makes the reset honest on its own. This is the courtesy on top: the
+            // retired session's transcript is dropped from Langflow's own store.
+            // Best-effort at the call site, so a wedged agent cannot fail a reset.
+            services.TryAddScoped<IAgentSessionMemory, LangflowSessionMemory>();
         }
         else
         {
             services.TryAddScoped<IAiProvider, NotConfiguredAiProvider>();
+
+            // No external agent, nothing to forget — and no outbound call on a route
+            // the parity reference answers without one.
+            services.TryAddScoped<IAgentSessionMemory, NoAgentSessionMemory>();
         }
 
         // This slice owns two collections, so it owns both erasures. The registry is

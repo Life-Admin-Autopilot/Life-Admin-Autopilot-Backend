@@ -180,6 +180,10 @@ public sealed class LangflowAiProvider : IAiProvider
                 cancellationToken: cancellationToken)
             .ConfigureAwait(false);
 
+        // Which conversation generation this turn belongs to, resolved BEFORE the
+        // turn touches anything — see SessionIdAsync.
+        var sessionId = await SessionIdAsync(userId, cancellationToken).ConfigureAwait(false);
+
         if (persistUserTurn)
         {
             await AppendAsync(userId, "user", prompt, null, cancellationToken).ConfigureAwait(false);
@@ -188,7 +192,8 @@ public sealed class LangflowAiProvider : IAiProvider
         var translator = new LangflowEventTranslator();
         yield return translator.Start();
 
-        await foreach (var frame in ReadFramesAsync(userId, prompt, accessToken, timezone, mode, cancellationToken)
+        await foreach (var frame in ReadFramesAsync(
+                               userId, sessionId, prompt, accessToken, timezone, mode, cancellationToken)
                            .ConfigureAwait(false))
         {
             foreach (var translated in translator.Accept(frame))
@@ -197,13 +202,40 @@ public sealed class LangflowAiProvider : IAiProvider
             }
         }
 
-        await AppendAsync(
-                userId,
-                "assistant",
-                translator.AssistantText,
-                translator.ToolCalls,
-                cancellationToken)
-            .ConfigureAwait(false);
+        // Did the answer claim work nothing did? See FabricatedActionGuard: a turn
+        // that says "Added it." and wrote nothing is the one failure here that no
+        // other surface will ever contradict.
+        var fabricated = FabricatedActionGuard.FirstUnaccounted(translator.Claims, translator.ToolCalls);
+
+        if (fabricated is null)
+        {
+            await AppendAsync(
+                    userId,
+                    "assistant",
+                    translator.AssistantText,
+                    translator.ToolCalls,
+                    cancellationToken)
+                .ConfigureAwait(false);
+        }
+        else
+        {
+            translator.WithholdAnswer();
+
+            // The prose is dropped; the tool calls are NOT. Whatever really ran is
+            // true and has to stay — dropping a pending_confirmation record here
+            // would 404 the confirm button on a card the user is looking at. A turn
+            // with no true part left is not persisted at all: an empty bubble in the
+            // history would be its own small lie about having answered.
+            if (translator.ToolCalls.Count > 0)
+            {
+                await AppendAsync(userId, "assistant", string.Empty, translator.ToolCalls, cancellationToken)
+                    .ConfigureAwait(false);
+            }
+
+            yield return AiStreamEvents.Error(
+                FabricatedActionGuard.ErrorCode,
+                FabricatedActionGuard.ErrorMessage);
+        }
 
         foreach (var tail in translator.Complete())
         {
@@ -221,8 +253,42 @@ public sealed class LangflowAiProvider : IAiProvider
     /// behaviour this adapter exists to avoid.
     /// </para>
     /// </summary>
+    /// <summary>
+    /// The <c>session_id</c> this turn runs under: the caller's id joined to the
+    /// conversation's current GENERATION.
+    ///
+    /// <para>
+    /// <b>Why not just the user id.</b> That is what this sent originally, and it is a
+    /// permanent per-user session: Langflow keeps its own memory against the key, so
+    /// <c>POST /ai/conversation/reset</c> — which only clears OUR messages — left the
+    /// agent still answering from everything before it. Two things followed, both
+    /// user-visible. The reset button lied. And re-asking a question inside that
+    /// immortal session came back as a memorised envelope with no tool call at all:
+    /// the agent replayed its previous answer instead of acting, which reads exactly
+    /// like it hallucinating a completed action.
+    /// </para>
+    ///
+    /// <para>
+    /// <b>Read once per turn, at the top.</b> The generation must not move underneath
+    /// a turn, and reading it before the user message is appended anchors the turn to
+    /// the conversation as it was when the user asked. A continuation after a
+    /// confirmation reads the same unchanged generation, which is what keeps a
+    /// multi-step plan in one session.
+    /// </para>
+    /// </summary>
+    private async Task<string> SessionIdAsync(ObjectId userId, CancellationToken cancellationToken)
+    {
+        var conversation = await _conversations
+            .LoadAsync(userId, AiConversationVocabulary.PersonalScope, null,
+                cancellationToken: cancellationToken)
+            .ConfigureAwait(false);
+
+        return AgentSessionId.For(userId, conversation.SessionGeneration);
+    }
+
     private async IAsyncEnumerable<LangflowFrame> ReadFramesAsync(
         ObjectId userId,
+        string sessionId,
         string prompt,
         string? accessToken,
         string? timezone,
@@ -242,7 +308,7 @@ public sealed class LangflowAiProvider : IAiProvider
             .ConfigureAwait(false);
 
         using var request = BuildRequest(
-            userId, prompt, accessToken, timezone, mode, TaskGrounding.BuildTaskBlock(tasks));
+            sessionId, prompt, accessToken, timezone, mode, TaskGrounding.BuildTaskBlock(tasks));
 
         HttpResponseMessage response;
         try
@@ -291,7 +357,7 @@ public sealed class LangflowAiProvider : IAiProvider
     }
 
     private HttpRequestMessage BuildRequest(
-        ObjectId userId,
+        string sessionId,
         string prompt,
         string? accessToken,
         string? timezone,
@@ -305,9 +371,11 @@ public sealed class LangflowAiProvider : IAiProvider
         var payload = _binding.BuildRequest(
             prompt,
 
-            // The user's own id, so Langflow's per-session memory never crosses
-            // accounts. The conversation of record is still ours, in Mongo.
-            sessionId: userId.ToString(),
+            // `<userId>:<conversation generation>`. The user half is what keeps
+            // Langflow's per-session memory from crossing accounts; the generation
+            // half is what a reset rotates, so the agent cannot answer out of a
+            // conversation the user has cleared. See SessionIdAsync.
+            sessionId,
             accessToken,
             _time.GetUtcNow(),
 

@@ -56,7 +56,12 @@ public sealed class LangflowProviderTests
         var body = JsonDocument.Parse(handler.LastRequestBody!).RootElement;
         Assert.Equal("What is due?", body.GetProperty("input_value").GetString());
         Assert.Equal("chat", body.GetProperty("input_type").GetString());
-        Assert.Equal(UserId.ToString(), body.GetProperty("session_id").GetString());
+
+        // `<userId>:<conversation generation>`, never the bare user id — that was a
+        // permanent per-user session and it made the reset button dishonest. The
+        // three properties the key has to hold are pinned in AiSessionIdentityTests;
+        // here we only care that the run carries one and that it names the caller.
+        Assert.StartsWith(UserId + ":", body.GetProperty("session_id").GetString());
     }
 
     [Fact]

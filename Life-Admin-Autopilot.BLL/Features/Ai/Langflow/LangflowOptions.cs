@@ -61,6 +61,23 @@ public sealed class LangflowOptions
     /// </summary>
     public Uri RunUri => new(new Uri(BaseUrl!.TrimEnd('/') + "/"), $"api/v1/run/{FlowId}?stream=true");
 
+    /// <summary>
+    /// <c>DELETE /api/v1/monitor/messages/session/{sessionId}</c> — the messages
+    /// Langflow itself stores for one session, which is the memory the Agent
+    /// component replays (its <c>n_messages</c> window reads exactly this table).
+    ///
+    /// <para>
+    /// Used only by the reset path. The session id is ours and contains nothing but
+    /// hex and a colon, but it goes through <see cref="Uri.EscapeDataString"/> anyway
+    /// — a path segment assembled from a value is a path segment worth escaping,
+    /// whatever today's value happens to look like.
+    /// </para>
+    /// </summary>
+    public Uri SessionMessagesUri(string sessionId) =>
+        new(
+            new Uri(BaseUrl!.TrimEnd('/') + "/"),
+            $"api/v1/monitor/messages/session/{Uri.EscapeDataString(sessionId)}");
+
     public static LangflowOptions FromConfiguration(IConfiguration configuration) => new()
     {
         BaseUrl = Read(configuration, "LANGFLOW_BASE_URL", "Ai:Langflow:BaseUrl"),

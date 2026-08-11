@@ -141,6 +141,38 @@ public sealed class AiConversationDocument
 
     public List<AiConversationMessageDocument> Messages { get; set; } = new();
 
+    /// <summary>
+    /// <b>The conversation GENERATION — not in the Mongoose schema, and the one field
+    /// here Node does not write.</b> See <c>docs/DIVERGENCES.md</c>.
+    ///
+    /// <para>
+    /// An external agent (Langflow) keeps its OWN conversation memory, keyed on the
+    /// <c>session_id</c> we send it. If that key is derived from the user alone it
+    /// never changes, so <c>POST /ai/conversation/reset</c> — which only empties the
+    /// messages below — clears the history the user can see and leaves the history
+    /// the agent answers from. The reset button then lies.
+    /// </para>
+    ///
+    /// <para>
+    /// So reset rotates this to a fresh id, and the session key we send is derived
+    /// from it (<see cref="SessionGeneration"/>). <b>Absent until the first reset</b>:
+    /// a conversation that has never been reset generates from its own <c>_id</c>,
+    /// which is why no insert path has to remember to stamp this and why the stored
+    /// document stays byte-identical to Node's until a reset actually happens.
+    /// </para>
+    /// </summary>
+    [BsonIgnoreIfNull]
+    public ObjectId? SessionKey { get; set; }
+
+    /// <summary>
+    /// What an external agent's per-session memory is keyed on: the rotating
+    /// <see cref="SessionKey"/> once a reset has minted one, and the document's own
+    /// id before that. Never null, always unique to one user's one conversation
+    /// generation. Computed, never stored.
+    /// </summary>
+    [BsonIgnore]
+    public ObjectId SessionGeneration => SessionKey ?? Id;
+
     public DateTime CreatedAt { get; set; }
 
     public DateTime UpdatedAt { get; set; }

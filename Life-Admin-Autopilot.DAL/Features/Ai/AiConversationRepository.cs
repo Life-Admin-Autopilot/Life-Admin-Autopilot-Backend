@@ -83,11 +83,25 @@ public sealed class AiConversationRepository
     }
 
     /// <summary>
-    /// <c>resetConversation</c> — <c>$set: { messages: [] }</c> with upsert. The
-    /// route answers with a literal empty envelope regardless, so this is purely the
-    /// write.
+    /// <c>resetConversation</c> — <c>$set: { messages: [] }</c> with upsert, PLUS a
+    /// fresh <see cref="AiConversationDocument.SessionKey"/>. The route answers with a
+    /// literal empty envelope regardless, so this is purely the write.
+    ///
+    /// <para>
+    /// <b>The rotation is the half that makes the reset honest.</b> Emptying
+    /// <c>messages</c> clears the history the user can see; an external agent keyed on
+    /// a session id derived from the user alone still answers from everything it was
+    /// told. A new generation here means the next turn addresses a session that agent
+    /// has never seen.
+    /// </para>
+    ///
+    /// <para>
+    /// Returns the generation that was just retired, or null when there was no
+    /// conversation to reset — the caller uses it to tell the agent to forget that
+    /// session's messages, which is a best-effort courtesy and never a precondition.
+    /// </para>
     /// </summary>
-    public Task ResetAsync(
+    public async Task<ObjectId?> ResetAsync(
         ObjectId userId,
         string scope,
         string? scopeId,
@@ -98,15 +112,28 @@ public sealed class AiConversationRepository
 
         var update = Builders<AiConversationDocument>.Update
             .Set(c => c.Messages, new List<AiConversationMessageDocument>())
+            .Set(c => c.SessionKey, ObjectId.GenerateNewId())
             .Set(c => c.UpdatedAt, now)
             .SetOnInsert(c => c.CreatedAt, now)
             .SetOnInsert(c => c.Version, 0);
 
-        return _conversations.UpdateOneAsync(
-            KeyFilter(userId, scope, scopeId),
-            update,
-            new UpdateOptions { IsUpsert = true },
-            cancellationToken);
+        // Before-image, so the retired generation is read and replaced in ONE
+        // round trip: a read-then-write would let a turn racing the reset be told
+        // to forget the session it is currently streaming into.
+        var previous = await _conversations
+            .FindOneAndUpdateAsync(
+                KeyFilter(userId, scope, scopeId),
+                update,
+                new FindOneAndUpdateOptions<AiConversationDocument>
+                {
+                    IsUpsert = true,
+                    ReturnDocument = ReturnDocument.Before,
+                },
+                cancellationToken)
+            .ConfigureAwait(false);
+
+        // Null on the upsert-insert path — there was nothing to retire.
+        return previous?.SessionGeneration;
     }
 
     /// <summary>

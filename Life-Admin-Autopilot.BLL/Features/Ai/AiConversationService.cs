@@ -1,5 +1,6 @@
 using Life_Admin_Autopilot.DAL.Features.Ai;
 using Life_Admin_Autopilot.DAL.Kernel.Errors;
+using Microsoft.Extensions.Logging;
 using MongoDB.Bson;
 
 namespace Life_Admin_Autopilot.BLL.Features.Ai;
@@ -29,10 +30,22 @@ public sealed class AiConversationService
     public const string ConfirmationAlreadyHandled = "This confirmation has already been handled.";
 
     private readonly AiConversationRepository _conversations;
+    private readonly IAgentSessionMemory _agentMemory;
+    private readonly ILogger<AiConversationService>? _log;
 
-    public AiConversationService(AiConversationRepository conversations)
+    /// <summary>
+    /// <paramref name="agentMemory"/> and <paramref name="log"/> are optional so every
+    /// existing construction site keeps compiling; absent means "no external agent to
+    /// tell, nowhere to log", which is exactly the parity target's state.
+    /// </summary>
+    public AiConversationService(
+        AiConversationRepository conversations,
+        IAgentSessionMemory? agentMemory = null,
+        ILogger<AiConversationService>? log = null)
     {
         _conversations = conversations;
+        _agentMemory = agentMemory ?? new NoAgentSessionMemory();
+        _log = log;
     }
 
     /// <summary>
@@ -53,16 +66,67 @@ public sealed class AiConversationService
     /// <summary>
     /// <c>POST /ai/conversation/reset</c>. Idempotent, and the response is the
     /// literal empty envelope rather than a re-read — Node never reloads here.
+    ///
+    /// <para>
+    /// <b>Two halves, and only the first is ours.</b> Emptying our messages is the
+    /// visible half; rotating the conversation's session generation is what stops an
+    /// external agent answering the next question out of the conversation the user
+    /// just deleted. The repository does both in one write. Telling that agent to
+    /// drop the retired session's transcript is a third, optional courtesy — a
+    /// deletion on someone else's system, which is why it comes last and cannot fail
+    /// the reset.
+    /// </para>
     /// </summary>
     public async Task<AiConversationResponse> ResetAsync(
         ObjectId userId,
         CancellationToken cancellationToken = default)
     {
-        await _conversations
+        var retired = await _conversations
             .ResetAsync(userId, AiConversationVocabulary.PersonalScope, null, cancellationToken: cancellationToken)
             .ConfigureAwait(false);
 
+        if (retired is { } generation)
+        {
+            await ForgetQuietlyAsync(AgentSessionId.For(userId, generation)).ConfigureAwait(false);
+        }
+
         return AiConversationResponse.Empty;
+    }
+
+    /// <summary>
+    /// Best-effort, and every word of that is deliberate.
+    ///
+    /// <para>
+    /// <b>Catches everything</b>, because the user's reset has already happened: the
+    /// messages are gone and the generation is rotated, so a failure here leaves a
+    /// stale transcript on the agent's disk and nothing else. Turning that into a 500
+    /// would tell the user their reset failed when it did not.
+    /// </para>
+    ///
+    /// <para>
+    /// <b>Not passed the request's cancellation token</b>, for the same reason: the
+    /// local write is committed, and abandoning the remote half because the client
+    /// hung up would orphan that transcript permanently. The implementation bounds
+    /// its own time — see <see cref="IAgentSessionMemory.ForgetAsync"/>.
+    /// </para>
+    ///
+    /// <para>Logged rather than swallowed, so an agent that has stopped accepting
+    /// deletions is visible instead of silently accumulating dead sessions.</para>
+    /// </summary>
+    private async Task ForgetQuietlyAsync(string sessionId)
+    {
+        try
+        {
+            await _agentMemory.ForgetAsync(sessionId).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            _log?.LogWarning(
+                ex,
+                "Conversation reset succeeded but the agent kept session {SessionId}: {Reason}",
+                sessionId,
+                ex.Message);
+        }
     }
 
     /// <summary>

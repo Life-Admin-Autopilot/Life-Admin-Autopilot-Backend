@@ -58,10 +58,30 @@ public sealed class PlanningEnvelopeReader
 
     private readonly StringBuilder _pending = new();
     private readonly StringBuilder _spoken = new();
+    private readonly StringBuilder _envelope = new();
     private State _state = State.Undecided;
 
     /// <summary>The reply as decoded so far — what belongs in the persisted turn.</summary>
     public string Spoken => _spoken.ToString();
+
+    /// <summary>
+    /// The envelope exactly as the model wrote it, reassembled from the chunks.
+    ///
+    /// <para>
+    /// <b>The reply streams; the structured half cannot.</b> <c>tasks</c> and
+    /// <c>clarifications</c> are what the turn claims it DID, and a claim is only
+    /// checkable once the array that carries it is closed — so those are kept whole
+    /// and read at the end (<see cref="PlanningEnvelopeClaims"/>), while the prose
+    /// continues to be emitted character by character. Nothing about the streaming
+    /// path changes; this is a copy, not a buffer in front of the user.
+    /// </para>
+    ///
+    /// <para>
+    /// Empty once the output has been recognised as plain prose — there is no envelope
+    /// to keep, and copying an arbitrarily long passthrough answer would be pure cost.
+    /// </para>
+    /// </summary>
+    public string Envelope => _envelope.ToString();
 
     /// <summary>True once the envelope was recognised, so callers can report honestly.</summary>
     public bool SawEnvelope => _state != State.Undecided && _state != State.Passthrough;
@@ -77,8 +97,23 @@ public sealed class PlanningEnvelopeReader
             return string.Empty;
         }
 
+        // Kept until the output proves to be prose, at which point the copy is
+        // dropped — see Envelope. Appended BEFORE Drain, because Drain is what
+        // decides which of the two this is.
+        if (_state != State.Passthrough)
+        {
+            _envelope.Append(chunk);
+        }
+
         _pending.Append(chunk);
-        return Drain();
+        var spoken = Drain();
+
+        if (_state == State.Passthrough)
+        {
+            _envelope.Clear();
+        }
+
+        return spoken;
     }
 
     /// <summary>

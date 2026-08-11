@@ -628,3 +628,94 @@ carries the memory being tested:
 
 `AiSessionIdentityTests` pins all three properties, and the reset/continuity pair was
 confirmed to fail when the provider is reverted to `session_id = userId`.
+
+---
+
+## 9. A turn that claims work it never did is corrected, not delivered
+
+**Decided:** slice M (Langflow), session identity — at the coordinator's request.
+**Status:** implemented, and verified live in both directions.
+
+### What Node does
+
+Nothing, because it cannot happen the same way. Node's tool loop runs the tools
+itself, so the model's function calls and their results are the same objects the
+route persists: there is no second, prose-level account of the turn that could
+disagree with them. Node's one adjacent guard, `hallucinationGuard.ts`, strips
+`[task:id]` citations the model was never shown — a different failure (citing a
+source) from this one (reporting an action).
+
+### What .NET does
+
+After the stream ends and before the assistant turn is persisted,
+`FabricatedActionGuard` compares the envelope's structured half against the tool
+calls that actually ran. If a claim is unaccounted for, the turn is corrected:
+
+- the prose is **not persisted** — an assistant turn is written only for the tool
+  calls that really happened, and not at all if there were none;
+- an `error` frame (`unverified_action`) is emitted **before** `done`;
+- the buffered non-streamed copy of the answer is withheld so it cannot be printed
+  after the correction.
+
+### Why
+
+Measured live on a fresh account: one turn replied *"Added it."* with zero
+`tool_call` frames and zero rows written. Separately, another wrote a complete
+clarification into the envelope under an invented `taskId`
+(`hold_math_lec_2026-08-12`) having called nothing.
+
+This is the only failure class in the product where **no surface will ever
+contradict the user**. A wrong due date shows up on the matter. A failed tool shows
+up as an error. A task the agent only said it created is simply absent, with nothing
+anywhere to explain why — and the user has been told, in prose, that it is filed.
+
+The flow's prompt already forbids it. That is not enough, and the reason is
+structural: the model that does this is the degraded one — rate-limited, truncated,
+or having a bad day — and a degraded model is precisely the one that will not police
+itself.
+
+### What is compared, and what deliberately is not
+
+**The structured half only.** The flow's contract calls `tasks` "a receipt of what
+you actually did", requires every id in it to be one "the tool returned", and forbids
+inventing one. That is checkable. So: every `tasks[].id` and `clarifications[].taskId`
+must appear somewhere in the output of a call that executed this turn, and a
+`pendingConfirmations` row requires a gated call to exist.
+
+**Never the prose.** "Added it." is a claim too, but detecting it means matching
+words, and the reply is written in the user's language. A word matcher fires on
+"Hi! How can I help?" in one locale and misses a filed task in another. An envelope
+that claims nothing structurally is an ordinary chat turn and passes untouched.
+
+**Ids the model passed INTO a tool do not count** — only what came back. Otherwise an
+invented id laundered through a tool call would validate itself.
+
+### Three ways it stays silent, on purpose
+
+A false accusation is worse than a missed one, so no verdict is reached when: the
+envelope did not parse (a prose flow, or a truncated answer, which already surfaces
+its own error); the envelope claims nothing; or a call ran whose outcome never
+arrived, leaving the ids it returned unknown and the claim undisprovable.
+
+### What it costs
+
+Nothing on the parity target: with no `LANGFLOW_*` configured this code is not
+reached at all. Within the Langflow path the cost is a rare correction after the
+tokens have already streamed — the guard is a correction, not a prevention, because
+the envelope is only complete once the answer is on screen. The user sees the reply
+and then an error telling them it did not happen, which is the honest ordering
+available.
+
+### What was verified, and how
+
+The negative control was made real rather than argued. A stand-in agent served the
+backend two turns carrying the **same** envelope and the same prose, differing only
+in whether a tool call backed the claim:
+
+| Agent | Frames | Persisted |
+| --- | --- | --- |
+| claim with no tool call | `sources → token → error(unverified_action) → done → quota` | the user turn only |
+| same claim, real `createTask` result | `sources → tool_call → tool_result → token → done → quota` | assistant turn, prose intact |
+
+`AiFabricatedActionTests` pins both directions plus the silent cases; seven of its
+eighteen tests were confirmed to fail with the guard disabled.
