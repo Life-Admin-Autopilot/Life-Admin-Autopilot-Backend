@@ -195,6 +195,16 @@ public sealed class LangflowSmokeStack : IAsyncLifetime
                 Array.Empty<AiStreamEvent>(), null, statusesAfterAsk, afterAsk.Count);
         }
 
+        // Diagnostic note for whoever sees this scenario go red intermittently: LOOK AT
+        // THE AGENT SESSION BEFORE YOU LOOK AT THE FLOW. Every scenario here signs up a
+        // fresh account, so no run can inherit another run's memory — but this is the
+        // one place a session is deliberately REUSED, because production reuses it too.
+        // The confirm re-enters the same session_id with a synthetic "the user confirmed
+        // X and it succeeded" prompt, so a degraded model can answer from its memory of
+        // the ask turn instead of from the outcome it was just handed. The row counts
+        // below are what catch that, and they are why this asserts on the store rather
+        // than on the continuation's prose. A reply textually identical to the previous
+        // assistant turn is the giveaway.
         var (confirmEvents, confirmFailure) = await ConfirmAsync(user, callId).ConfigureAwait(false);
 
         return new GatedDeleteTurn(
