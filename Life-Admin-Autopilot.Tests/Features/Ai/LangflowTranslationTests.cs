@@ -227,8 +227,8 @@ public sealed class LangflowTranslationTests
         var idB = Single(b.Accept(Frame("add_message", IdlessToolUse("msg-b", "deleteAllTasks"))))
             .Payload["callId"];
 
-        Assert.Equal("msg-a#0", idA);
-        Assert.Equal("msg-b#0", idB);
+        Assert.Equal("msg-a~0", idA);
+        Assert.Equal("msg-b~0", idB);
     }
 
     [Fact]
@@ -523,6 +523,40 @@ public sealed class LangflowTranslationTests
     }
 
     // ---- helpers ------------------------------------------------------------
+
+    [Fact]
+    public void a_call_id_survives_being_a_url_path_segment_unencoded()
+    {
+        // This id is interpolated into POST /ai/tools/confirm/{callId}. It used to
+        // join with '#', which a browser reads as the start of a fragment: the tail
+        // never left the client, the server looked up a truncated id, and EVERY
+        // confirmation answered "This confirmation has expired." Found in the real
+        // UI, not here — every test drove the route with curl and %23, which is
+        // exactly why the suite was blind to it.
+        var translator = new LangflowEventTranslator();
+
+        var frames = translator.Accept(Frame("add_message", """
+            {
+              "id": "7d24d2ad-096a-47aa-a60b-d64552f66e1c",
+              "content_blocks": [{
+                "contents": [
+                  {"type": "tool_use", "name": "deleteAllTasks", "tool_input": {}},
+                  {"type": "tool_use", "name": "queryTasks", "tool_input": {}}
+                ]
+              }]
+            }
+            """)).ToList();
+
+        foreach (var id in frames.Select(f => (string)f.Payload["callId"]!))
+        {
+            // Unreserved per RFC 3986 — safe in a path segment with no encoding.
+            Assert.Matches(@"^[A-Za-z0-9._~-]+$", id);
+
+            // The round trip a client actually performs.
+            Assert.Equal(id, Uri.UnescapeDataString(Uri.EscapeDataString(id)));
+            Assert.Equal(id, Uri.EscapeDataString(id));
+        }
+    }
 
     private static LangflowFrame Frame(string name, string dataJson) => new(name, Parse(dataJson));
 

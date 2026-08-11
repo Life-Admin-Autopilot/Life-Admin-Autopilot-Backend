@@ -471,7 +471,7 @@ public sealed class LangflowProviderTests
         await DrainAsync(Provider(handler, conversations: repository), userId);
 
         var call = await repository.FindToolCallAsync(
-            userId, AiConversationVocabulary.PersonalScope, "bb209266-1f6e-4a3f-9d21-6f0f9e2a1c77#0");
+            userId, AiConversationVocabulary.PersonalScope, "bb209266-1f6e-4a3f-9d21-6f0f9e2a1c77~0");
 
         Assert.NotNull(call);
         Assert.Equal(AiConversationVocabulary.PendingConfirmation, call!.Status);

@@ -302,8 +302,19 @@ public sealed class LangflowEventTranslator
     /// route depends on — a pending call id must never repeat.
     /// </para>
     /// </summary>
+    /// <summary>
+    /// The separator is <c>~</c>, and that is not cosmetic. A call id becomes a URL
+    /// PATH SEGMENT in <c>POST /ai/tools/confirm/{callId}</c>. This used to join with
+    /// <c>#</c>, which a browser reads as the start of a fragment: everything after
+    /// it never leaves the client, the server looked up a truncated id, and every
+    /// confirmation answered "This confirmation has expired." Measured in the real
+    /// UI — curl with <c>%23</c> passed throughout, which is exactly why the tests
+    /// missed it. <c>~</c> is unreserved in RFC 3986 and needs no encoding anywhere.
+    /// </summary>
+    private const char CallIdSeparator = '~';
+
     private string CallIdFor(string? messageId, int index) =>
-        $"{messageId ?? _turnId}#{index}";
+        $"{messageId ?? _turnId}{CallIdSeparator}{index}";
 
     private IEnumerable<AiStreamEvent> Announce(string callId, string langflowName, JsonElement? args)
     {
