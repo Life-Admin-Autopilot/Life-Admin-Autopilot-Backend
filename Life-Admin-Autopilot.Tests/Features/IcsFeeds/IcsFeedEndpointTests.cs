@@ -563,6 +563,10 @@ public sealed class IcsFeedEndpointTests : IClassFixture<IcsWebApplicationFactor
         {
             ["_id"] = id,
             ["email"] = $"{id}@example.test",
+
+            // `users` carries a UNIQUE index on identityUserId. Omitting it stores
+            // null, and the second seeded user in the database's lifetime collides.
+            ["identityUserId"] = new BsonBinaryData(Guid.NewGuid(), GuidRepresentation.Standard),
             ["timezone"] = "Africa/Cairo",
             ["imports"] = new BsonDocument { ["defaultTimeOfDay"] = "09:00" },
             ["createdAt"] = DateTime.UtcNow,

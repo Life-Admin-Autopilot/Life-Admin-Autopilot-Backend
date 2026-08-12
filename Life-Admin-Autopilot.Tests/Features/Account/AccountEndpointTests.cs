@@ -136,6 +136,10 @@ public sealed class AccountEndpointTests : IClassFixture<AccountWebApplicationFa
         {
             ["_id"] = userId,
             ["email"] = $"legacy-{userId}@example.test",
+
+            // Legacy in the subscription sense only. The UNIQUE index on
+            // identityUserId still applies, and a second null would collide.
+            ["identityUserId"] = new BsonBinaryData(Guid.NewGuid(), GuidRepresentation.Standard),
             ["createdAt"] = DateTime.UtcNow,
             ["updatedAt"] = DateTime.UtcNow,
         });
@@ -289,6 +293,10 @@ public sealed class AccountEndpointTests : IClassFixture<AccountWebApplicationFa
         {
             ["_id"] = id,
             ["email"] = $"{id}@example.test",
+
+            // `users` carries a UNIQUE index on identityUserId. Omitting it stores
+            // null, and the second seeded user in the database's lifetime collides.
+            ["identityUserId"] = new BsonBinaryData(Guid.NewGuid(), GuidRepresentation.Standard),
             ["subscription"] = SubscriptionBson(subscription),
             ["createdAt"] = DateTime.UtcNow,
             ["updatedAt"] = DateTime.UtcNow,

@@ -667,6 +667,10 @@ public sealed class GoogleIntegrationEndpointTests : IClassFixture<GoogleWebAppl
         {
             ["_id"] = userId,
             ["email"] = "google@probe.com",
+
+            // `users` carries a UNIQUE index on identityUserId. Omitting it stores
+            // null, and the second seeded user in the database's lifetime collides.
+            ["identityUserId"] = new BsonBinaryData(Guid.NewGuid(), GuidRepresentation.Standard),
             ["timezone"] = "Africa/Cairo",
             ["imports"] = new BsonDocument { ["defaultTimeOfDay"] = "09:00" },
         });

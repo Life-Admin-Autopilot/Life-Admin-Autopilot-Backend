@@ -323,6 +323,10 @@ public sealed class ReminderWorkerTests
         {
             ["_id"] = userId,
             ["email"] = $"{userId}@probe.test",
+
+            // `users` carries a UNIQUE index on identityUserId. Omitting it stores
+            // null, and the second seeded user in the database's lifetime collides.
+            ["identityUserId"] = new BsonBinaryData(Guid.NewGuid(), GuidRepresentation.Standard),
             ["createdAt"] = DateTime.UtcNow,
             ["updatedAt"] = DateTime.UtcNow,
         };
