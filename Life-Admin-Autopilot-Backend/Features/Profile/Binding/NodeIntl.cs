@@ -57,13 +57,23 @@ public static class NodeIntl
             return false;
         }
 
+        foreach (var prefix in NotPublishedByIcuPrefixes)
+        {
+            if (zone.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+        }
+
         try
         {
             return TimeZoneInfo.FindSystemTimeZoneById(zone).HasIanaId;
         }
         catch (TimeZoneNotFoundException)
         {
-            return false;
+            // Not a miss yet — on Linux the lookup is a case-SENSITIVE read of
+            // /usr/share/zoneinfo. See IanaIdsByLowerCase.
+            return IanaIdsByLowerCase.Contains(zone);
         }
         catch (InvalidTimeZoneException)
         {
@@ -72,19 +82,60 @@ public static class NodeIntl
     }
 
     /// <summary>
-    /// tzdata entries that .NET resolves from <c>/usr/share/zoneinfo</c> but ICU
-    /// does not publish as time zones, so <c>Intl.DateTimeFormat</c> throws on them.
+    /// tzdata entries that .NET resolves but ICU does not publish as time zones, so
+    /// <c>Intl.DateTimeFormat</c> throws on them and the reference rejects them.
     ///
     /// <para>
-    /// <c>Factory</c> is the whole list as measured: it is tzdata's deliberate
-    /// "no zone configured" placeholder, present as a file but absent from CLDR.
-    /// The other non-zone entries under <c>/usr/share/zoneinfo</c> —
-    /// <c>posix/UTC</c>, <c>right/UTC</c>, <c>localtime</c> — are already rejected
-    /// by <c>FindSystemTimeZoneById</c>, so they need no entry here.
+    /// <c>Factory</c> is tzdata's deliberate "no zone configured" placeholder,
+    /// present as a file but absent from CLDR. <c>localtime</c> is the host's own
+    /// symlink.
+    /// </para>
+    ///
+    /// <para>
+    /// <b>These must be listed, not left to <c>FindSystemTimeZoneById</c>.</b> The
+    /// earlier revision left out everything but <c>Factory</c>, on the measured
+    /// grounds that macOS rejects the rest anyway. That is a property of macOS, not
+    /// of the check: .NET on Linux reads <c>/usr/share/zoneinfo</c> directly, where
+    /// <c>localtime</c> and the <c>right/</c> leap-second tree are ordinary files
+    /// that resolve with <c>HasIanaId</c> true. CI on ubuntu-latest accepted
+    /// <c>localtime</c> and <c>right/UTC</c> where the reference rejects both.
     /// </para>
     /// </summary>
     private static readonly HashSet<string> NotPublishedByIcu =
-        new(StringComparer.OrdinalIgnoreCase) { "Factory" };
+        new(StringComparer.OrdinalIgnoreCase) { "Factory", "localtime", "Local" };
+
+    /// <summary>
+    /// The two non-zone subtrees shipped in <c>/usr/share/zoneinfo</c>:
+    /// <c>posix/</c> (identical copies) and <c>right/</c> (leap-second variants).
+    /// Neither is a CLDR zone, so the reference rejects every id under them.
+    /// </summary>
+    private static readonly string[] NotPublishedByIcuPrefixes = ["posix/", "right/"];
+
+    /// <summary>
+    /// Every IANA id the runtime knows, lower-cased, for the case-insensitive retry.
+    ///
+    /// <para>
+    /// ICU resolves a zone id case-insensitively, so the reference takes
+    /// <c>africa/cairo</c> and <c>aSiA/kOlKaTa</c> (both measured). .NET matches that
+    /// on macOS and Windows, where the lookup goes through ICU — but on Linux
+    /// <c>FindSystemTimeZoneById</c> is a case-sensitive file read and throws.
+    /// Scanning the published set restores the reference's behaviour on every OS.
+    /// </para>
+    ///
+    /// <para>
+    /// The scan is a fallback, not the primary path: ids that resolve exactly —
+    /// including the tzdata "backward" links such as <c>US/Eastern</c> and
+    /// <c>Zulu</c>, which <c>GetSystemTimeZones</c> does not enumerate — never reach
+    /// it. <c>Lazy</c> because the enumeration walks the whole tz database once.
+    /// </para>
+    /// </summary>
+    private static readonly Lazy<HashSet<string>> LazyIanaIds = new(() =>
+        TimeZoneInfo.GetSystemTimeZones()
+            .Where(zone => zone.HasIanaId)
+            .Select(zone => zone.Id)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase));
+
+    private static HashSet<string> IanaIdsByLowerCase => LazyIanaIds.Value;
 
     /// <summary>
     /// ECMA-402's <c>UTCOffset</c> forms, hours 00-23 and minutes 00-59:
