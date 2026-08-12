@@ -10,6 +10,23 @@ jobs:
   build:
     runs-on: ubuntu-latest
 
+    # The endpoint suites drive a real Mongo — KernelWebApplicationFactory points
+    # every one of them at 127.0.0.1:27018. Without a server there the driver spends
+    # its 30s selection timeout and each DB-backed route answers 500, so the whole
+    # suite fails on infrastructure rather than on anything it means to assert.
+    # Standalone is enough: nothing in the DAL opens a session or a transaction.
+    services:
+      mongo:
+        image: mongo:7
+        ports:
+          - 27018:27017
+        options: >-
+          --health-cmd "mongosh --quiet --eval 'db.adminCommand({ ping: 1 })'"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+          --health-start-period 20s
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
