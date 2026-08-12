@@ -20,7 +20,15 @@ State as of the last working session. Read this first; it is the handoff.
 | Frozen API contract (87 ops) | `docs/contract/*.yaml` |
 | Parity harness | `tools/parity/` |
 
-**Nothing is pushed.** All branches are local only.
+**Pushed as of 2026-08-12.** `main` and `feat/node-parity` are both at `10ba4f3` on
+`Life-Admin-Autopilot/Life-Admin-Autopilot-Backend`, and CI is green there. The 154
+commits of port work reached `main` by fast-forward; the frontend's matching tip
+`b92a602` is on `Life-Admin-Autopilot/Life-Admin-Autopilot-Mobile`.
+
+`slice/l-voice` and `slice/m-langflow` are the only unmerged slices and are **stale,
+not pending** — they sit ~17k lines *behind* the integration branch, and their content
+(the opt-in Langflow smoke tests, the confirmation-gate fix) re-landed via
+`n-flowfix` / `o-security` / `p-consolidate`. Confirm and delete rather than merge.
 
 ## Restarting the environment
 
@@ -52,19 +60,42 @@ The auth limiter is 20/15min and the strict one 5/hour, **keyed on raw socket IP
 - **Contract frozen** — 75 paths / 87 operations / 212 schemas, authored against a live server, zero collisions, all `$ref`s resolve.
 - **Kernel** — error envelope, CORS, binding, auth, DTO mappers, repository base, one quota primitive, `TaskQuery`, `BulkService`, rate limiters, the `IEndpointModule` / `IUserDataEraser` / `IMongoIndexProvider` registries, the SQL provider seam, and the 405→404 method-mismatch fix.
 - **Parity harness** — 87/87 operations covered, self-test green, plus a negative control that plants five defects and confirms all five are caught.
-- **Slices A (account), B (auth), C (tasks core)** — all merged into `feat/node-parity`.
+- **Slices A–P** — every slice merged into `feat/node-parity` except the two stale
+  branches noted above.
 
-### Current measured state
+### Current measured state — 2026-08-12, tip `10ba4f3`
 
-`dotnet build` clean, **`dotnet test` 309 passing** (288 + 21 on `slice/kernel-hardening`).
+`dotnet build` clean, **`dotnet test` 1412 passing**, and green on CI (ubuntu-latest,
+`mongo:7` service container).
 
-Full harness run, integration branch vs the live Node reference:
+Full harness run against the live Node reference:
 
 ```
-87 contract operations  |  PASS 44   FAIL 32   ERROR 8   SKIPPED 3
+87 contract operations  |  PASS 84   FAIL 0   ERROR 0   SKIPPED 3
 ```
 
-**Every FAIL and ERROR traces to an unimplemented slice, not a regression.** Verified: the two framework rows that look like kernel failures (`malformed-json-is-500-not-400`, `oversized-json-body-is-500-not-413`) fail only because `PATCH /me` does not exist yet — on a route that *does* exist, both servers return 500 as required. The 8 ERRORs are cascades where an upload step could not run, so `{{scanId}}` / `{{noteId}}` were never captured.
+**Read that number with the protocol below, or it looks like 77/7.** The single
+`--reference :4200` run reports `PASS 77 FAIL 7`, and all seven are measurement
+artifacts, not defects:
+
+- **Six worker rows** — document-scans ×3, voice-notes ×3. `:4200` is `NODE_ENV=test`,
+  where all five workers early-return, so the reference sits at `status: "pending"`
+  forever while the candidate processes the job and reports `"failed"` with
+  `ai_not_configured`. Re-measured on `:4100` (workers ON) all six PASS. This is the
+  case the port-selection rule above exists for.
+- **`taskBulkPreview`** — the `$.sample[]` order differs. Neither server sorts:
+  Node is `Task.find(filter).limit(MAX+1)` and .NET is `Find(filter).Limit(Max+1)`, a
+  faithful translation. The array is MongoDB **natural order** on both sides, against
+  two different databases, so the row compares an unordered result as if it were
+  ordered. It fails on `:4200` and passes on `:4100` for that reason alone.
+  **Latent flake in the harness, not a port defect** — the row wants an
+  order-insensitive comparison.
+
+The 3 SKIPPED are `authForgotPassword`, `authResetPassword`, `authMagicLinkRequest`.
+
+Measure with **Langflow unconfigured on the candidate**. With it wired in, three rows
+fail for a non-defect (81 vs 84 on the same commit): `/ai/voice/transcribe` answers
+`empty_body` where the reference answers `ai_not_configured`.
 
 Reproduce with:
 
