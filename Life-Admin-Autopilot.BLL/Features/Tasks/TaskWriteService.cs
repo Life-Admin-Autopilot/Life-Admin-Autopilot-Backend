@@ -47,11 +47,35 @@ public sealed record TaskCreateInput(
 public sealed class TaskWriteService
 {
     private readonly TaskRepository _tasks;
+    private readonly Knowledge.KnowledgeService? _knowledge;
 
-    public TaskWriteService(TaskRepository tasks)
+    /// <summary>
+    /// <paramref name="knowledge"/> is optional so this slice still stands up when
+    /// the Knowledge slice is not registered — and so the existing tests that
+    /// construct this service by hand keep compiling. When it IS present, every
+    /// create and patch re-indexes the task for RAG ("every task is embedded, not
+    /// just documents" — the ai_flow diagram). Ingest swallows its own failures, so
+    /// this can never turn a task write into an error.
+    /// </summary>
+    public TaskWriteService(TaskRepository tasks, Knowledge.KnowledgeService? knowledge = null)
     {
         _tasks = tasks;
+        _knowledge = knowledge;
     }
+
+    /// <summary>Title plus notes — what a user would search for.</summary>
+    private static string IndexableText(TaskDocument task) =>
+        string.IsNullOrWhiteSpace(task.Notes) ? task.Title : $"{task.Title}\n\n{task.Notes}";
+
+    private Task IndexAsync(TaskDocument task, CancellationToken cancellationToken) =>
+        _knowledge is null
+            ? Task.CompletedTask
+            : _knowledge.IngestAsync(
+                task.UserId,
+                DAL.Features.Knowledge.ContentChunkVocabulary.TaskSource,
+                task.Id,
+                IndexableText(task),
+                cancellationToken);
 
     // ---- Create -----------------------------------------------------------
 
@@ -91,6 +115,7 @@ public sealed class TaskWriteService
         EnforceReminderHasDue(task);
 
         await _tasks.InsertAsync(task, cancellationToken).ConfigureAwait(false);
+        await IndexAsync(task, cancellationToken).ConfigureAwait(false);
         return task;
     }
 
@@ -146,8 +171,34 @@ public sealed class TaskWriteService
             ops["$inc"] = new BsonDocument("rescheduleCount", 1);
         }
 
-        return await _tasks.UpdateLiveAsync(userId, id, ops, cancellationToken).ConfigureAwait(false);
+        var updated = await _tasks.UpdateLiveAsync(userId, id, ops, cancellationToken).ConfigureAwait(false);
+
+        // Re-index on the way out, not just on create.
+        //
+        // The indexed text is title + notes, so an edit to either leaves the OLD
+        // wording in contentChunks — and a stale chunk is worse than a missing one:
+        // retrieval answers with the title the user just replaced, and duplicate
+        // detection compares new matters against text that no longer exists
+        // anywhere. Only re-embed when the indexed fields actually moved, since
+        // every call costs an embedding request.
+        if (updated is not null && TouchesIndexedText(patch))
+        {
+            await IndexAsync(updated, cancellationToken).ConfigureAwait(false);
+        }
+
+        return updated;
     }
+
+    /// <summary>
+    /// Does this patch change what <see cref="IndexableText"/> reads?
+    ///
+    /// <para>
+    /// Status, priority, tags and dates are not embedded, so a snooze or a
+    /// completion must not spend an embedding call re-encoding identical text.
+    /// </para>
+    /// </summary>
+    private static bool TouchesIndexedText(BsonDocument patch) =>
+        patch.Contains("title") || patch.Contains("notes");
 
     // ---- Subtasks ---------------------------------------------------------
 
