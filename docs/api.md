@@ -165,21 +165,55 @@ takes the user id from the token, never from the caller.
 
 ---
 
+## Propose / commit — nothing is saved without a decision
+
+| Endpoint | Purpose | Story |
+| --- | --- | --- |
+| `POST /api/planning/propose` | Voice or typed text becomes one or more draft tasks, conflict-checked. **Reads only.** | #30 |
+| `POST /api/planning/commit` | Saves ONE confirmed draft | #35 |
+| `POST /me/tasks/draft` | What the chat agent's `createTask` calls — shaped like `POST /me/tasks`, writes nothing | #30 |
+| `GET /me/briefing/today` | The daily briefing | #49 |
+| `POST /me/knowledge/search` | RAG retrieval over the caller's own corpus | #83 |
+| `GET /me/tasks/{id}/conflicts` | Is this task, as saved, in conflict? | #49 |
+| `POST /me/tasks/{id}/conflicts` | **Would this change clash?** Body `{dueAt?, title?}` — a sparse patch that is not applied | #49 |
+
+Two rules hold across all of them.
+
+**A clash is refused, not reported.** `POST /api/planning/commit` answers **409
+`conflict_detected`** when the new matter lands within two hours of an existing one,
+with the clashing matters in `details.conflicts`. The caller re-sends with
+`"confirmConflicts": true` once the user has *seen* them. The flag is a claim about
+what was shown, so it belongs to whoever did the showing and defaults to false — a
+client that has never heard of conflicts gets the safe behaviour.
+
+The chat agent's `updateTask` tool enforces the same rule from the other side: before
+a PATCH that moves a `dueAt` it calls `POST /me/tasks/{id}/conflicts`, and on a clash
+returns `awaiting_confirmation` **without writing**, so the agent has to ask.
+
+**A time nobody chose is marked as such.** A draft carries `timeAssumed: true` when
+the user named a day but no hour. The extractor still fills `dueDate` — a task stores
+one instant — but the flag says the 09:00 in it is ours, not theirs, and the app asks
+before saving.
+
+**A captured matter must have a date.** `commit` answers **400 `date_required`** when
+`dueDate` is absent. An undated capture never fires, never reaches a briefing, and is
+discovered months later — so the flows ask instead of filing something inert. Scoped
+to this endpoint only: `POST /me/tasks` still accepts an undated task, because a user
+deliberately building a list item has chosen that, and inferring it from a half-heard
+sentence is not the same act.
+
+Together these decide when the app stops to ask. A draft with a date the user actually
+gave, confidence ≥ 0.6 and no clash is **filed immediately** — making someone confirm
+"you said Thursday at 6, Kitto heard Thursday at 6" teaches them to confirm without
+reading, which is the habit that lets a wrong draft through later. The confirmation
+step is spent only on drafts that hold a real question.
+
 ## Not built yet
 
 Planned in SRS §7.1 but absent from the codebase today:
 
 | Endpoint | Purpose | Story |
 | --- | --- | --- |
-| `POST /api/planning/propose` | The unified entry point — voice, typed text or a document becomes one or more draft tasks, conflict-checked, nothing saved | #30 |
-| `POST /api/planning/commit` | Saves a confirmed proposal: task + document + reminder together | #35 |
-| `GET/POST/PATCH/DELETE /api/tasks` | Real task CRUD, scoped to the caller | #31 |
-| `GET /api/users/me`, `PATCH /api/users/me` | Profile and preferences (locale, theme) | — |
+| `GET/POST/PATCH/DELETE /api/tasks` | The SRS's task CRUD naming; the shipped equivalent is `/me/tasks` | #31 |
 | `POST /api/users/me/avatar` | Profile picture upload | #18 |
 | `GET/PATCH /api/reminders` | Reminder listing and rescheduling | #55 |
-| `GET /api/briefing/today` | The daily briefing | #49 |
-| Copilot Chat endpoint | RAG question-answering over tasks and documents | #83 |
-
-**The most consequential gap:** `/api/planning/propose` doesn't exist, so `/api/speech/transcribe`
-currently has no consumer. Transcription works, but nothing yet turns a transcript into a
-task. Voice → task is not demonstrable end-to-end until #30 lands.

@@ -38,7 +38,24 @@ public static class AiFeature
 
         if (langflow.IsConfigured)
         {
-            services.TryAddSingleton(LangflowInputBinding.FromConfiguration(configuration));
+            var binding = LangflowInputBinding.FromConfiguration(configuration);
+
+            // Say so at boot when the flow has an agent but no way to reach it.
+            //
+            // An unbound input node is the quietest misconfiguration in the system:
+            // the run is accepted, Langflow streams a healthy sources → token → done,
+            // and the agent — handed an empty prompt — answers "I couldn't quite make
+            // that out." Nothing anywhere reports an error, so it reads as the model
+            // being stupid rather than as LANGFLOW_INPUT_NODE being unset.
+            if (!binding.IsBound)
+            {
+                Console.Error.WriteLine(
+                    "ai:langflow-input-unbound — LANGFLOW_INPUT_NODE is not set, so the user's "
+                    + "message will NOT reach the agent and every turn will answer as if the "
+                    + "prompt were empty. Set it to the flow's input node (e.g. PlanningInput-v4).");
+            }
+
+            services.TryAddSingleton(binding);
             services.AddHttpClient(LangflowOptions.HttpClientName);
 
             // The read behind the agent's MY TASKS block. Registered here rather than
