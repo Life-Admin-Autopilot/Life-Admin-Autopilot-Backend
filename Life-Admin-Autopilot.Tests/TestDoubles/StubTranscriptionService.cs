@@ -35,5 +35,30 @@ namespace Life_Admin_Autopilot.Tests.TestDoubles
 
         public static StubTranscriptionService Failing(string errorCode, string message = "provider said no") =>
             new(_ => Result<TranscriptionResult>.Failure(new Error(errorCode, message)));
+
+        /// <summary>
+        /// A different answer per call, for the paths that call the provider twice —
+        /// detect-then-pin. The last step repeats if asked for more, so a test only
+        /// has to describe the calls it cares about.
+        /// </summary>
+        public static StubTranscriptionService Sequence(
+            params Func<TranscriptionRequest, Result<TranscriptionResult>>[] steps)
+        {
+            var call = 0;
+            return new(request => steps[Math.Min(call++, steps.Length - 1)](request));
+        }
+
+        public static Result<TranscriptionResult> Heard(string text, string? language = null) =>
+            Result<TranscriptionResult>.Success(new TranscriptionResult
+            {
+                Text = text,
+                DetectedLanguage = language,
+                AudioDurationSeconds = 3.2,
+                LatencyMs = 412
+            });
+
+        public static Result<TranscriptionResult> HeardNothing() =>
+            Result<TranscriptionResult>.Failure(
+                new Error(SpeechErrorCodes.EmptyTranscript, "The provider returned no speech for this audio."));
     }
 }

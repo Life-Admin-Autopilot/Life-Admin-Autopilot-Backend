@@ -35,12 +35,34 @@ sorted before any demo. It is not a code problem and no code change fixes it.
 
 ## Language handling — the part that matters for Arabic
 
-**Auto-detection is not usable for Arabic.** With `language` unset, an Egyptian Arabic
+**Auto-detection is weak for Arabic.** With `language` unset, an Egyptian Arabic
 recording came back as `Fakarnia gradسبور الإصباح جايز.` — a mix of Latin transliteration
 and broken Arabic. With `ar-AR` pinned, the same audio transcribed properly.
 
-So the client **must** send the user's locale. FR-1.3 already stores `LocalePreference` on
-the user, so the value exists — it just has to reach this endpoint.
+**But pinning the LOCALE is worse.** The value the app sends is its active UI locale,
+and that describes the interface, not the sentence just spoken. Kitto is bilingual, so
+a user reading English chrome and dictating Arabic is ordinary — and pinning that
+Arabic to `en-US` makes the provider return an **empty transcript**, which reaches the
+user as *"we could not hear anything"* for audio they can hear perfectly. Measured over
+four consecutive real recordings: pinned to the UI locale **0/4** usable, auto-detect
+**4/4**.
+
+Both facts are true, so `SpeechToTextService` **detects first and pins only to repair**:
+
+1. Always call the provider with `auto`.
+2. If that returns *no speech*, retry pinned to the caller's locale — a very short or
+   heavily accented clip is where the hint earns its keep.
+3. If it returns text with **Latin letters and no Arabic at all** for an `ar` caller,
+   retry pinned — that is the transliteration failure above, which is worse than an
+   error because it looks like a transcript. If the repair finds nothing, the detected
+   transcript is kept rather than discarded.
+
+The common case is therefore **one** inference call, not two, which matters because ASR
+is the metered resource here. The `ar` caller who genuinely spoke English costs one
+wasted call and still gets the right answer.
+
+So the client should still send the user's locale — as a hint. FR-1.3 already stores
+`LocalePreference` on the user, so the value exists.
 
 The provider accepts exactly 41 locale strings and rejects anything else with a `422`, so
 [`LanguageNormalizer`](../Life-Admin-Autopilot.DAL/Speech/LanguageNormalizer.cs) maps client
@@ -131,7 +153,7 @@ dotnet user-secrets set "HF_TOKEN" "hf_..." --project Life-Admin-Autopilot-Backe
 | Field | Required | Notes |
 | --- | --- | --- |
 | `audio` | yes | WAV or MP3. Stereo and any sample rate are fine. |
-| `language` | no — **but send it** | The user's locale (`ar-EG`, `en-US`). Omitting it means auto-detect, which is unreliable for Arabic. |
+| `language` | no — **but send it** | The user's locale (`ar-EG`, `en-US`), used as a **repair hint**, not as a claim about the audio. Every request is detected first; see the language section above. |
 
 ```bash
 curl -X POST https://localhost:7276/api/speech/transcribe \

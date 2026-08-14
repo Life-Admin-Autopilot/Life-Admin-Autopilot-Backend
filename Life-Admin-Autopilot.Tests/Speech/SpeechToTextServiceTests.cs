@@ -24,16 +24,93 @@ namespace Life_Admin_Autopilot.Tests.Speech
             Assert.Null(response.ErrorCode);
         }
 
+        // ---- Which language, and who gets to say so -------------------------
+        //
+        // The caller's `language` is the app's active LOCALE, which describes the
+        // interface rather than the sentence just spoken. Kitto is bilingual, so a
+        // user reading English chrome and dictating Arabic is ordinary — and pinning
+        // that Arabic to en-US made the provider answer with an empty transcript,
+        // which reached the user as "we could not hear anything" for audio they could
+        // hear perfectly. Measured over four consecutive real recordings: pinned 0/4
+        // usable, auto-detect 4/4. So detection leads and the locale only repairs.
+
         [Fact]
-        public async Task TranscribeAsync_PassesTheCallersLanguageThroughToTheProvider()
+        public async Task TranscribeAsync_DetectsTheLanguage_RatherThanTrustingTheCallersLocale()
         {
             var provider = StubTranscriptionService.Returning("موعد الطبيب", language: "ar");
             var service = CreateService(provider, out _);
 
             var response = await service.TranscribeAsync(Audio(), language: "ar");
 
-            Assert.Equal("ar", provider.Requests.Single().Language);
-            Assert.Equal("ar", response.DetectedLanguage);
+            // Detection first — and, because it worked, ONLY one inference call. That
+            // second half matters as much as the first: ASR is the metered resource.
+            Assert.Equal("auto", provider.Requests.Single().Language);
+            Assert.Equal("موعد الطبيب", response.Transcript);
+        }
+
+        [Fact]
+        public async Task TranscribeAsync_FallsBackToTheCallersLanguage_WhenDetectionHearsNothing()
+        {
+            var provider = StubTranscriptionService.Sequence(
+                _ => StubTranscriptionService.HeardNothing(),
+                _ => StubTranscriptionService.Heard("موعد الطبيب", language: "ar"));
+
+            var service = CreateService(provider, out _);
+
+            var response = await service.TranscribeAsync(Audio(), language: "ar");
+
+            Assert.True(response.Succeeded);
+            Assert.Equal(new[] { "auto", "ar" }, provider.Requests.Select(r => r.Language).ToArray());
+        }
+
+        [Fact]
+        public async Task TranscribeAsync_RetriesPinned_WhenArabicComesBackRomanised()
+        {
+            // The documented provider failure: Arabic speech transliterated into Latin
+            // letters instead of rejected. Worse than an error, because it looks like a
+            // transcript to everything downstream and only the user can tell.
+            var provider = StubTranscriptionService.Sequence(
+                _ => StubTranscriptionService.Heard("maw3id el doktor"),
+                _ => StubTranscriptionService.Heard("موعد الدكتور", language: "ar"));
+
+            var service = CreateService(provider, out _);
+
+            var response = await service.TranscribeAsync(Audio(), language: "ar");
+
+            Assert.Equal("موعد الدكتور", response.Transcript);
+            Assert.Equal(2, provider.Requests.Count);
+        }
+
+        [Fact]
+        public async Task TranscribeAsync_DoesNotRepairLatinScript_ForANonArabicCaller()
+        {
+            // Not a general "did detection pick right" check, and it must not become
+            // one: an English answer for an English-locale user is simply correct, and
+            // a second call would be spent proving nothing.
+            var provider = StubTranscriptionService.Returning("call the dentist");
+            var service = CreateService(provider, out _);
+
+            await service.TranscribeAsync(Audio(), language: "en");
+
+            Assert.Single(provider.Requests);
+        }
+
+        [Fact]
+        public async Task TranscribeAsync_KeepsTheDetectedTranscript_WhenTheRepairFindsNothing()
+        {
+            // An Arabic-locale user who really did speak English. The repair fires,
+            // finds nothing, and must not throw away the perfectly good transcript
+            // detection already produced.
+            var provider = StubTranscriptionService.Sequence(
+                _ => StubTranscriptionService.Heard("remind me to renew my passport"),
+                _ => StubTranscriptionService.HeardNothing());
+
+            var service = CreateService(provider, out _);
+
+            var response = await service.TranscribeAsync(Audio(), language: "ar");
+
+            Assert.True(response.Succeeded);
+            Assert.Equal("remind me to renew my passport", response.Transcript);
         }
 
         [Fact]
