@@ -54,8 +54,12 @@ public interface IDocumentExtractor
 /// </para>
 ///
 /// <para>
-/// The AI slice REPLACES this registration (<c>services.Replace(...)</c>, not
-/// <c>TryAdd</c>) when a real provider lands.
+/// <see cref="GeminiDocumentExtractor"/> REPLACES this registration
+/// (<c>services.Replace(...)</c>, not <c>TryAdd</c>) whenever a key is configured —
+/// see <see cref="DocumentExtractionOptions"/> for which names it reads. Until that
+/// landed there was no such replacement anywhere in the graph, so this class was the
+/// only implementation and EVERY scan failed with the sentence below. That is the
+/// correct answer without a key and a bug with one; the gate is what tells them apart.
 /// </para>
 /// </summary>
 public sealed class NullDocumentExtractor : IDocumentExtractor

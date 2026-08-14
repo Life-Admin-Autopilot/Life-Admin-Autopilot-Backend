@@ -22,7 +22,10 @@ namespace Life_Admin_Autopilot_Backend.Features.DocumentScans;
 /// <b>With no AI provider configured this worker legitimately fails every
 /// scan.</b> That is the reference server's behaviour without
 /// <c>GEMINI_API_KEY</c>, and the parity target — see
-/// <see cref="NullDocumentExtractor"/>.
+/// <see cref="NullDocumentExtractor"/>. Configure a key
+/// (<c>DOCUMENT_AI_API_KEY</c>, or the planning/embeddings key it falls back to)
+/// and <see cref="GeminiDocumentExtractor"/> takes over, at which point a failed
+/// scan means a real failure rather than a missing setting.
 /// </para>
 /// </summary>
 internal sealed class DocumentScanWorker : KernelPollingWorker

@@ -47,6 +47,26 @@ public static class DocumentScansFeature
         // never TryAdd, or the null one wins and every scan keeps failing.
         services.TryAddScoped<IDocumentExtractor, NullDocumentExtractor>();
 
+        // ...and here is that replacement. Gated on the key, so an unconfigured
+        // deployment keeps the reference server's behaviour exactly — the no-key
+        // parity run asserts that every scan fails with Node's sentence, and a
+        // reader that worked without a key would break it.
+        var extraction = DocumentExtractionOptions.FromConfiguration(configuration);
+        services.TryAddSingleton(extraction);
+
+        if (extraction.IsConfigured)
+        {
+            services.AddHttpClient<GeminiDocumentExtractor>(client =>
+            {
+                client.Timeout = TimeSpan.FromSeconds(extraction.TimeoutSeconds);
+            });
+
+            // Replace, not TryAdd: the null registration above already owns the
+            // interface, so anything less leaves it in place and nothing changes.
+            services.Replace(ServiceDescriptor.Scoped<IDocumentExtractor>(
+                provider => provider.GetRequiredService<GeminiDocumentExtractor>()));
+        }
+
         // Storage order first: the blobs must go while the rows still hold the keys.
         services.AddUserDataEraser<DocumentScanStorageEraser>();
         services.AddUserDataEraser<ScannedDocumentEraser>();
