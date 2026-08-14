@@ -55,16 +55,21 @@ public static class GoogleIntegrationFeature
         services.AddScoped<IGoogleCalendarSyncService, GoogleCalendarSyncService>();
         services.AddScoped<IGoogleTasksSyncService, GoogleTasksSyncService>();
 
+        // The outbound half: matters mirrored INTO a Kitto-owned calendar.
+        services.AddScoped<IGoogleCalendarPushService, GoogleCalendarPushService>();
+
         // Three named clients so a timeout or a handler policy can be tuned per
         // upstream. The per-request deadlines are enforced with linked cancellation
         // tokens, matching Node's AbortSignal.timeout.
         services.AddHttpClient(GoogleOAuthClient.HttpClientName);
         services.AddHttpClient(GoogleCalendarSyncService.HttpClientName);
         services.AddHttpClient(GoogleTasksSyncService.HttpClientName);
+        services.AddHttpClient(GoogleCalendarPushService.HttpClientName);
 
         services.AddMongoIndexProvider<IntegrationIndexes>();
         services.AddUserDataEraser<IntegrationEraser>();
         services.AddKernelWorker<GoogleSyncWorker>();
+        services.AddKernelWorker<GooglePushWorker>();
 
         return services;
     }

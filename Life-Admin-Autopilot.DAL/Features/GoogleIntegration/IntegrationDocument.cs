@@ -118,6 +118,32 @@ public sealed class IntegrationDocument
     /// </summary>
     public string ImportDomain { get; set; } = IntegrationVocabulary.DefaultImportDomain;
 
+    /// <summary>
+    /// The secondary calendar Kitto created inside THIS user's Google account, and
+    /// the only one it is allowed to write to.
+    ///
+    /// <para>
+    /// Stored per integration rather than derived by name: the user is free to rename
+    /// the calendar, and a lookup by title would then create a second one on the next
+    /// push. Null until the first push creates it. If the user deletes the calendar
+    /// outright, Google answers 404 and this is cleared so the next run rebuilds it.
+    /// </para>
+    /// </summary>
+    public string? PushCalendarId { get; set; }
+
+    /// <summary>
+    /// The IANA zone <see cref="PushCalendarId"/> was last configured with.
+    ///
+    /// <para>
+    /// A calendar created without one defaults to UTC, and every event then renders
+    /// three hours early for a Cairo user. Tracked rather than assumed so a change —
+    /// the calendar being created before the zone was known, or the user moving
+    /// country — is detectable, and every already-written event can be re-rendered
+    /// instead of being left at the old offset forever.
+    /// </para>
+    /// </summary>
+    public string? PushCalendarTimeZone { get; set; }
+
     public DateTime ConnectedAt { get; set; }
 
     public DateTime? RevokedAt { get; set; }

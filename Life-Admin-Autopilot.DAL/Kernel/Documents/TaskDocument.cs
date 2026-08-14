@@ -156,6 +156,30 @@ public sealed class TaskDocument
 
     public string? ExternalId { get; set; }
 
+    /// <summary>
+    /// The event this matter owns in the user's Kitto calendar on Google, if any.
+    ///
+    /// <para>
+    /// The push is an outbound MIRROR and this is the only link between the two
+    /// sides. Without it every push would insert a fresh event and one matter would
+    /// become a row of duplicates, one per run.
+    /// </para>
+    ///
+    /// <para>
+    /// Distinct from <see cref="ExternalId"/>, which points the other way — at the
+    /// Google item a matter was IMPORTED from. A matter never has both: pushing an
+    /// imported event back to Google is the loop that turns one appointment into
+    /// fifty, so anything carrying an <see cref="ExternalSource"/> is never pushed.
+    /// </para>
+    /// </summary>
+    public string? GoogleEventId { get; set; }
+
+    /// <summary>
+    /// When <see cref="GoogleEventId"/> was last written. Compared against
+    /// <see cref="UpdatedAt"/> to find matters whose title or time has moved since.
+    /// </summary>
+    public DateTime? GooglePushedAt { get; set; }
+
     public string? TimePrecision { get; set; }
 
     public string? Confidence { get; set; }

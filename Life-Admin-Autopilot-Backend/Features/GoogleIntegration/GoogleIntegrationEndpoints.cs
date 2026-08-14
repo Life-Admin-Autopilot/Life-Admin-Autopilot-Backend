@@ -209,6 +209,7 @@ public static class GoogleIntegrationEndpoints
         IGoogleImportProfileReader profiles,
         IGoogleCalendarSyncService calendarSync,
         IGoogleTasksSyncService tasksSync,
+        IIntegrationRepository integrations,
         TimeProvider clock,
         CancellationToken cancellationToken)
     {
@@ -234,6 +235,19 @@ public static class GoogleIntegrationEndpoints
 
         var calendar = await calendarSync.SyncAsync(integration, options, now, cancellationToken).ConfigureAwait(false);
         var tasks = await tasksSync.SyncAsync(integration, options, now, cancellationToken).ConfigureAwait(false);
+
+        // A clean run has to RETRACT the last failure. The worker does this on its
+        // own success path, and the token-refresh path happens to as well — but a
+        // manual import that ran without either left the old sentence sitting on the
+        // row for good. That was survivable only while nothing displayed it; the
+        // sheet now shows lastError, so a stale one would tell the user their import
+        // is still broken immediately after it worked.
+        if (integration.LastError is not null)
+        {
+            integration.LastError = null;
+            integration.UpdatedAt = now;
+            await integrations.SaveAsync(integration, cancellationToken).ConfigureAwait(false);
+        }
 
         return Results.Ok(new GoogleSyncResponse
         {

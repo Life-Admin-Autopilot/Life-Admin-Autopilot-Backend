@@ -78,10 +78,20 @@ public sealed class GoogleOAuthClient : IGoogleOAuthClient
     private const string RevokeEndpoint = "https://oauth2.googleapis.com/revoke";
 
     /// <summary>
-    /// Read-only, and narrow on purpose. <c>calendar.readonly</c> and
-    /// <c>tasks.readonly</c> are SENSITIVE scopes — they need Google verification but
-    /// NOT a CASA security assessment. Asking for the writable <c>calendar</c> or
-    /// <c>tasks</c> scopes would buy nothing today and widen the review.
+    /// Narrow on purpose. <c>calendar.readonly</c> and <c>tasks.readonly</c> are
+    /// SENSITIVE scopes — they need Google verification but NOT a CASA security
+    /// assessment.
+    ///
+    /// <para>
+    /// <see cref="ScopeCalendarApp"/> is what lets Kitto write matters BACK, and it
+    /// is deliberately not the writable <c>calendar</c> scope. That one grants "see,
+    /// edit, share, and permanently delete all the calendars you can access" — the
+    /// scariest prompt Google shows — and it would put a user's real appointments
+    /// one bug away from deletion. <c>calendar.app.created</c> reaches only calendars
+    /// this app itself created, so the blast radius of everything in
+    /// <see cref="GoogleCalendarPushService"/> is a calendar Kitto made and the user
+    /// can delete in one click.
+    /// </para>
     /// </summary>
     public static readonly IReadOnlyList<string> Scopes = new[]
     {
@@ -89,10 +99,14 @@ public sealed class GoogleOAuthClient : IGoogleOAuthClient
         "email",
         ScopeCalendar,
         ScopeTasks,
+        ScopeCalendarApp,
     };
 
     public const string ScopeCalendar = "https://www.googleapis.com/auth/calendar.readonly";
     public const string ScopeTasks = "https://www.googleapis.com/auth/tasks.readonly";
+
+    /// <summary>Read/write, but ONLY on calendars this application created.</summary>
+    public const string ScopeCalendarApp = "https://www.googleapis.com/auth/calendar.app.created";
 
     private static readonly TimeSpan TokenTimeout = TimeSpan.FromSeconds(15);
     private static readonly TimeSpan RevokeTimeout = TimeSpan.FromSeconds(10);
