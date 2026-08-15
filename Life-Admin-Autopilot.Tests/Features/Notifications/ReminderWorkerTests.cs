@@ -1,7 +1,13 @@
 using Life_Admin_Autopilot.BLL.Features.Notifications;
+using Life_Admin_Autopilot.BLL.Services;
+using Life_Admin_Autopilot.DAL.Entities;
+using Life_Admin_Autopilot.DAL.Features.DocumentScans;
 using Life_Admin_Autopilot.DAL.Features.Notifications;
 using Life_Admin_Autopilot.DAL.Kernel.Mongo;
+using Life_Admin_Autopilot.DAL.Push.Models;
 using Life_Admin_Autopilot.Tests.Kernel;
+using Life_Admin_Autopilot.Tests.TestDoubles;
+using Microsoft.Extensions.Logging.Abstractions;
 using MongoDB.Bson;
 using MongoDB.Driver;
 
@@ -279,14 +285,145 @@ public sealed class ReminderWorkerTests
         Assert.False(reloaded.Contains("answer"));
     }
 
-    // ---- helpers -----------------------------------------------------------
+    // ---- delivery ----------------------------------------------------------
+    //
+    // The tick used to write the notification row and stop. That row is only read
+    // when the user opens the app, so a reminder was delivered exactly to the people
+    // who were already looking — which is the one outcome the product exists to
+    // prevent.
 
-    private static ReminderTick Tick(IMongoDatabase db) =>
-        new(
+    [Fact]
+    public async Task delivers_a_fired_reminder_to_the_users_devices()
+    {
+        var db = TryGetDatabase();
+        if (db is null)
+        {
+            return;
+        }
+
+        var userId = await SeedUserAsync(db, "Africa/Cairo");
+        var now = DateTime.UtcNow;
+        var dueAt = new DateTime(2026, 8, 20, 9, 0, 0, DateTimeKind.Utc);
+        var taskId = await SeedTaskAsync(db, userId, "Renew the car licence", dueAt, Entry(now.AddMinutes(-1), "due"));
+
+        var harness = NewTick(db);
+        harness.Devices.Seed(Device(userId, "device-token-1"));
+
+        Assert.Equal(1, await harness.Tick.RunAsync(now));
+
+        var sent = Assert.Single(harness.Push.Requests);
+        Assert.Equal("device-token-1", sent.DeviceToken);
+        Assert.Equal("Renew the car licence", sent.Title);
+
+        // The matter it is about travels with it, so opening the notification can
+        // land on that matter rather than on the dashboard.
+        Assert.Equal("reminder", sent.Data!["kind"]);
+        Assert.Equal(taskId.ToString(), sent.Data["taskId"]);
+    }
+
+    // Turning push off silences the phone, not the app: the row is the record and
+    // the in-app list still has to show it.
+    [Fact]
+    public async Task writes_the_row_but_sends_nothing_when_push_is_declined()
+    {
+        var db = TryGetDatabase();
+        if (db is null)
+        {
+            return;
+        }
+
+        var userId = await SeedUserAsync(db, "Africa/Cairo", wantsPush: false);
+        var now = DateTime.UtcNow;
+        await SeedTaskAsync(db, userId, "Quiet one", now.AddDays(1), Entry(now.AddMinutes(-1), "due"));
+
+        var harness = NewTick(db);
+        harness.Devices.Seed(Device(userId, "device-token-1"));
+
+        Assert.Equal(1, await harness.Tick.RunAsync(now));
+        Assert.Empty(harness.Push.Requests);
+
+        var written = await Notifications(db)
+            .Find(Builders<BsonDocument>.Filter.Eq("userId", userId))
+            .SingleAsync();
+        Assert.Equal("Quiet one", written["title"].AsString);
+    }
+
+    // A provider outage must not cost the reminder: the claim is already taken and
+    // the row already written, so failing the tick would lose it for good.
+    [Fact]
+    public async Task a_failed_send_still_leaves_the_reminder_fired_and_recorded()
+    {
+        var db = TryGetDatabase();
+        if (db is null)
+        {
+            return;
+        }
+
+        var userId = await SeedUserAsync(db, "Africa/Cairo");
+        var now = DateTime.UtcNow;
+        var taskId = await SeedTaskAsync(db, userId, "Still recorded", now.AddDays(1), Entry(now.AddMinutes(-1), "due"));
+
+        var tick = new ReminderTick(
             new ReminderTaskRepository(db),
             new NotificationRepository(db),
             new ReminderUserTimezoneReader(db),
-            new StaleClarificationSettler(db));
+            new StaleClarificationSettler(db),
+            new NotificationService(
+                new InMemoryDeviceTokenRepository(),
+                StubPushNotificationService.AlwaysFails(PushErrorCodes.Unavailable),
+                NullLogger<NotificationService>.Instance),
+            new DocumentScanNotifications(db),
+            NullLogger<ReminderTick>.Instance);
+
+        Assert.Equal(1, await tick.RunAsync(now));
+
+        var reloaded = await Tasks(db).Find(Builders<BsonDocument>.Filter.Eq("_id", taskId)).SingleAsync();
+        Assert.NotEqual(BsonNull.Value, reloaded["reminders"][0]["firedAt"]);
+        Assert.Equal(1, await Notifications(db).CountDocumentsAsync(Builders<BsonDocument>.Filter.Eq("userId", userId)));
+    }
+
+    // ---- helpers -----------------------------------------------------------
+
+    private static ReminderTick Tick(IMongoDatabase db) => NewTick(db).Tick;
+
+    /// <summary>
+    /// A tick wired to a real <see cref="NotificationService"/> over an in-memory
+    /// device store, so a test can see what a fired reminder actually sent. The
+    /// delivery half used not to exist at all — a null double here would let it go
+    /// missing again without a single test turning red.
+    /// </summary>
+    private sealed record Harness(
+        ReminderTick Tick,
+        StubPushNotificationService Push,
+        InMemoryDeviceTokenRepository Devices);
+
+    private static Harness NewTick(IMongoDatabase db)
+    {
+        var push = StubPushNotificationService.AlwaysSucceeds();
+        var devices = new InMemoryDeviceTokenRepository();
+
+        var tick = new ReminderTick(
+            new ReminderTaskRepository(db),
+            new NotificationRepository(db),
+            new ReminderUserTimezoneReader(db),
+            new StaleClarificationSettler(db),
+            new NotificationService(devices, push, NullLogger<NotificationService>.Instance),
+            new DocumentScanNotifications(db),
+            NullLogger<ReminderTick>.Instance);
+
+        return new Harness(tick, push, devices);
+    }
+
+    private static DeviceToken Device(ObjectId userId, string token) => new()
+    {
+        // Keyed by the JWT subject, which SessionService signs as the Mongo user id.
+        UserId = userId.ToString(),
+        Token = token,
+        Platform = DevicePlatform.Android,
+        RegisteredAt = DateTime.UtcNow,
+        LastSeenAt = DateTime.UtcNow,
+        IsActive = true,
+    };
 
     private static string Day(DateTime instant) => ReminderNotificationText.ShortDate(instant, "UTC");
 
@@ -312,7 +449,7 @@ public sealed class ReminderWorkerTests
     /// collections are cleared — otherwise one case's leftovers land in the next
     /// one's batch.
     /// </summary>
-    private static async Task<ObjectId> SeedUserAsync(IMongoDatabase db, string? timezone)
+    private static async Task<ObjectId> SeedUserAsync(IMongoDatabase db, string? timezone, bool wantsPush = true)
     {
         await Tasks(db).DeleteManyAsync(Builders<BsonDocument>.Filter.Empty);
         await Notifications(db).DeleteManyAsync(Builders<BsonDocument>.Filter.Empty);
@@ -334,6 +471,11 @@ public sealed class ReminderWorkerTests
         if (timezone is not null)
         {
             user["timezone"] = timezone;
+        }
+
+        if (!wantsPush)
+        {
+            user["notifications"] = new BsonDocument { ["push"] = false };
         }
 
         await db.GetCollection<BsonDocument>(MongoCollections.Users).InsertOneAsync(user);
