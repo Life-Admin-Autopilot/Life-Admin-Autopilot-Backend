@@ -105,4 +105,17 @@ export ASPNETCORE_ENVIRONMENT="${ASPNETCORE_ENVIRONMENT:-Development}"
 
 echo
 echo "Backend on ${ASPNETCORE_URLS}  (Ctrl+C to stop)"
-exec dotnet run --project Life-Admin-Autopilot-Backend --no-launch-profile
+
+# The Langflow tweak has to travel through `env`, not through .env.
+#
+# Its name contains a hyphen — PlanningInput-v4 — and a shell variable cannot,
+# so a line for it in .env would abort the `. ./.env` above rather than set
+# anything. Passing it here is not a workaround; it is the only route.
+#
+# Without it the flow's input node receives nothing, and the failure surfaces
+# far away from the cause: Langflow answers 500 while building an unrelated tool
+# component ("Invalid value type NoneType for MessageTextInput") and recommends
+# updating fifteen components, none of which is the problem. Measured on a clean
+# import against the pinned version.
+exec env 'Ai__Langflow__Tweaks__PlanningInput-v4__mode=chat' \
+  dotnet run --project Life-Admin-Autopilot-Backend --no-launch-profile

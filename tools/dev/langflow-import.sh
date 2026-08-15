@@ -14,10 +14,10 @@ set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$ROOT"
 
-BASE="${LANGFLOW_BASE_URL:-http://127.0.0.1:7860}"
-FLOW_FILE="langflow/planning-agent.v4.json"
-FLOW_ID="6b0f1c2e-9a41-4d3f-8c77-91a1f10a9e14"
-
+# .env FIRST, then read from it. The other order looks equivalent and is not:
+# LANGFLOW_BASE_URL and LANGFLOW_FLOW_ID both live in .env, so resolving them
+# beforehand would quietly ignore a moved port and report success against a
+# Langflow that was never touched.
 if [ -f .env ]; then
   set -a
   # shellcheck disable=SC1091
@@ -25,6 +25,9 @@ if [ -f .env ]; then
   set +a
 fi
 
+BASE="${LANGFLOW_BASE_URL:-http://127.0.0.1:7860}"
+FLOW_FILE="langflow/planning-agent.v4.json"
+FLOW_ID="${LANGFLOW_FLOW_ID:-6b0f1c2e-9a41-4d3f-8c77-91a1f10a9e14}"
 KEY="${GEMINI_API_KEY:-${EMBEDDINGS_API_KEY:-}}"
 
 if [ ! -f "$FLOW_FILE" ]; then
@@ -75,40 +78,67 @@ if [ -z "$KEY" ]; then
   exit 0
 fi
 
-echo "Setting the GEMINI_API_KEY credential"
+# Where the flow's eleven tools call BACK to reach Kitto. From inside the
+# container that is host.docker.internal, never localhost — localhost there is
+# the Langflow container itself.
+#
+# Missing, this fails a long way from its cause: Langflow answers 500 while
+# building an unrelated tool ("Invalid value type NoneType for MessageTextInput")
+# and recommends updating fifteen components, none of which is the problem. The
+# flow references this variable 33 times.
+STEWARD_URL="${STEWARD_API_BASE_URL:-http://host.docker.internal:4000}"
 
-# Credential values are WRITE-ONLY: reading one back returns value:null, and a
-# PATCH onto an existing variable answers 422. Delete then recreate is the only
-# route that actually replaces it.
-EXISTING=$(curl -s -m 10 -H "$AUTH" "$BASE/api/v1/variables/" \
-  | python -c '
-import json,sys
+# Values are WRITE-ONLY for credentials: reading one back returns value:null, and
+# a PATCH onto an existing variable answers 422. Delete then recreate is the only
+# route that actually replaces one.
+set_variable() { # name, value, type, field
+  local name="$1" value="$2" vtype="$3" field="$4"
+
+  local existing
+  existing=$(curl -s -m 10 -H "$AUTH" "$BASE/api/v1/variables/" \
+    | VAR_NAME="$name" python -c '
+import json, os, sys
 try:
     for v in json.load(sys.stdin):
-        if v.get("name") == "GEMINI_API_KEY":
-            print(v.get("id",""))
+        if v.get("name") == os.environ["VAR_NAME"]:
+            print(v.get("id", ""))
             break
 except Exception:
     pass' 2>/dev/null)
 
-if [ -n "$EXISTING" ]; then
-  curl -s -m 10 -X DELETE -H "$AUTH" "$BASE/api/v1/variables/$EXISTING" >/dev/null
-fi
+  if [ -n "$existing" ]; then
+    curl -s -m 10 -X DELETE -H "$AUTH" "$BASE/api/v1/variables/$existing" >/dev/null
+  fi
 
-CREATED=$(curl -s -m 15 -X POST "$BASE/api/v1/variables/" \
-  -H "$AUTH" -H 'Content-Type: application/json' \
-  -d "$(python -c '
-import json,os
+  # Through the ENVIRONMENT rather than argv: a trailing NAME=... on a
+  # `python -c` line is just another argument, so an earlier version read
+  # nothing and posted an empty body. It also keeps secrets off the process
+  # command line, where `ps` would show them.
+  local payload
+  payload=$(VAR_NAME="$name" VAR_VALUE="$value" VAR_TYPE="$vtype" VAR_FIELD="$field" python -c '
+import json, os
 print(json.dumps({
-    "name": "GEMINI_API_KEY",
-    "value": os.environ["KEY"],
-    "type": "Credential",
-    "default_fields": ["api_key"],
-}))' KEY="$KEY")")
+    "name": os.environ["VAR_NAME"],
+    "value": os.environ["VAR_VALUE"],
+    "type": os.environ["VAR_TYPE"],
+    "default_fields": [os.environ["VAR_FIELD"]],
+}))')
 
-echo "$CREATED" | grep -q '"id"' \
-  && echo "  set" \
-  || echo "  could not set it: $(echo "$CREATED" | head -c 300)"
+  local created
+  created=$(curl -s -m 15 -X POST "$BASE/api/v1/variables/" \
+    -H "$AUTH" -H 'Content-Type: application/json' -d "$payload")
+
+  if echo "$created" | grep -q '"id"'; then
+    echo "  $name set"
+  else
+    echo "  $name FAILED: $(echo "$created" | head -c 200)"
+    return 1
+  fi
+}
+
+echo "Setting the flow's variables"
+set_variable GEMINI_API_KEY       "$KEY"          Credential api_key
+set_variable STEWARD_API_BASE_URL "$STEWARD_URL"  Generic    base_url
 
 echo
 echo "Langflow ready. Chat should answer once the backend is up."

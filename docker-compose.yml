@@ -13,6 +13,11 @@
 # The app itself is NOT containerised on purpose: it is run with `dotnet run` so
 # a debugger attaches and a rebuild is a keystroke. These are the stateful
 # dependencies, which is exactly the part that is painful to install by hand.
+#
+# The host ports are overridable from .env for the machine that already has
+# something on 27017 — a second Mongo, or a previous copy of this project. Only
+# the LEFT side moves; the app then needs the matching connection string, which
+# is why they are named the same as the variables .env.example already carries.
 
 services:
   # The application database. Every domain collection lives here.
@@ -21,7 +26,7 @@ services:
     container_name: kitto-mongo
     restart: unless-stopped
     ports:
-      - '27017:27017'
+      - '${MONGO_PORT:-27017}:27017'
     volumes:
       - mongo-data:/data/db
       - mongo-config:/data/configdb
@@ -42,7 +47,7 @@ services:
     container_name: kitto-mongo-test
     restart: unless-stopped
     ports:
-      - '27018:27017'
+      - '${MONGO_TEST_PORT:-27018}:27017'
     volumes:
       - mongo-test-data:/data/db
       - mongo-test-config:/data/configdb
@@ -56,15 +61,32 @@ services:
   # langflow/planning-agent.v4.json — see docs/RUNNING.md, because an empty
   # Langflow accepts a run, streams a healthy-looking turn and answers nothing.
   langflow:
-    image: langflowai/langflow:latest
+    # PINNED, and it has to stay pinned. `:latest` is a moving tag: a pull one
+    # day later than the machine this was built on refuses the flow outright with
+    # "the flow contains 15 outdated components" and a validation error deep in a
+    # tool node. Measured, not guessed — chat was dead on a fresh clone while
+    # every other part of the stack looked healthy.
+    #
+    # Upgrading is fine, but it means re-exporting planning-agent.v4.json from a
+    # Langflow of the new version, not just bumping this line.
+    image: langflowai/langflow:1.11.3
     container_name: kitto-langflow
     restart: unless-stopped
     ports:
-      - '7860:7860'
+      - '${LANGFLOW_PORT:-7860}:7860'
     environment:
-      # No login screen on a local instance, and the import script below reads a
-      # token from /api/v1/auto_login which only exists when this is on.
+      # No login screen on a local instance, and the import script reads a token
+      # from /api/v1/auto_login which only exists when this is on.
       LANGFLOW_AUTO_LOGIN: 'true'
+
+      # REQUIRED since Langflow 1.5, and not optional despite the name. Without
+      # it auto-login still issues a token and the flow still imports, but every
+      # agent run comes back 403 "LANGFLOW_AUTO_LOGIN requires a valid API key" —
+      # so chat fails while everything around it looks configured. Measured on a
+      # fresh pull; an image from before the change works without it, which is
+      # exactly how this drifts out of a working machine unnoticed.
+      LANGFLOW_SKIP_AUTH_AUTO_LOGIN: 'true'
+
       DO_NOT_TRACK: 'true'
     volumes:
       - langflow-data:/app/langflow
