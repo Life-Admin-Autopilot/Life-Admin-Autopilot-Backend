@@ -101,6 +101,7 @@ echo "  hugging face      $(have "${HF_TOKEN:-}")   voice capture"
 echo "  google oauth      $(have "${GOOGLE_CLIENT_ID:-}")   calendar + tasks"
 echo "  token encryption  $(have "${INTEGRATION_ENCRYPTION_KEY:-}")   required WITH google oauth"
 echo "  firebase          $(have "${FCM_SERVICE_ACCOUNT_FILE:-}${FCM_SERVICE_ACCOUNT_JSON:-}")   push to a phone"
+echo "  azure blob        $(have "${AZURE_STORAGE_CONNECTION_STRING:-}")   uploads (local disk otherwise)"
 
 if [ -z "${JWT_ACCESS_SECRET:-}" ]; then
   echo

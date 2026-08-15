@@ -1,3 +1,5 @@
+using Life_Admin_Autopilot.DAL.Kernel.Storage;
+
 namespace Life_Admin_Autopilot.DAL.Features.DocumentScans;
 
 /// <summary>
@@ -93,4 +95,35 @@ public sealed class LocalDiskDocumentScanStorage : IDocumentScanStorage
 
         return Path.Combine(_root, key.Replace('/', Path.DirectorySeparatorChar));
     }
+}
+
+/// <summary>
+/// The Azure Blob store this interface was written for — the deployment target
+/// named in the comment above.
+///
+/// <para>
+/// The key layout is unchanged: <c>{userId}/{scanId}.{ext}</c>. Blob names take
+/// the slash literally and the portal renders each user id as a folder, so what
+/// the container shows matches what the disk store lays out, and the
+/// <c>DocumentScanStorageEraser</c> deletes by exactly the same keys it always
+/// did.
+/// </para>
+/// </summary>
+public sealed class AzureBlobDocumentScanStorage : IDocumentScanStorage
+{
+    private readonly AzureBlobStore _blobs;
+
+    public AzureBlobDocumentScanStorage(string connectionString, string containerName)
+    {
+        _blobs = new AzureBlobStore(connectionString, containerName);
+    }
+
+    public Task PutAsync(string key, byte[] bytes, CancellationToken cancellationToken = default) =>
+        _blobs.PutAsync(key, bytes, cancellationToken);
+
+    public Task<byte[]> GetAsync(string key, CancellationToken cancellationToken = default) =>
+        _blobs.GetAsync(key, cancellationToken);
+
+    public Task RemoveAsync(string key, CancellationToken cancellationToken = default) =>
+        _blobs.RemoveAsync(key, cancellationToken);
 }

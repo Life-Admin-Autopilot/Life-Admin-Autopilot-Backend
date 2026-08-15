@@ -2,6 +2,7 @@ using Life_Admin_Autopilot.BLL.Features.DocumentScans;
 using Life_Admin_Autopilot.DAL.Features.Account;
 using Life_Admin_Autopilot.DAL.Features.DocumentScans;
 using Life_Admin_Autopilot.DAL.Kernel;
+using Life_Admin_Autopilot.DAL.Kernel.Storage;
 using Life_Admin_Autopilot_Backend.Kernel.Hosting;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 
@@ -38,10 +39,16 @@ public static class DocumentScansFeature
         // the same pattern AccountFeature already documents for the auth slice.
         services.TryAddScoped<IAccountProfileRepository, AccountProfileRepository>();
 
-        // Local disk, mirroring lib/documentScanStorage.ts. Swapping in a blob store
-        // is a one-line change here and nothing above it moves.
-        services.TryAddSingleton<IDocumentScanStorage>(
-            _ => new LocalDiskDocumentScanStorage(options.ResolveStorageRoot()));
+        // Azure Blob when a connection string is configured, local disk otherwise.
+        //
+        // The fallback is not a courtesy: local disk IS the parity reference, and a
+        // teammate running this from a clone has no storage account. Deciding here
+        // rather than at the call sites keeps the routes above unaware of either.
+        var blobs = AzureBlobOptions.FromConfiguration(configuration);
+        services.TryAddSingleton(blobs);
+        services.TryAddSingleton<IDocumentScanStorage>(_ => blobs.IsConfigured
+            ? new AzureBlobDocumentScanStorage(blobs.ConnectionString!, blobs.DocumentsContainer)
+            : new LocalDiskDocumentScanStorage(options.ResolveStorageRoot()));
 
         // The no-key parity target. The AI slice REPLACES this — services.Replace,
         // never TryAdd, or the null one wins and every scan keeps failing.

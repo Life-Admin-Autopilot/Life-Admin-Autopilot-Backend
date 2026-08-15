@@ -2,6 +2,7 @@ using Life_Admin_Autopilot.BLL.Features.VoiceNotes;
 using Life_Admin_Autopilot.DAL.Features.Account;
 using Life_Admin_Autopilot.DAL.Features.VoiceNotes;
 using Life_Admin_Autopilot.DAL.Kernel;
+using Life_Admin_Autopilot.DAL.Kernel.Storage;
 using Life_Admin_Autopilot_Backend.Kernel.Hosting;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 
@@ -37,10 +38,14 @@ public static class VoiceNotesFeature
         // document-scan slices' identical registrations cannot clobber each other.
         services.TryAddScoped<IAccountProfileRepository, AccountProfileRepository>();
 
-        // Local disk, mirroring lib/voiceNoteStorage.ts. Swapping in a blob store is
-        // a one-line change here and nothing above it moves.
-        services.TryAddSingleton<IVoiceNoteStorage>(
-            _ => new LocalDiskVoiceNoteStorage(options.ResolveStorageRoot()));
+        // Azure Blob when a connection string is configured, local disk otherwise —
+        // the same decision the document-scan slice makes, and for the same reason:
+        // local disk is the parity reference and the only thing a clone can use.
+        var blobs = AzureBlobOptions.FromConfiguration(configuration);
+        services.TryAddSingleton(blobs);
+        services.TryAddSingleton<IVoiceNoteStorage>(_ => blobs.IsConfigured
+            ? new AzureBlobVoiceNoteStorage(blobs.ConnectionString!, blobs.VoiceNotesContainer)
+            : new LocalDiskVoiceNoteStorage(options.ResolveStorageRoot()));
 
         // The no-key parity target. The AI slice REPLACES both — services.Replace,
         // never TryAdd, or the null ones win and every note keeps failing.
