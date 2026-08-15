@@ -61,7 +61,14 @@ start_dotnet() {
     export MongoDbSettings__DatabaseName="kitto_dev"
     export Jwt__Key="${JWT_KEY:-dev-only-not-a-real-secret-0000000000000000000000000000000000}"
     # The frontend's origins. Capacitor's webview sends capacitor://localhost.
-    export Kernel__Cors__Origins="http://localhost:3000,http://127.0.0.1:3000,capacitor://localhost,http://localhost"
+    #
+    # EXTRA_CORS_ORIGINS is how `Steward: npm run app` adds this machine's LAN
+    # origin (http://<LAN-IP>:3000). Under Capacitor live-reload the webview
+    # loads the whole app from there, so THAT — not capacitor://localhost — is
+    # the Origin the backend sees. The allowlist is read once at startup, so it
+    # has to arrive here; a missing entry surfaces on the phone as a bare
+    # network error with no console to read it in.
+    export Kernel__Cors__Origins="http://localhost:3000,http://127.0.0.1:3000,capacitor://localhost,http://localhost${EXTRA_CORS_ORIGINS:+,$EXTRA_CORS_ORIGINS}"
     export Kernel__Workers__Enabled=true
     export LANGFLOW_BASE_URL="http://127.0.0.1:7860"
     export LANGFLOW_FLOW_ID="$LANGFLOW_FLOW"

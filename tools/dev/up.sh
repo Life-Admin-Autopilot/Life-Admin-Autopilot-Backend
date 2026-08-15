@@ -103,6 +103,21 @@ fi
 export ASPNETCORE_URLS="${ASPNETCORE_URLS:-http://[::]:4000}"
 export ASPNETCORE_ENVIRONMENT="${ASPNETCORE_ENVIRONMENT:-Development}"
 
+# Browser and webview origins. The allowlist defaults to EMPTY (KernelCorsOptions),
+# and a request with no Origin header is allowed — so with nothing set here, curl
+# and /health look perfectly healthy while every call from the app is refused.
+# That is the failure this line exists to prevent.
+#
+# EXTRA_CORS_ORIGINS is how the frontend's `npm run app` adds the machine's LAN
+# origin (http://<LAN-IP>:3000). Under Capacitor live-reload the webview loads the
+# whole app from there, so THAT — not capacitor://localhost — is the Origin the
+# backend sees. The allowlist is read once at startup, so it has to arrive here.
+#
+# `. ./.env` above overwrites the environment, so an origins value set in .env
+# wins; this only fills the gap and appends what the launcher asked for.
+DEV_CORS_ORIGINS="http://localhost:3000,http://127.0.0.1:3000,capacitor://localhost,http://localhost"
+export Kernel__Cors__Origins="${Kernel__Cors__Origins:-$DEV_CORS_ORIGINS}${EXTRA_CORS_ORIGINS:+,$EXTRA_CORS_ORIGINS}"
+
 echo
 echo "Backend on ${ASPNETCORE_URLS}  (Ctrl+C to stop)"
 
