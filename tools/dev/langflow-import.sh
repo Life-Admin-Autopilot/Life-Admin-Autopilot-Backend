@@ -18,10 +18,13 @@ cd "$ROOT"
 # LANGFLOW_BASE_URL and LANGFLOW_FLOW_ID both live in .env, so resolving them
 # beforehand would quietly ignore a moved port and report success against a
 # Langflow that was never touched.
+# Through sed, to strip CR from a .env saved with Windows line endings. Left in,
+# it rides along on every value: the Gemini key becomes "AIza...\r" and Google
+# answers 400 on a key that is visibly correct in the file.
 if [ -f .env ]; then
   set -a
   # shellcheck disable=SC1091
-  . ./.env
+  . <(sed 's/\r$//' ./.env)
   set +a
 fi
 

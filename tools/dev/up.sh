@@ -33,9 +33,16 @@ fi
 
 # Export every KEY=VALUE in .env. `set -a` marks assignments for export, so the
 # file needs no `export` prefixes and stays readable.
+#
+# Sourced through sed rather than directly, to strip CR from a .env saved with
+# Windows line endings — Notepad, or a file that travelled as a .txt. Bash on
+# macOS and Linux keeps that CR as part of the VALUE, so a correct 64-character
+# key measures 65 and this script rejects it two checks below, blaming the key.
+# Git Bash happens to strip it, which is why the fault only appears on someone
+# else's machine.
 set -a
 # shellcheck disable=SC1091
-. ./.env
+. <(sed 's/\r$//' ./.env)
 set +a
 
 # A relative SQLite path resolves against the process's working directory, which
