@@ -1,0 +1,79 @@
+# The three services the backend expects on localhost.
+#
+# These used to exist only as `docker run` commands typed by hand on one laptop,
+# which is why nothing in either repo described how to bring the project up. The
+# ports and image tags here are read off that machine, so `docker compose up -d`
+# reproduces it exactly rather than approximately.
+#
+#   docker compose up -d      start all three
+#   docker compose ps         what is running
+#   docker compose down       stop them, keep the data
+#   docker compose down -v    stop them and DELETE the data
+#
+# The app itself is NOT containerised on purpose: it is run with `dotnet run` so
+# a debugger attaches and a rebuild is a keystroke. These are the stateful
+# dependencies, which is exactly the part that is painful to install by hand.
+
+services:
+  # The application database. Every domain collection lives here.
+  mongo:
+    image: mongo:7
+    container_name: kitto-mongo
+    restart: unless-stopped
+    ports:
+      - '27017:27017'
+    volumes:
+      - mongo-data:/data/db
+      - mongo-config:/data/configdb
+    healthcheck:
+      test: ['CMD', 'mongosh', '--quiet', '--eval', 'db.adminCommand({ping:1}).ok']
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  # A SECOND, separate instance for the test suite.
+  #
+  # Not a convenience: the suite creates and drops databases and writes fixture
+  # rows, and pointing it at 27017 would do that to whatever you were just
+  # demoing. Several suites skip themselves when this is unreachable, so a
+  # missing container looks like passing tests rather than absent ones.
+  mongo-test:
+    image: mongo:7
+    container_name: kitto-mongo-test
+    restart: unless-stopped
+    ports:
+      - '27018:27017'
+    volumes:
+      - mongo-test-data:/data/db
+      - mongo-test-config:/data/configdb
+    healthcheck:
+      test: ['CMD', 'mongosh', '--quiet', '--eval', 'db.adminCommand({ping:1}).ok']
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  # The chat agent. Kitto talks to it over HTTP; the flow itself is imported from
+  # langflow/planning-agent.v4.json — see docs/RUNNING.md, because an empty
+  # Langflow accepts a run, streams a healthy-looking turn and answers nothing.
+  langflow:
+    image: langflowai/langflow:latest
+    container_name: kitto-langflow
+    restart: unless-stopped
+    ports:
+      - '7860:7860'
+    environment:
+      # No login screen on a local instance, and the import script below reads a
+      # token from /api/v1/auto_login which only exists when this is on.
+      LANGFLOW_AUTO_LOGIN: 'true'
+      DO_NOT_TRACK: 'true'
+    volumes:
+      - langflow-data:/app/langflow
+
+# All project-scoped, so `docker compose down -v` takes exactly this project's
+# data and nothing a teammate happens to have lying around under a similar name.
+volumes:
+  mongo-data:
+  mongo-config:
+  mongo-test-data:
+  mongo-test-config:
+  langflow-data:
