@@ -139,6 +139,19 @@ public sealed class AiConversationDocument
     [BsonIgnoreIfNull(false)]
     public string? ScopeId { get; set; }
 
+    /// <summary>
+    /// The thread's name — auto-set from its first user message, then editable.
+    ///
+    /// <para>
+    /// <b>Null on every document Node ever wrote</b>, and on a thread whose first
+    /// turn has not landed yet. Readers must render a placeholder rather than an
+    /// empty string, and the auto-titling write only fires while it is still null so
+    /// a user's own rename is never overwritten.
+    /// </para>
+    /// </summary>
+    [BsonIgnoreIfNull(false)]
+    public string? Title { get; set; }
+
     public List<AiConversationMessageDocument> Messages { get; set; } = new();
 
     /// <summary>

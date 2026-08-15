@@ -19,6 +19,8 @@ public static class AiFeature
     {
         services.TryAddScoped<AiConversationRepository>();
         services.TryAddScoped<AiConversationService>();
+        services.TryAddScoped<AiConversationThreadRepository>();
+        services.TryAddScoped<AiConversationThreadService>();
         services.TryAddScoped<AiQuotaService>();
         services.TryAddScoped<AiConfirmedToolRunner>();
 
@@ -103,6 +105,7 @@ public sealed class AiModule : IEndpointModule
     public void MapEndpoints(IEndpointRouteBuilder endpoints)
     {
         endpoints.MapAiConversationEndpoints();
+        endpoints.MapAiThreadEndpoints();
         endpoints.MapAiStreamEndpoints();
     }
 }
