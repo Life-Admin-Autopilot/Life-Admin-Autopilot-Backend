@@ -57,6 +57,15 @@ namespace Life_Admin_Autopilot.BLL.Features.Ai.Langflow;
 ///     when present because they carry a stable id.</description>
 ///   </item>
 ///   <item>
+///     <term><c>log</c></term>
+///     <description>The agent's LangChain callbacks, and the ONLY frame that reports
+///     one record per tool invocation: <c>message.type == "chain_start"</c> with an
+///     <c>inputs</c> ARRAY of <c>{name, args, id, type:"tool_call"}</c>, and
+///     <c>message.type == "tool_end"</c> with <c>output.tool_call_id</c>. See
+///     <see cref="LangflowToolActivity"/> for why <c>add_message</c> cannot be trusted
+///     to enumerate calls on its own.</description>
+///   </item>
+///   <item>
 ///     <term><c>end</c></term>
 ///     <description><c>{"result":{"outputs":[…]}}</c>. Ends the turn. The final text
 ///     is dug out of
@@ -86,6 +95,7 @@ public static class LangflowWireContract
     public const string AddMessageEvent = "add_message";
     public const string ToolCallEvent = "tool_call";
     public const string ToolResultEvent = "tool_result";
+    public const string LogEvent = "log";
     public const string EndEvent = "end";
     public const string ErrorEvent = "error";
 

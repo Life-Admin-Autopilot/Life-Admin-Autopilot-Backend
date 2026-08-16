@@ -36,6 +36,33 @@ public sealed class LangflowEventTranslator
     private readonly System.Text.StringBuilder _streamed = new();
 
     /// <summary>
+    /// <b>The join between the two wire shapes that describe the same call.</b>
+    /// <see cref="LangflowToolActivity.Fingerprint"/> → the call id it was announced
+    /// under, so a <c>log</c> frame and the <c>add_message</c> row Langflow builds out
+    /// of it produce ONE pill rather than two, whichever arrives first.
+    ///
+    /// <para>
+    /// It is also what makes an <c>add_message</c>-derived id stable: the same
+    /// invocation redelivered fifty times looks the fingerprint up and gets the same
+    /// minted id back, without depending on its position in a list that moves.
+    /// </para>
+    /// </summary>
+    private readonly Dictionary<string, string> _callIdByFingerprint = new(StringComparer.Ordinal);
+
+    /// <summary>
+    /// The losing id of an invocation that both wire shapes reported, pointing at the
+    /// one actually announced, so an outcome carrying the loser still settles the pill
+    /// the client was shown.
+    /// </summary>
+    private readonly Dictionary<string, string> _canonicalCallIds = new(StringComparer.Ordinal);
+
+    /// <summary>
+    /// How many ids this turn has minted, and therefore the suffix the next one gets.
+    /// Counts DISTINCT invocations, not deliveries — see <see cref="CallIdFor"/>.
+    /// </summary>
+    private int _mintedCalls;
+
+    /// <summary>
     /// Unwraps the planning agent's JSON envelope so the chat renders the reply
     /// rather than the document carrying it. Passes prose through untouched.
     /// </summary>
@@ -129,6 +156,9 @@ public sealed class LangflowEventTranslator
 
             case LangflowWireContract.AddMessageEvent:
                 return AcceptAddMessage(frame.Data);
+
+            case LangflowWireContract.LogEvent:
+                return AcceptLog(frame.Data);
 
             case LangflowWireContract.EndEvent:
                 Ended = true;
@@ -230,7 +260,7 @@ public sealed class LangflowEventTranslator
                    ?? LangflowWireContract.ReadElement(data, "tool_input")
                    ?? LangflowWireContract.ReadElement(data, "input");
 
-        return Announce(callId, name, args).ToArray();
+        return Announce(callId, name, args, LangflowToolActivity.Fingerprint(name, args)).ToArray();
     }
 
     private IEnumerable<AiStreamEvent> AcceptExplicitToolResult(JsonElement data)
@@ -249,10 +279,52 @@ public sealed class LangflowEventTranslator
     }
 
     /// <summary>
+    /// The agent's LangChain callbacks, which are the only frames that report one
+    /// record per tool invocation. Announcing from here — and resolving by the
+    /// <c>tool_call_id</c> the outcome carries — is what makes a turn with three calls
+    /// produce three correctly paired pills. See <see cref="LangflowToolActivity"/> for
+    /// the wire shape and the capture it was measured from.
+    /// </summary>
+    private IEnumerable<AiStreamEvent> AcceptLog(JsonElement data)
+    {
+        var events = new List<AiStreamEvent>();
+
+        foreach (var invocation in LangflowToolActivity.Invocations(data))
+        {
+            events.AddRange(Announce(
+                invocation.CallId,
+                invocation.Name,
+                invocation.Args,
+                LangflowToolActivity.Fingerprint(invocation.Name, invocation.Args)));
+        }
+
+        if (LangflowToolActivity.Outcome(data) is { } outcome)
+        {
+            // No-ops for an id nothing announced, so a deployment whose logs are
+            // half-present cannot invent a result for a call the user never saw.
+            events.AddRange(Resolve(outcome.CallId, outcome.Result, outcome.Error));
+        }
+
+        return events;
+    }
+
+    /// <summary>
     /// Langflow's own shape: a whole message row whose
     /// <c>content_blocks[].contents[]</c> entries of type <c>tool_use</c> describe
     /// what the agent did. The same message is re-sent as it fills in, so both the
     /// announcement and the resolution are de-duplicated by call id.
+    ///
+    /// <para>
+    /// <b>The block's POSITION is not its identity</b>, and reading it as one was the
+    /// defect this shape caused: Langflow keeps one block per tool NAME and overwrites
+    /// it when the agent calls that tool again, so block 0 announced "buy milk" and was
+    /// later resolved with "buy bread" while a third call was never announced at all.
+    /// Identity therefore comes from what the block SAYS — name plus arguments, via
+    /// <see cref="LangflowToolActivity.Fingerprint"/> — which is stable across
+    /// redeliveries of one invocation, different for the next one, and the same key a
+    /// <c>log</c> frame for that call computes, so the two sources agree instead of
+    /// double-announcing. <see cref="LangflowToolActivity"/> has the capture.
+    /// </para>
     /// </summary>
     private IEnumerable<AiStreamEvent> AcceptAddMessage(JsonElement data)
     {
@@ -260,25 +332,27 @@ public sealed class LangflowEventTranslator
 
         // The MESSAGE's id, which is stable across redeliveries — see CallIdFor.
         var messageId = LangflowWireContract.ReadFirstString(data, "id", "message_id");
-        var index = -1;
 
         foreach (var content in LangflowRunOutput.ToolUseContents(data))
         {
-            index++;
-
             var name = LangflowWireContract.ReadFirstString(content, "name", "tool_name", "tool");
             if (string.IsNullOrEmpty(name))
             {
                 continue;
             }
 
-            var callId = LangflowWireContract.ReadFirstString(content, "id", "tool_call_id", "call_id")
-                         ?? CallIdFor(messageId, index);
             var args = LangflowWireContract.ReadElement(content, "tool_input")
                        ?? LangflowWireContract.ReadElement(content, "input")
                        ?? LangflowWireContract.ReadElement(content, "args");
 
-            events.AddRange(Announce(callId, name, args));
+            var fingerprint = LangflowToolActivity.Fingerprint(name, args);
+
+            // Live 1.11.2 blocks carry no id of their own; a flow or a future version
+            // that supplies one is believed over anything derived.
+            var callId = LangflowWireContract.ReadFirstString(content, "id", "tool_call_id", "call_id")
+                         ?? CallIdFor(messageId, fingerprint);
+
+            events.AddRange(Announce(callId, name, args, fingerprint));
 
             var error = LangflowWireContract.ReadFirstString(content, "error");
             var output = LangflowWireContract.ReadElement(content, "output");
@@ -306,25 +380,37 @@ public sealed class LangflowEventTranslator
     /// <c>duration, error, header, name, output, tool_input, type</c> — measured off
     /// the live 1.11.2 stream. The enclosing <c>add_message</c> row DOES carry a
     /// stable id, and Langflow redelivers that same row repeatedly as it fills in, so
-    /// <c>{messageId}#{index}</c> is the same string on every redelivery and the
-    /// dedup holds.
+    /// a suffix that is the same on every redelivery of one invocation makes the dedup
+    /// hold.
     /// </para>
     ///
     /// <para>
-    /// <b>Two bugs came from getting this wrong</b>, and a counter over already-seen
-    /// calls caused both. It changed on every redelivery, so it defeated the very
-    /// dedup that depended on it: one <c>queryTasks</c> produced 7 <c>tool_call</c>
-    /// frames, and one bulk delete produced 7 confirmation cards. It also restarted
-    /// at 0 each turn, so a user's SECOND ever bulk delete minted a <c>#0</c> that
-    /// collided with the first turn's resolved record — and its confirm button 404'd
-    /// permanently. Both measured on the live stack.
+    /// <b>Three bugs came from getting this wrong.</b> A counter over already-seen
+    /// calls caused the first two: it changed on every redelivery, so it defeated the
+    /// very dedup that depended on it — one <c>queryTasks</c> produced 7
+    /// <c>tool_call</c> frames, and one bulk delete produced 7 confirmation cards; and
+    /// it restarted at 0 each turn, so a user's SECOND ever bulk delete minted a
+    /// <c>#0</c> that collided with the first turn's resolved record and its confirm
+    /// button 404'd permanently.
     /// </para>
     ///
     /// <para>
-    /// The per-turn fallback keeps both properties when a message has no id either:
-    /// stable within the turn because the index is positional, unique across turns
-    /// because the prefix is a fresh GUID. Cross-turn uniqueness is what the confirm
-    /// route depends on — a pending call id must never repeat.
+    /// The BLOCK INDEX that replaced it fixed those and caused the third. It assumed
+    /// one block per invocation; Langflow keeps one block per tool NAME and rewrites it
+    /// on the next call to that tool, so a three-matter turn announced two calls and
+    /// resolved one of them with another call's output. The suffix is therefore now a
+    /// per-turn ordinal handed out per DISTINCT invocation — memoised against
+    /// <see cref="LangflowToolActivity.Fingerprint"/>, which is what the block says
+    /// rather than where it sits.
+    /// </para>
+    ///
+    /// <para>
+    /// That keeps every property the previous schemes needed: stable across
+    /// redeliveries because one fingerprint always maps back to one id, distinct
+    /// between invocations because their arguments differ, and unique across turns
+    /// because the prefix is the message id — or, when a message has none, a fresh
+    /// GUID. Cross-turn uniqueness is what the confirm route depends on: a pending call
+    /// id must never repeat.
     /// </para>
     /// </summary>
     /// <summary>
@@ -338,11 +424,42 @@ public sealed class LangflowEventTranslator
     /// </summary>
     private const char CallIdSeparator = '~';
 
-    private string CallIdFor(string? messageId, int index) =>
-        $"{messageId ?? _turnId}{CallIdSeparator}{index}";
-
-    private IEnumerable<AiStreamEvent> Announce(string callId, string langflowName, JsonElement? args)
+    private string CallIdFor(string? messageId, string fingerprint)
     {
+        if (_callIdByFingerprint.TryGetValue(fingerprint, out var existing))
+        {
+            return existing;
+        }
+
+        var minted = $"{messageId ?? _turnId}{CallIdSeparator}{_mintedCalls++}";
+        _callIdByFingerprint[fingerprint] = minted;
+        return minted;
+    }
+
+    private IEnumerable<AiStreamEvent> Announce(
+        string callId,
+        string langflowName,
+        JsonElement? args,
+        string fingerprint)
+    {
+        // Whoever announces an invocation FIRST owns its id. A second sighting of the
+        // same invocation under a different id — the `log` frame and the `add_message`
+        // row Langflow builds out of it, in either order — is aliased to the owner
+        // rather than announced again, so one action stays one pill and an outcome
+        // reported under the loser's id still finds it.
+        if (_callIdByFingerprint.TryGetValue(fingerprint, out var owner))
+        {
+            if (!string.Equals(owner, callId, StringComparison.Ordinal))
+            {
+                _canonicalCallIds[callId] = owner;
+                yield break;
+            }
+        }
+        else
+        {
+            _callIdByFingerprint[fingerprint] = callId;
+        }
+
         if (!_announcedCalls.Add(callId))
         {
             yield break;
@@ -382,8 +499,10 @@ public sealed class LangflowEventTranslator
     /// outcomes for one action.
     /// </para>
     /// </summary>
-    private IEnumerable<AiStreamEvent> Resolve(string callId, JsonElement? result, string? error)
+    private IEnumerable<AiStreamEvent> Resolve(string incomingCallId, JsonElement? result, string? error)
     {
+        var callId = _canonicalCallIds.TryGetValue(incomingCallId, out var owner) ? owner : incomingCallId;
+
         if (!_announcedCalls.Contains(callId))
         {
             yield break;
