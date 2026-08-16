@@ -1,8 +1,20 @@
 namespace Life_Admin_Autopilot.BLL.Features.Ai;
 
 /// <summary>
-/// The SEVEN frame shapes the shipped chat UI parses, built in one place so no
-/// caller hand-rolls a payload dictionary and gets a key wrong.
+/// SEVEN of the EIGHT frame shapes the shipped chat UI parses, built in one place
+/// so no caller hand-rolls a payload dictionary and gets a key wrong.
+///
+/// <para>
+/// <b>The eighth is <c>conversation</c>, and it is not here on purpose.</b> It
+/// reports which thread the turn was filed under, which is knowledge the ROUTE has
+/// and a provider does not — so it is written by <c>AiStreamTurns</c> through
+/// <c>AiSseWriter.SendRawAsync</c> rather than minted from this vocabulary. It is
+/// the FIRST frame of every <c>/ai/ask</c> turn, ahead of <c>sources</c>, because a
+/// client that sent no <c>conversationId</c> has no other way to learn where its
+/// text belongs and must not start appending before it knows. Counting it is the
+/// only reason this doc says eight: see
+/// <c>docs/contract/paths.integrations.yaml</c> <c>AiStreamEvent</c>.
+/// </para>
 ///
 /// <para>
 /// <b>Key order is part of the contract.</b> Node's <c>send()</c> does
@@ -16,9 +28,11 @@ namespace Life_Admin_Autopilot.BLL.Features.Ai;
 ///
 /// <para>
 /// <b>The emission sequence</b> is
-/// <c>sources → (tool_call → tool_result)* → token* → done → quota</c>.
-/// <c>quota</c> is synthesised by the ROUTE immediately after <c>done</c>, never by
-/// a provider, so it is always the last frame of a turn that completed.
+/// <c>conversation → sources → (tool_call → tool_result)* → token* → done → quota</c>.
+/// The two ends belong to the ROUTE, never to a provider: <c>conversation</c> opens
+/// the turn (it is resolved before the headers flush) and <c>quota</c> is synthesised
+/// immediately after <c>done</c>, so it is always the last frame of a turn that
+/// completed.
 /// </para>
 /// </summary>
 public static class AiStreamEvents

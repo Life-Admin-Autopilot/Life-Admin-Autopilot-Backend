@@ -2740,14 +2740,19 @@ components:
     AiStreamEvent:
       description: |
         The JSON object carried by each `data:` frame on POST /ai/ask and
-        POST /ai/tools/confirm/{callId}. Discriminated on `type`. SEVEN
+        POST /ai/tools/confirm/{callId}. Discriminated on `type`. EIGHT
         variants. `type` is always the FIRST key in the serialised object.
 
         Six come from the generator (where they are keyed `kind` internally and
         renamed to `type` by the route): sources, token, tool_call, tool_result,
-        done, error. The seventh, `quota`, is synthesised by the ROUTE right
-        after it observes `done`.
+        done, error. Two are synthesised by the ROUTE, one at each end of the
+        turn: `conversation` before anything else, and `quota` right after it
+        observes `done`.
+
+        Ordering: conversation -> sources -> (tool_call -> tool_result)* ->
+        token* -> done -> quota. `conversation` is emitted on POST /ai/ask only.
       oneOf:
+        - { $ref: '#/components/schemas/AiEventConversation' }
         - { $ref: '#/components/schemas/AiEventSources' }
         - { $ref: '#/components/schemas/AiEventToken' }
         - { $ref: '#/components/schemas/AiEventToolCall' }
@@ -2758,6 +2763,7 @@ components:
       discriminator:
         propertyName: type
         mapping:
+          conversation: '#/components/schemas/AiEventConversation'
           sources:     '#/components/schemas/AiEventSources'
           token:       '#/components/schemas/AiEventToken'
           tool_call:   '#/components/schemas/AiEventToolCall'
@@ -2765,6 +2771,26 @@ components:
           done:        '#/components/schemas/AiEventDone'
           error:       '#/components/schemas/AiEventError'
           quota:       '#/components/schemas/AiEventQuota'
+
+    AiEventConversation:
+      type: object
+      description: |
+        Which conversation thread this turn was filed under. ALWAYS the first
+        frame of POST /ai/ask, ahead of `sources`.
+
+        It exists because `conversationId` on the request body is optional: a
+        client that omits it (or sends a stale one) gets the server's choice —
+        its most recent thread, or a freshly opened one — and this frame is the
+        only place that choice is reported. It arrives before any `token` so the
+        client knows where to append before there is anything to append.
+
+        Not emitted by POST /ai/tools/confirm/{callId}: a confirmation continues
+        a turn whose thread the client already learned.
+      required: [type, conversationId]
+      additionalProperties: false
+      properties:
+        type:           { type: string, const: conversation }
+        conversationId: { type: string }
 
     AiEventSources:
       type: object

@@ -144,9 +144,16 @@ public interface IAiProvider
 /// <summary>
 /// One frame's payload. The route renames the generator's <c>kind</c> key to
 /// <c>type</c> and writes <c>data: {json}\n\n</c>; see
-/// <c>docs/contract/paths.integrations.yaml</c> <c>AiStreamEvent</c> for the seven
+/// <c>docs/contract/paths.integrations.yaml</c> <c>AiStreamEvent</c> for the eight
 /// variants. Modelled as a loose payload because the streaming half is not built
 /// yet and pinning a shape now would only have to be re-derived.
+///
+/// <para>
+/// Seven of the eight can come from a provider and are listed below. The eighth,
+/// <c>conversation</c>, is the route's alone — it names the thread the turn landed
+/// in, which no provider knows — so it never travels through this struct. See
+/// <c>AiStreamEvents</c>.
+/// </para>
 /// </summary>
 /// <param name="Kind">
 /// <c>sources</c> | <c>tool_call</c> | <c>tool_result</c> | <c>token</c> |
