@@ -7,9 +7,12 @@ questions, calls tools, and returns one JSON envelope.
 Supersedes `planning-agent.v3.baseline.json`, which spoke a vocabulary the product does not
 use, could not handle chat, and called routes that do not exist.
 
-> **Status: authored, not executed.** Langflow is not running on this machine, so no
-> statement below about *model behaviour* has been observed. What has been verified is
-> listed under [What is verified](#what-is-verified).
+> **Status: live behind an import.** A Langflow instance now runs on `:7860`, but it
+> executes its **own copy** of this flow from its internal database — editing this file
+> changes nothing until the flow is re-imported. See
+> [Deploying this JSON into the running Langflow](#9-deploying-this-json-into-the-running-langflow-on-7860).
+> Structural claims are listed under [What is verified](#what-is-verified); model-behaviour
+> claims are limited to the runs described inline.
 
 ---
 
@@ -186,8 +189,8 @@ in `tool_mode`, and each is a thin HTTP wrapper over a real route — all correc
 
 | Tool | Route | Confirm? |
 |---|---|---|
-| `createTask` | `POST /me/tasks` | no |
-| `updateTask` | `PATCH /me/tasks/{id}` | no |
+| `createTask` | `POST /me/tasks` — **real creation, runs immediately** | no |
+| `updateTask` | `PATCH /me/tasks/{id}` (+ `POST /me/tasks/{id}/conflicts` preflight on a date move) | only a clashing time — resolved in-turn, see below |
 | `completeTask` | `PATCH /me/tasks/{id}` `{status:'done'}` | no |
 | `deleteTask` | `DELETE /me/tasks/{id}` | no |
 | `deleteAllTasks` | `POST /me/tasks/bulk/preview` (**dry run only**) | **YES** |
@@ -196,7 +199,18 @@ in `tool_mode`, and each is a thin HTTP wrapper over a real route — all correc
 | `addSubtask` | `POST /me/tasks/{id}/subtasks` | no |
 | `toggleSubtask` | `PATCH /me/tasks/{id}/subtasks/{subId}` | no |
 | `removeSubtask` | `DELETE /me/tasks/{id}/subtasks/{subId}` | no |
-| `holdForClarification` | `POST /me/tasks` + returns the clarification | no |
+| `holdForClarification` | `POST /me/clarifications` — creates the task AND the question | no |
+
+> **History note — the draft pivot, reverted.** Commit `526f0c5` briefly repointed
+> `createTask` at `POST /me/tasks/draft` (writes nothing, returns
+> `status: "awaiting_confirmation"`, `task: null`). That contradicted the flow's whole
+> receipt design — the prompt's lead-in says the item is already filed *because it is* —
+> left two of the three description layers claiming "runs immediately", and made
+> `task: null` results trip the backend's fabricated-action guard into silent turns.
+> `createTask` is back on real `POST /me/tasks` creation, all three description layers
+> (node `description`, `tools_metadata`, embedded class docstring) agree again, and
+> trust is preserved the way v4 designed it: receipts in chat, `holdForClarification`
+> for real uncertainty, `costOfWrong: 'high'` keeping a guessed reminder from firing.
 
 The flow's tool names are **exactly** the contract names — the component methods are named
 `createTask`, `deleteAllTasks` and so on rather than snake_case, so the name Langflow puts
@@ -215,12 +229,31 @@ The bulk endpoint is hard-capped at 500 rows and returns `400 bulk_too_large` ab
 preview reports `warnings.truncated`, and the component attaches a note when it trips, so
 the confirmation card can say so rather than failing at execution time.
 
+### `updateTask` refuses a clashing time — and resolves it inside the turn
+
+Moving a task's `dueAt` preflights `POST /me/tasks/{id}/conflicts` (unless
+`confirm_conflicts='true'`). A clash saves **nothing** and returns `ok: false`,
+`status: 'awaiting_confirmation'`, with the clashing matters in `conflicts`. This is a
+guard against silent double-booking, **not** a user-confirmation flow — prompt §7 makes
+the model resolve it in the same turn:
+
+- the **user** named the time explicitly → immediate re-call with
+  `confirm_conflicts='true'`, and the reply mentions the clash;
+- the **model** picked the time → re-call with a nearby non-clashing time (no flag),
+  stating what it chose; if that clashes too, leave the task unchanged and say so.
+
+Either way the turn ends with a complete reply. An `updateTask` refusal never lands in
+`pendingConfirmations`, and `confirm_conflicts` is never set on a first attempt. A
+preflight that cannot run does not block the edit — the server stays the authority.
+
 ### Notable per-tool behaviour
 
 - **`update_task`** — `tags` is a full replace, not a delta. Because every tool argument is
   a string, the literal `"null"` is how the agent clears `dueAt`, `notes` or `snoozedUntil`
   (the component converts it to a JSON `null`, which is the `$unset` signal the route wants);
   `"null"` on `tags` sends `[]`. `kind` is deliberately **not** an argument.
+  `confirm_conflicts` is a string flag (`'true'`) that skips the conflicts preflight — valid
+  only on a re-call after a `conflict_detected` refusal, per the section above.
 - **`toggle_subtask`** — the API has no flip verb, so when `done` is omitted the component
   reads the task first and inverts. Supplying `done` skips the read.
 - **`create_task`** — refuses `kind: 'reminder'` without a `dueAt` locally, with an
@@ -288,14 +321,17 @@ to be a second, separate leak.
 
 ## 6. Tweaks the backend must send
 
-The six tweaks are unchanged from v3 — **no new tweak names.** They target the
-`PlanningInput-v4` node.
+**Eight tweaks**, targeting the `PlanningInput-v4` node. Six are unchanged from v3; two
+grounding blocks were added since (`dateReference` and `myTasks` — see
+`LangflowInputBinding.cs`, which owns the field names via `Ai:Langflow:Fields:*`).
 
 | Tweak | Required | Value |
 |---|---|---|
 | `currentDate` | always | **ISO-8601 with the user's UTC offset**, e.g. `2026-08-10T14:23:00+03:00` |
+| `dateReference` | always | the rendered 14-day weekday → date table plus literal phrase anchors ("this weekend", "end of this month") — the authority the prompt reads dates off |
 | `accessToken` | always | raw bearer token, no `Bearer ` prefix |
 | `mode` | always | `chat` \| `transcript` \| `document` \| `clarification` |
+| `myTasks` | always | the rendered MY TASKS block — the user's open/snoozed matters with their real `[task:...]` ids, capped at 20; `(no open tasks)` when empty |
 | `transcript` | chat, transcript, document | the payload — prose, or the Document Agent's JSON |
 | `pendingTasks` | clarification | JSON array of tasks with open questions, each with its real id |
 | `answers` | clarification | JSON array of `{taskId, question, answer}` |
@@ -382,7 +418,7 @@ Verified by executing the flow's own code, in `scratchpad/`:
 - Neither leaked credential appears anywhere in the file, and no JWT-shaped literal does.
 - No dead v3 host or route (`localhost:7276`, `/api/Planning/`, `/api/UserTasks`) survives;
   no literal URL appears in any authored tool component; `verify=False` is gone.
-- The prompt template's `{…}` variables are exactly the six tweaks — nothing else in the
+- The prompt template's `{…}` variables are exactly the eight tweaks — nothing else in the
   template body uses braces, which would otherwise be parsed as a stray variable.
 - Each tool node declares exactly one tool; its declared args equal its `tool_mode` inputs;
   every declared arg is actually read by the code; every template field is constructed in
@@ -427,3 +463,42 @@ Verified by executing the flow's own code, in `scratchpad/`:
 5. `mode=transcript` with two items, one of them a high-stakes fuzzy date → one
    `createTask`, one `holdForClarification`, and a task row for both.
 6. `mode=document` with a real Document Agent payload → candidate `key`s echoed.
+
+---
+
+## 9. Deploying this JSON into the running Langflow on :7860
+
+The running instance **does not read this file from disk.** Flows live in Langflow's own
+database inside its Docker volume; editing `planning-agent.v4.json` changes nothing until
+the flow is re-imported. Two things must survive the swap:
+
+- **The flow id.** The .NET backend addresses the flow by id — `LANGFLOW_FLOW_ID` in
+  `.env`, default `6b0f1c2e-9a41-4d3f-8c77-91a1f10a9e14`, called at
+  `POST /api/v1/run/{flowId}?stream=true`. A drag-and-drop import in the Langflow UI mints
+  a **new** id, and the backend keeps running the old flow. Use `/api/v1/flows/upload/`
+  (what the script below does), which keeps the file's own id.
+- **The global variables.** `GEMINI_API_KEY` and `STEWARD_API_BASE_URL` live in Langflow's
+  DB, not in the flow file. From inside the container the backend origin is
+  `host.docker.internal`, never `localhost`.
+
+Replace-in-place flow (the import script skips a flow that already exists, so delete
+first):
+
+```bash
+cd Life-Admin-Autopilot-Backend
+BASE="${LANGFLOW_BASE_URL:-http://127.0.0.1:7860}"
+FLOW_ID="${LANGFLOW_FLOW_ID:-6b0f1c2e-9a41-4d3f-8c77-91a1f10a9e14}"
+
+# 1. auto-login token (LANGFLOW_AUTO_LOGIN=true in docker-compose.yml)
+TOKEN=$(curl -s "$BASE/api/v1/auto_login" | python3 -c 'import json,sys;print(json.load(sys.stdin)["access_token"])')
+
+# 2. remove the stale copy — this is what makes the re-import happen
+curl -s -X DELETE -H "Authorization: Bearer $TOKEN" "$BASE/api/v1/flows/$FLOW_ID"
+
+# 3. re-import the edited file AND re-seed both global variables
+./tools/dev/langflow-import.sh
+```
+
+No .NET restart is needed — the backend resolves the flow per run. Smoke-test with the
+[suggested first tests](#suggested-first-tests-in-order) above; the cheapest tripwire is
+`mode=chat`, "what's due next week?", which must call `queryTasks` and file nothing.
