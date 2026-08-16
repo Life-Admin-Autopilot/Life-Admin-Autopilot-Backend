@@ -128,6 +128,16 @@ filed in one pass; a transcript with nothing actionable yields `tasks: []` rathe
 manufactured task. Uncertainty is expressed through `holdForClarification`, never as a
 conversational question.
 
+**The reply reports; the card asks.** A transcript reply **never** contains a question —
+nobody is in the room to answer it. The eval suite caught the chat lead-in idiom ("Filed.
+What time…?") leaking into this mode (case `transcript-extraction`): two items filed, one
+held correctly, yet the reply read "Both added. What time is the car inspection tomorrow?"
+while the hold's card already asked "When should I remind you?". The prompt now names the
+rule in the transcript block with that failure quoted as the bad example, scopes the
+question-bearing lead-in to chat (chat keeps "Filed. What time…?" unchanged), and the
+final self-check (item 12) rejects any transcript reply containing a question mark. The
+sanctioned shape: "Filed 2 matters. One question waits in your queue."
+
 ### `document`
 
 The payload is the Document Agent's JSON, not prose:
