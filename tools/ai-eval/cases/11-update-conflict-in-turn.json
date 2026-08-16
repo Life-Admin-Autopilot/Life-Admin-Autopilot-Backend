@@ -1,0 +1,31 @@
+{
+  "name": "update-conflict-in-turn",
+  "source": "planning-agent-md-4-updateTask-refuses-a-clashing-time",
+  "description": "Two tasks 30 minutes apart, then an explicit request to move one onto the other's slot. The conflicts preflight refuses the first write; because the USER named the time, the agent must re-call with confirm_conflicts and finish the job inside this turn. What it must never do is end the turn holding an unresolved refusal.",
+  "timezone": "Africa/Cairo",
+  "steps": [
+    { "say": "Remind me tomorrow at 3pm to see the dentist.", "seed": true },
+    { "say": "Remind me tomorrow at 3:30pm to call the garage.", "seed": true },
+    { "resolve_clarifications": { "option": 0 } },
+    {
+      "say": "Move the dentist appointment to tomorrow at 3:30pm.",
+      "trajectory": {
+        "max_tool_rounds": 3,
+        "tools_denied": ["deleteTask", "deleteAllTasks", "createTask"],
+        "no_confirmations_pending": true,
+        "all_tool_calls_resolved": true,
+        "task_delta": 0
+      },
+      "outcome": {
+        "reply_non_empty": true,
+        "must_match": [
+          "(3[:.]?30|15[:.]?30|half past|clash|conflict|overlap|moved|move|instead|updated|changed|already)"
+        ],
+        "no_question_in_prose": { "max_with_hold": 1, "max_without_hold": 0 }
+      }
+    }
+  ],
+  "final": {
+    "task_count": { "min": 2, "max": 2 }
+  }
+}

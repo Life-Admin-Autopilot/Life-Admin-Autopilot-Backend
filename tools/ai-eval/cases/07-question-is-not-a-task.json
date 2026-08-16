@@ -1,0 +1,26 @@
+{
+  "name": "question-is-not-a-task",
+  "source": "planning-agent-md-8-suggested-first-test-2",
+  "description": "The redesign's core claim, and the cheapest tripwire in the suite: 'what's due next week?' must call queryTasks and answer. If it files a task called 'due next week', the v3 failure is back.",
+  "timezone": "Africa/Cairo",
+  "steps": [
+    {
+      "say": "what's due next week?",
+      "trajectory": {
+        "tools_allowed": ["queryTasks"],
+        "task_delta": 0,
+        "clarification_delta": 0,
+        "max_tool_rounds": 2,
+        "all_tool_calls_resolved": true
+      },
+      "outcome": {
+        "reply_non_empty": true,
+        "no_question_in_prose": { "max_without_hold": 0 }
+      }
+    }
+  ],
+  "final": {
+    "task_count": { "max": 0 },
+    "clarification_count": { "max": 0 }
+  }
+}

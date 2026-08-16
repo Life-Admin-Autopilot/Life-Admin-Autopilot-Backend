@@ -1,0 +1,44 @@
+{
+  "name": "opinion-question-writes-nothing",
+  "source": "incident-2026-08-16-opinion-spree",
+  "description": "Asking the agent's opinion about an existing task is a question, not an instruction. Observed 2026-08-16: turn 2 added 3 subtasks, deleted a task, and interrogated the user ('Who's the doctor, and what's the visit for?').",
+  "timezone": "Africa/Cairo",
+  "steps": [
+    {
+      "say": "Remind me on Monday to go to the doctor.",
+      "seed": true
+    },
+    {
+      "say": "Go to the doctor → what do you think",
+      "trajectory": {
+        "max_tool_calls": 0,
+        "tools_denied": [
+          "addSubtask",
+          "removeSubtask",
+          "toggleSubtask",
+          "deleteTask",
+          "deleteAllTasks",
+          "updateTask",
+          "createTask",
+          "completeTask",
+          "snoozeTask",
+          "holdForClarification"
+        ],
+        "task_delta": 0,
+        "clarification_delta": 0
+      },
+      "outcome": {
+        "reply_non_empty": true,
+        "no_question_in_prose": { "max_without_hold": 0 },
+        "must_not_match": [
+          "\\bwho(?:'s| is| are)\\b",
+          "\\bwhat (?:for|kind of|sort of)\\b",
+          "what'?s? the (?:visit|appointment|check-?up) (?:for|about)"
+        ]
+      }
+    }
+  ],
+  "final": {
+    "task_count": { "min": 1, "max": 1 }
+  }
+}

@@ -1,0 +1,25 @@
+{
+  "name": "duplicate-in-one-input",
+  "source": "planning-agent-md-2-actions-happen-only-when-asked",
+  "description": "The same errand said twice in one sentence is one errand. Two rows here means every rambling voice note produces duplicates.",
+  "timezone": "Africa/Cairo",
+  "steps": [
+    {
+      "say": "remind me to pay rent Friday and also pay the rent on Friday",
+      "trajectory": {
+        "task_delta": 1,
+        "tasks_matching": [{ "pattern": "rent", "min": 1, "max": 1 }],
+        "tools_allowed": ["createTask", "holdForClarification", "queryTasks"],
+        "max_tool_rounds": 2,
+        "all_tool_calls_resolved": true
+      },
+      "outcome": {
+        "reply_non_empty": true,
+        "no_question_in_prose": { "max_with_hold": 1, "lead_in_max_chars": 90 }
+      }
+    }
+  ],
+  "final": {
+    "task_count": { "min": 1, "max": 1 }
+  }
+}

@@ -1,0 +1,26 @@
+{
+  "name": "vague-holds-detail",
+  "source": "planning-agent-md-1-draft-to-kind-mapping",
+  "description": "Genuine ambiguity is held, not dropped and not interrogated. The task is still created — what is withheld is the reminder, not the item — and the question goes on a card as kind=detail, where the user types the answer.",
+  "timezone": "Africa/Cairo",
+  "steps": [
+    {
+      "say": "email that guy about the thing",
+      "trajectory": {
+        "expected_tool_calls": [
+          { "name": "holdForClarification", "args_subset": { "question_kind": "detail" } }
+        ],
+        "expected_tool_calls_mode": "subset",
+        "tool_call_counts": { "holdForClarification": { "min": 1, "max": 1 } },
+        "task_delta": 1,
+        "clarification_delta": 1,
+        "max_tool_rounds": 2,
+        "all_tool_calls_resolved": true
+      },
+      "outcome": {
+        "reply_non_empty": true,
+        "no_question_in_prose": { "max_with_hold": 1, "lead_in_max_chars": 90 }
+      }
+    }
+  ]
+}

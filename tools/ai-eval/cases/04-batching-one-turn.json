@@ -1,0 +1,42 @@
+{
+  "name": "batching-one-turn",
+  "source": "planning-agent-md-2-most-chat-turns-create-nothing",
+  "description": "Three items in one sentence are three filings in one turn. Every question the turn needs is asked in that turn, so a follow-up message finds nothing outstanding. 'buy milk' is dateless and low-stakes and must not be questioned at all.",
+  "timezone": "Africa/Cairo",
+  "steps": [
+    {
+      "say": "Remind me Friday to pay rent, book a dentist appointment next week, and add buy milk to my list.",
+      "trajectory": {
+        "tools_allowed": ["createTask", "holdForClarification", "queryTasks"],
+        "task_delta": { "min": 3, "max": 3 },
+        "max_tool_rounds": 2,
+        "clarifications_matching": [{ "pattern": "milk", "max": 0 }],
+        "all_tool_calls_resolved": true
+      },
+      "outcome": {
+        "reply_non_empty": true,
+        "no_question_in_prose": { "max_with_hold": 1, "lead_in_max_chars": 120 }
+      }
+    },
+    {
+      "say": "thanks",
+      "trajectory": {
+        "max_tool_calls": 0,
+        "task_delta": 0,
+        "clarification_delta": 0
+      },
+      "outcome": {
+        "reply_non_empty": true,
+        "no_question_in_prose": { "max_with_hold": 0, "max_without_hold": 0 }
+      }
+    }
+  ],
+  "final": {
+    "task_count": { "min": 3, "max": 3 },
+    "tasks_matching": [
+      { "pattern": "rent", "min": 1, "max": 1 },
+      { "pattern": "dentist", "min": 1, "max": 1 },
+      { "pattern": "milk", "min": 1, "max": 1 }
+    ]
+  }
+}

@@ -1,0 +1,24 @@
+{
+  "name": "arabic-input",
+  "source": "planning-agent-md-3-reply-in-the-users-language",
+  "description": "The same day-with-no-hour turn as simple-turn-latency, in Arabic. The task is filed, the hour is held with dated options, and the reply comes back in Arabic — the envelope contract says prose is in the user's language, not the prompt's.",
+  "timezone": "Africa/Cairo",
+  "steps": [
+    {
+      "say": "ذكرني يوم الاثنين بموعد الدكتور",
+      "trajectory": {
+        "tool_call_counts": { "holdForClarification": { "min": 1, "max": 1 } },
+        "task_delta": 1,
+        "clarification_delta": 1,
+        "clarification_options": { "min": 2, "max": 4, "each_has_due_at": true },
+        "max_tool_rounds": 2,
+        "all_tool_calls_resolved": true
+      },
+      "outcome": {
+        "reply_non_empty": true,
+        "has_arabic": true,
+        "no_question_in_prose": { "max_with_hold": 1, "lead_in_max_chars": 90 }
+      }
+    }
+  ]
+}

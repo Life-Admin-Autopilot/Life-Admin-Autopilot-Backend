@@ -1,0 +1,37 @@
+{
+  "name": "simple-turn-latency",
+  "source": "planning-agent-md-suggested-test-3",
+  "description": "The canonical happy path: a day with no hour. The task is filed immediately as a passive list entry, and the missing hour becomes a clarification card carrying dated options — never a guessed reminder that fires at the wrong time.",
+  "timezone": "Africa/Cairo",
+  "budgets": { "ttfb_ms": 2000, "total_ms": 45000 },
+  "steps": [
+    {
+      "say": "Remind me on Monday to go to the doctor.",
+      "trajectory": {
+        "expected_tool_calls": [
+          {
+            "name": "holdForClarification",
+            "args_subset": {
+              "question_kind": "date",
+              "options": { "$present": true }
+            }
+          }
+        ],
+        "expected_tool_calls_mode": "subset",
+        "tool_call_counts": {
+          "holdForClarification": { "min": 1, "max": 1 },
+          "createTask": { "max": 0 }
+        },
+        "max_tool_rounds": 2,
+        "task_delta": 1,
+        "clarification_delta": 1,
+        "clarification_options": { "min": 2, "max": 4, "each_has_due_at": true },
+        "all_tool_calls_resolved": true
+      },
+      "outcome": {
+        "reply_non_empty": true,
+        "no_question_in_prose": { "max_with_hold": 1, "lead_in_max_chars": 90 }
+      }
+    }
+  ]
+}
