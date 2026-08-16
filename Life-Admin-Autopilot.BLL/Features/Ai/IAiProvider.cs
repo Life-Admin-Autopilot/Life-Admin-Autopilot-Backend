@@ -45,6 +45,24 @@ public readonly record struct AiAskRequest(string UserId, string Question, strin
     /// </para>
     /// </summary>
     public string? Mode { get; init; }
+
+    /// <summary>
+    /// Which conversation thread this turn belongs to.
+    ///
+    /// <para>
+    /// Init-only for the same reason as <see cref="AccessToken"/> — every existing
+    /// construction site keeps compiling. Null ⇒ the legacy single-thread document
+    /// (<c>scopeId: null</c>), which is exactly what a client that predates
+    /// multi-conversation support still gets.
+    /// </para>
+    ///
+    /// <para>
+    /// It also selects the AGENT's memory, not just ours: the Langflow session key
+    /// derives from the thread document's own session generation, so two threads
+    /// cannot answer out of each other's history.
+    /// </para>
+    /// </summary>
+    public string? ConversationId { get; init; }
 }
 
 /// <summary>Inputs for the post-confirmation continuation of a turn.</summary>
@@ -59,6 +77,24 @@ public readonly record struct AiContinuationRequest(
 {
     /// <summary>See <see cref="AiAskRequest.AccessToken"/>. Same value, same reasons.</summary>
     public string? AccessToken { get; init; }
+
+    /// <summary>
+    /// Which conversation thread this turn belongs to.
+    ///
+    /// <para>
+    /// Init-only for the same reason as <see cref="AccessToken"/> — every existing
+    /// construction site keeps compiling. Null ⇒ the legacy single-thread document
+    /// (<c>scopeId: null</c>), which is exactly what a client that predates
+    /// multi-conversation support still gets.
+    /// </para>
+    ///
+    /// <para>
+    /// It also selects the AGENT's memory, not just ours: the Langflow session key
+    /// derives from the thread document's own session generation, so two threads
+    /// cannot answer out of each other's history.
+    /// </para>
+    /// </summary>
+    public string? ConversationId { get; init; }
 }
 
 /// <summary>

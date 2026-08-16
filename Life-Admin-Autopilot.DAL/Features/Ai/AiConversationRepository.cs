@@ -260,15 +260,22 @@ public sealed class AiConversationRepository
     /// <para>Returns null when no message in the caller's conversation carries a
     /// tool call with this id.</para>
     /// </summary>
+    /// <para>
+    /// <b>Deliberately NOT constrained to one thread.</b> A callId is server-minted
+    /// and unique across every thread, so adding the thread to the filter cannot
+    /// make the match more precise — it can only lose it, which is what happens when
+    /// the user switches threads, opens a second device, or reloads while a "this
+    /// cannot be undone" card is on screen. The owner check stays; the thread does
+    /// not.
+    /// </para>
     public async Task<AiConversationToolCallDocument?> FindToolCallAsync(
         ObjectId userId,
         string scope,
         string callId,
-        string? scopeId = null,
         CancellationToken cancellationToken = default)
     {
         var filter = Builders<AiConversationDocument>.Filter.And(
-            KeyFilter(userId, scope, scopeId),
+            OwnerFilter(userId, scope),
             Builders<AiConversationDocument>.Filter.ElemMatch(
                 c => c.Messages,
                 Builders<AiConversationMessageDocument>.Filter.ElemMatch(
@@ -301,7 +308,6 @@ public sealed class AiConversationRepository
         bool writeResult = false,
         bool writeError = false,
         DateTime? at = null,
-        string? scopeId = null,
         CancellationToken cancellationToken = default)
     {
         var set = new BsonDocument
@@ -321,7 +327,7 @@ public sealed class AiConversationRepository
         }
 
         var filter = Builders<AiConversationDocument>.Filter.And(
-            KeyFilter(userId, scope, scopeId),
+            OwnerFilter(userId, scope),
             Builders<AiConversationDocument>.Filter.ElemMatch(
                 c => c.Messages,
                 Builders<AiConversationMessageDocument>.Filter.ElemMatch(
@@ -354,6 +360,12 @@ public sealed class AiConversationRepository
     /// <c>keyFilter</c>. <c>scopeId</c> is matched as an explicit <c>null</c>, not as
     /// "absent" — the unique index spans it and every document stores the key.
     /// </summary>
+    /// <summary>Owner + scope, with no thread constraint. See FindToolCallAsync.</summary>
+    private static FilterDefinition<AiConversationDocument> OwnerFilter(ObjectId userId, string scope) =>
+        Builders<AiConversationDocument>.Filter.And(
+            Builders<AiConversationDocument>.Filter.Eq(c => c.UserId, userId),
+            Builders<AiConversationDocument>.Filter.Eq(c => c.Scope, scope));
+
     private static FilterDefinition<AiConversationDocument> KeyFilter(
         ObjectId userId,
         string scope,

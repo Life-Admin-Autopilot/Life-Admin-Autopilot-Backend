@@ -86,9 +86,17 @@ public sealed class AiStreamContractTests
 
         var frames = await FramesAsync(await AskAsync(factory));
 
+        // `conversation` opens every turn: it reports the thread the turn was filed
+        // under, and a client that sent no id has no other way to learn it. It comes
+        // FIRST so it arrives before any text the client would file under that
+        // thread.
         Assert.Equal(
-            new[] { "sources", "token", "token", "done", "quota" },
+            new[] { "conversation", "sources", "token", "token", "done", "quota" },
             frames.Select(f => f.GetProperty("type").GetString()).ToArray());
+
+        Assert.False(
+            string.IsNullOrWhiteSpace(frames[0].GetProperty("conversationId").GetString()),
+            "the opening frame must name a real thread");
     }
 
     [Fact]

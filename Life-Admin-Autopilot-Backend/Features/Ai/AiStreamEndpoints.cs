@@ -1,3 +1,4 @@
+using System.Text.Json;
 using Life_Admin_Autopilot.BLL.Features.Ai;
 using Life_Admin_Autopilot.DAL.Kernel.Errors;
 using Life_Admin_Autopilot_Backend.Kernel.Auth;
@@ -69,6 +70,7 @@ public static class AiStreamEndpoints
             HttpContext context,
             IAiProvider ai,
             AiQuotaService quota,
+            AiConversationThreadService threads,
             CancellationToken cancellationToken) =>
         {
             var caller = context.RequireUser();
@@ -86,6 +88,9 @@ public static class AiStreamEndpoints
             var mode = AiRequests.ReadEnum(
                 issues, body.Mode, "mode", AiRequests.AskModes,
                 fallback: AiRequests.DefaultAskMode, required: false);
+            var requestedConversationId = body.ConversationId.ValueKind == JsonValueKind.String
+                ? body.ConversationId.GetString()
+                : null;
             issues.ThrowIfInvalid("invalid_body", "Invalid ask payload.");
 
             // 4. Availability.
@@ -101,6 +106,19 @@ public static class AiStreamEndpoints
             var tier = AiQuotaService.ResolveTier();
             await quota.AdmitAsync(caller.Id, tier, cancellationToken: cancellationToken).ConfigureAwait(false);
 
+            // 5b. Which thread, resolved BEFORE the headers flush — a client that
+            //     sent no id (or a stale one) has to learn the real one from the
+            //     stream's first frame, not after its transcript already landed.
+            var conversationId = await threads
+                .ResolveAsync(caller.Id, requestedConversationId, cancellationToken)
+                .ConfigureAwait(false);
+
+            // Name the thread from the sentence that opened it. A no-op on every
+            // turn after the first, and on a thread the user has renamed.
+            await threads
+                .TitleFromFirstMessageAsync(caller.Id, conversationId, question!, cancellationToken)
+                .ConfigureAwait(false);
+
             // 6. Headers flush — from here on, only frames.
             await AiStreamTurns
                 .RunAskAsync(
@@ -109,10 +127,12 @@ public static class AiStreamEndpoints
                     ai,
                     quota,
                     tier,
+                    conversationId,
                     new AiAskRequest(caller.IdString, question!, timezone)
                     {
                         AccessToken = BearerTokenOf(context),
                         Mode = mode,
+                        ConversationId = conversationId,
                     },
                     cancellationToken)
                 .ConfigureAwait(false);

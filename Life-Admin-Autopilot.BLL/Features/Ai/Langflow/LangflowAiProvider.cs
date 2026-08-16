@@ -106,6 +106,7 @@ public sealed class LangflowAiProvider : IAiProvider
         CancellationToken cancellationToken = default) =>
         RunTurnAsync(
             ObjectId.Parse(request.UserId),
+            request.ConversationId,
             request.Question,
             request.AccessToken,
             request.Timezone,
@@ -128,6 +129,7 @@ public sealed class LangflowAiProvider : IAiProvider
         CancellationToken cancellationToken = default) =>
         RunTurnAsync(
             ObjectId.Parse(request.UserId),
+            request.ConversationId,
             ContinuationPrompt(request),
             request.AccessToken,
             request.Timezone,
@@ -165,6 +167,7 @@ public sealed class LangflowAiProvider : IAiProvider
 
     private async IAsyncEnumerable<AiStreamEvent> RunTurnAsync(
         ObjectId userId,
+        string? conversationId,
         string prompt,
         string? accessToken,
         string? timezone,
@@ -176,17 +179,17 @@ public sealed class LangflowAiProvider : IAiProvider
         // confirmation card from a previous deploy cannot still fire a bulk delete.
         await _conversations
             .ExpireStalePendingToolCallsAsync(
-                userId, AiConversationVocabulary.PersonalScope, StalePendingWindow,
+                userId, AiConversationVocabulary.PersonalScope, StalePendingWindow, scopeId: conversationId,
                 cancellationToken: cancellationToken)
             .ConfigureAwait(false);
 
         // Which conversation generation this turn belongs to, resolved BEFORE the
         // turn touches anything — see SessionIdAsync.
-        var sessionId = await SessionIdAsync(userId, cancellationToken).ConfigureAwait(false);
+        var sessionId = await SessionIdAsync(userId, conversationId, cancellationToken).ConfigureAwait(false);
 
         if (persistUserTurn)
         {
-            await AppendAsync(userId, "user", prompt, null, cancellationToken).ConfigureAwait(false);
+            await AppendAsync(userId, conversationId, "user", prompt, null, cancellationToken).ConfigureAwait(false);
         }
 
         var translator = new LangflowEventTranslator();
@@ -211,6 +214,7 @@ public sealed class LangflowAiProvider : IAiProvider
         {
             await AppendAsync(
                     userId,
+                    conversationId,
                     "assistant",
                     translator.AssistantText,
                     translator.ToolCalls,
@@ -228,7 +232,8 @@ public sealed class LangflowAiProvider : IAiProvider
             // history would be its own small lie about having answered.
             if (translator.ToolCalls.Count > 0)
             {
-                await AppendAsync(userId, "assistant", string.Empty, translator.ToolCalls, cancellationToken)
+                await AppendAsync(
+                        userId, conversationId, "assistant", string.Empty, translator.ToolCalls, cancellationToken)
                     .ConfigureAwait(false);
             }
 
@@ -276,10 +281,13 @@ public sealed class LangflowAiProvider : IAiProvider
     /// multi-step plan in one session.
     /// </para>
     /// </summary>
-    private async Task<string> SessionIdAsync(ObjectId userId, CancellationToken cancellationToken)
+    private async Task<string> SessionIdAsync(
+        ObjectId userId,
+        string? conversationId,
+        CancellationToken cancellationToken)
     {
         var conversation = await _conversations
-            .LoadAsync(userId, AiConversationVocabulary.PersonalScope, null,
+            .LoadAsync(userId, AiConversationVocabulary.PersonalScope, conversationId,
                 cancellationToken: cancellationToken)
             .ConfigureAwait(false);
 
@@ -418,6 +426,7 @@ public sealed class LangflowAiProvider : IAiProvider
 
     private Task AppendAsync(
         ObjectId userId,
+        string? conversationId,
         string role,
         string text,
         IReadOnlyList<TranslatedToolCall>? toolCalls,
@@ -437,7 +446,7 @@ public sealed class LangflowAiProvider : IAiProvider
         return _conversations.AppendTurnAsync(
             userId,
             AiConversationVocabulary.PersonalScope,
-            null,
+            conversationId,
             message,
             cancellationToken: cancellationToken);
     }

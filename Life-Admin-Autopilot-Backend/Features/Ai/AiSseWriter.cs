@@ -117,6 +117,20 @@ public sealed class AiSseWriter : IAsyncDisposable
         WriteFrameAsync(Serialize(value), cancellationToken);
 
     /// <summary>
+    /// Write an arbitrary object as one frame.
+    ///
+    /// <para>
+    /// For frames the route owns rather than the provider — today just
+    /// <c>conversation</c>, which reports the thread the turn was filed under and so
+    /// has no place in <see cref="AiStreamEvent"/>'s provider-facing vocabulary.
+    /// Serialized with <see cref="AiStreamJson.Frame"/> for the same reason
+    /// <see cref="Serialize"/> is: the response serializer drops nulls.
+    /// </para>
+    /// </summary>
+    public Task SendRawAsync<T>(T frame, CancellationToken cancellationToken = default) =>
+        WriteFrameAsync(JsonSerializer.SerializeToUtf8Bytes(frame, AiStreamJson.Frame), cancellationToken);
+
+    /// <summary>
     /// Serialize one event to its frame JSON. <c>type</c> first, then the payload in
     /// insertion order.
     ///

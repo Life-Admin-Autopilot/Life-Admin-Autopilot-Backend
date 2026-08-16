@@ -37,6 +37,19 @@ public sealed class AskBody
     /// </summary>
     [JsonPropertyName("mode")]
     public JsonElement Mode { get; init; }
+
+    /// <summary>
+    /// Which conversation thread to append this turn to.
+    ///
+    /// <para>
+    /// <b>Additive, like <c>mode</c>.</b> Absent ⇒ the user's most recent thread,
+    /// which is what every client that predates multi-conversation support gets.
+    /// The resolved id comes back as the stream's opening <c>conversation</c>
+    /// frame, so a client that sent nothing still learns where its turn landed.
+    /// </para>
+    /// </summary>
+    [JsonPropertyName("conversationId")]
+    public JsonElement ConversationId { get; init; }
 }
 
 /// <summary><c>confirmToolBodySchema</c>. One required enum, nothing else.</summary>

@@ -35,6 +35,7 @@ internal static class AiStreamTurns
         IAiProvider ai,
         AiQuotaService quota,
         string tier,
+        string conversationId,
         AiAskRequest request,
         CancellationToken cancellationToken)
     {
@@ -44,6 +45,15 @@ internal static class AiStreamTurns
         try
         {
             await sse.OpenAsync(cancellationToken).ConfigureAwait(false);
+
+            // Which thread this turn landed in — the only way a client that sent no
+            // id can learn the id of a thread the server just opened for it. First
+            // frame, so it arrives before any text the client would file under it.
+            await sse
+                .SendRawAsync(
+                    new { type = "conversation", conversationId },
+                    cancellationToken)
+                .ConfigureAwait(false);
 
             try
             {
