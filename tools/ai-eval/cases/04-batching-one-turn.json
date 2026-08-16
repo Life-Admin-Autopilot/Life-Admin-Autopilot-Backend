@@ -7,15 +7,30 @@
     {
       "say": "Remind me Friday to pay rent, book a dentist appointment next week, and add buy milk to my list.",
       "trajectory": {
-        "tools_allowed": ["createTask", "holdForClarification", "queryTasks"],
-        "task_delta": { "min": 3, "max": 3 },
-        "max_tool_rounds": 2,
-        "clarifications_matching": [{ "pattern": "milk", "max": 0 }],
+        "tools_allowed": [
+          "createTask",
+          "holdForClarification",
+          "queryTasks"
+        ],
+        "task_delta": {
+          "min": 3,
+          "max": 3
+        },
+        "max_tool_rounds": 4,
+        "clarifications_matching": [
+          {
+            "pattern": "milk",
+            "max": 0
+          }
+        ],
         "all_tool_calls_resolved": true
       },
       "outcome": {
         "reply_non_empty": true,
-        "no_question_in_prose": { "max_with_hold": 1, "lead_in_max_chars": 120 }
+        "no_question_in_prose": {
+          "max_with_hold": 1,
+          "lead_in_max_chars": 120
+        }
       }
     },
     {
@@ -27,16 +42,34 @@
       },
       "outcome": {
         "reply_non_empty": true,
-        "no_question_in_prose": { "max_with_hold": 0, "max_without_hold": 0 }
+        "no_question_in_prose": {
+          "max_with_hold": 0,
+          "max_without_hold": 0
+        }
       }
     }
   ],
   "final": {
-    "task_count": { "min": 3, "max": 3 },
+    "task_count": {
+      "min": 3,
+      "max": 3
+    },
     "tasks_matching": [
-      { "pattern": "rent", "min": 1, "max": 1 },
-      { "pattern": "dentist", "min": 1, "max": 1 },
-      { "pattern": "milk", "min": 1, "max": 1 }
+      {
+        "pattern": "rent",
+        "min": 1,
+        "max": 1
+      },
+      {
+        "pattern": "dentist",
+        "min": 1,
+        "max": 1
+      },
+      {
+        "pattern": "milk",
+        "min": 1,
+        "max": 1
+      }
     ]
   }
 }

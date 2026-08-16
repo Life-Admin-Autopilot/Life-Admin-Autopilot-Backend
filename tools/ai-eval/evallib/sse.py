@@ -78,6 +78,11 @@ class Turn:
 
     @property
     def tool_rounds(self) -> int:
+        # Identity semantics changed at backend b883a4f: the translator now mints
+        # one call id per INVOCATION (from Langflow's log frames), where it used
+        # to share one message-id prefix per model round. So this counts tool
+        # invocations, not model round trips — budget cases accordingly (a
+        # three-matter sentence legitimately spends 3).
         return len({call.round_id for call in self.tool_calls})
 
     @property

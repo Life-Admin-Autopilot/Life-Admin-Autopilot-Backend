@@ -1,7 +1,7 @@
 {
-  "generated_at": "2026-08-16T16:30:17+00:00",
-  "label": "baseline @ hardened-prompt (8d7d27b)",
-  "git_sha": "1c6e563",
+  "generated_at": "2026-08-16T17:10:31+00:00",
+  "label": "gate @ b883a4f, calibrated, rate-limit-aware",
+  "git_sha": "b883a4f",
   "prompt_sha": "1c6e563",
   "samples": "per-case",
   "note": "Last-known state per case. `--gate` fails only on a case that passed here and fails now. Regenerate with `python3 runner.py --update-baseline` once a fix has genuinely landed.",
@@ -25,12 +25,10 @@
       "failed_checks": []
     },
     "batching-one-turn": {
-      "passed": false,
+      "passed": true,
       "flaky": false,
-      "samples": "0/1",
-      "failed_checks": [
-        "no_error_frames"
-      ]
+      "samples": "1/1",
+      "failed_checks": []
     },
     "no-date-no-stakes-silent": {
       "passed": true,
@@ -57,12 +55,10 @@
       "failed_checks": []
     },
     "duplicate-in-one-input": {
-      "passed": false,
+      "passed": true,
       "flaky": false,
-      "samples": "0/1",
-      "failed_checks": [
-        "total_ms"
-      ]
+      "samples": "1/1",
+      "failed_checks": []
     },
     "arabic-input": {
       "passed": true,

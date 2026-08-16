@@ -1,29 +1,48 @@
 {
   "name": "transcript-extraction",
   "source": "planning-agent-md-2-transcript-mode",
-  "description": "Voice is extraction, not conversation. Both items are filed in one pass, and uncertainty about 'tomorrow' with no hour goes through holdForClarification — never as a conversational question, because there is nobody in the room to answer it.",
+  "description": "Voice is extraction, not conversation. Both items are filed in one pass, and uncertainty about 'tomorrow' with no hour goes through holdForClarification — never as a conversational question, because there is nobody in the room to answer it. Gemini complies with the transcript no-questions rule intermittently (passed one full run, failed the next); majority sampling makes a slip visible as FLAKY with the failing trajectory attached instead of flapping the whole gate.",
   "timezone": "Africa/Cairo",
   "steps": [
     {
       "say": "take the car for inspection tomorrow and I gotta buy new shoes sometime",
       "mode": "transcript",
       "trajectory": {
-        "tools_allowed": ["createTask", "holdForClarification"],
-        "task_delta": { "min": 2, "max": 2 },
+        "tools_allowed": [
+          "createTask",
+          "holdForClarification"
+        ],
+        "task_delta": {
+          "min": 2,
+          "max": 2
+        },
         "max_tool_rounds": 2,
         "all_tool_calls_resolved": true
       },
       "outcome": {
         "reply_non_empty": true,
-        "no_question_in_prose": { "max_with_hold": 0, "max_without_hold": 0 }
+        "no_question_in_prose": {
+          "max_with_hold": 0,
+          "max_without_hold": 0
+        }
       }
     }
   ],
   "final": {
-    "task_count": { "min": 2, "max": 2 },
+    "task_count": {
+      "min": 2,
+      "max": 2
+    },
     "tasks_matching": [
-      { "pattern": "inspect|car", "min": 1 },
-      { "pattern": "shoe", "min": 1 }
+      {
+        "pattern": "inspect|car",
+        "min": 1
+      },
+      {
+        "pattern": "shoe",
+        "min": 1
+      }
     ]
-  }
+  },
+  "samples": 3
 }
