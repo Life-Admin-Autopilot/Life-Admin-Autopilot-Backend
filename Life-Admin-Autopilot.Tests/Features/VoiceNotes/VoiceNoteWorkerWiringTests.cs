@@ -41,6 +41,15 @@ public sealed class VoiceNoteWorkerWiringTests : IClassFixture<KernelWebApplicat
         // — notifications for the row, document-scans for the push preference, and
         // the push service itself.
         Assert.NotNull(services.GetRequiredService<VoiceNoteOutcomeNotifier>());
+
+        // The real adapters, built explicitly rather than through IVoiceExtractor:
+        // whether the container SELECTS them depends on this machine's keys, but
+        // whether their dependency graphs close does not — and PlanningVoiceExtractor
+        // reaches through ConflictService into the Knowledge slice, which is a seam
+        // no other voice test crosses. A gap there is invisible until a real
+        // recording hits it on a background timer.
+        Assert.NotNull(ActivatorUtilities.CreateInstance<NemotronVoiceTranscriber>(services));
+        Assert.NotNull(ActivatorUtilities.CreateInstance<PlanningVoiceExtractor>(services));
     }
 
     /// <summary>
