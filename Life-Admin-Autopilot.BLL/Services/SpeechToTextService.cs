@@ -49,6 +49,39 @@ namespace Life_Admin_Autopilot.BLL.Services
             using var buffered = new MemoryStream();
             await audio.Content.CopyToAsync(buffered, cancellationToken);
 
+            return await RunAsync(buffered, audio, language, cancellationToken);
+        }
+
+        // The upload gate is the ONLY thing this skips - see the interface for why the
+        // voice-note worker must not be re-gated. Everything after it is shared, so the
+        // two surfaces cannot disagree about how a bilingual recording is handled.
+        public async Task<TranscriptionResponse> TranscribeStoredAsync(
+            byte[] audio,
+            string contentType,
+            string? language = null,
+            CancellationToken cancellationToken = default)
+        {
+            if (audio.Length == 0)
+            {
+                return TranscriptionResponse.Fail(SpeechErrorCodes.NoAudio, "No audio was uploaded.");
+            }
+
+            // Owns the stream: nothing else can, since the caller handed us bytes.
+            using var buffered = new MemoryStream(audio, writable: false);
+
+            return await RunAsync(
+                buffered,
+                new AudioUpload(buffered, "voice-note", contentType, audio.LongLength),
+                language,
+                cancellationToken);
+        }
+
+        private async Task<TranscriptionResponse> RunAsync(
+            MemoryStream buffered,
+            AudioUpload audio,
+            string? language,
+            CancellationToken cancellationToken)
+        {
             // DETECT FIRST, PIN SECOND.
             //
             // `language` arrives from the app's active locale, which describes the
