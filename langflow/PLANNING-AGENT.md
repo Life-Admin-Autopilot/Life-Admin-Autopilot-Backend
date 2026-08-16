@@ -98,6 +98,29 @@ complete, correct turn.
   mutation is preceded by `queryTasks` to resolve the real `taskId`. Several plausible
   matches → ask in prose and change nothing (a plain question, *not* a clarification row).
 
+**The turn does what was asked — nothing else.** An opinion or question turn ("what do you
+think", "should I…") mutates **nothing**: no `createTask`, no `addSubtask`, no
+`updateTask`, no `deleteTask`, no "helpful" cleanup of things noticed along the way.
+The named failure (observed live, 2026-08-16): turn 1 "Remind me on Monday to go to the
+doctor." was filed and held correctly; turn 2 "Go to the doctor → what do you think"
+produced 3× `addSubtask`, an unasked `deleteTask` of a discovered "duplicate", and the
+prose question "Who's the doctor, and what's the visit for?" — three violations in one
+turn, each self-invented call a full model round trip the user sat through (1–2 minutes of
+spinner). The prompt now states the rule by name at the top of the chat block, quotes this
+failure verbatim as the bad example, gates `deleteTask` and `addSubtask` on an explicit
+ask, and re-checks both halves in the final self-check (items 10 and 11).
+
+**No unneeded questions.** The agent never asks for information it does not need to
+execute the request — "Who's the doctor, and what's the visit for?" is the named bad
+example; the reminder fires exactly the same without either answer. The only questions
+allowed are holds (which file a card) and the which-task disambiguation before a
+destructive or ambiguous action.
+
+**Tool budget.** Every tool call is a full model round trip the user experiences as
+spinner time. A simple request is 1–2 calls; past 3 in a chat turn the agent stops and
+replies, unless the user itemised the work (several actions in one message, a checklist
+of steps).
+
 ### `transcript`
 
 Voice. Extraction, not conversation — closest to v3's behaviour. Every actionable item is
@@ -254,6 +277,14 @@ preflight that cannot run does not block the edit — the server stays the autho
   `"null"` on `tags` sends `[]`. `kind` is deliberately **not** an argument.
   `confirm_conflicts` is a string flag (`'true'`) that skips the conflicts preflight — valid
   only on a re-call after a `conflict_detected` refusal, per the section above.
+- **`delete_task`** — fires **only** when this turn's user message explicitly asks to
+  delete / remove / cancel a matter the user named. A duplicate the agent discovers is a
+  thing to *mention* in the reply, never to delete on its own initiative. This gate is
+  carried identically in all three description layers (node `description`,
+  `tools_metadata`, embedded class attribute) and restated in prompt §4.
+- **`add_subtask`** — only on an explicit ask to break something down or add a step
+  ("what do I need for X", "add the steps for Y"); never as unrequested help on an
+  opinion or question turn. Same three-layer mirroring as `delete_task`.
 - **`toggle_subtask`** — the API has no flip verb, so when `done` is omitted the component
   reads the task first and inverts. Supplying `done` skips the read.
 - **`create_task`** — refuses `kind: 'reminder'` without a `dueAt` locally, with an
@@ -363,7 +394,9 @@ degrade into each other and can be switched without touching the flow. Node ids 
 `ToggleSubtaskTool-v4`, `RemoveSubtaskTool-v4`, `HoldForClarificationTool-v4`.
 
 Conversation history is a run parameter (`session_id`), not a tweak; the Agent component's
-`n_messages` controls how much is replayed.
+`n_messages` controls how much is replayed. It is set to **30** (down from 100) — replaying
+a hundred messages is a latency tax paid on every single turn, and thirty is more history
+than any chat turn actually uses.
 
 ---
 
