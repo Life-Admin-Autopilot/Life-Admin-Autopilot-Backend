@@ -16,15 +16,28 @@ namespace Life_Admin_Autopilot.BLL.Features.VoiceNotes;
 /// would have held. One implementation is how that stays fixed.
 /// </para>
 /// </summary>
+/// <summary>
+/// What one commit produced.
+/// </summary>
+/// <param name="Created">
+/// The Tasks created (or matched) for the auto-save lane, in lane order — the
+/// response's <c>tasks</c> array lines up with the review card, not with Mongo.
+/// </param>
+/// <param name="Held">
+/// How many of the note's matters ended up with a question attached. Reported
+/// separately because it is NOT derivable from the note afterwards: the open-queue
+/// cap can decline to ask, and the staged clarify lane looks identical either way.
+/// </param>
+public readonly record struct VoiceCommitOutcome(IReadOnlyList<TaskDocument> Created, int Held);
+
 public interface IVoiceExtractionCommit
 {
     /// <summary>
-    /// Mutates <paramref name="note"/> in place and returns the Tasks created (or
-    /// matched) for the auto-save lane, in lane order. Does NOT save the note — the
-    /// caller owns the write, because the worker clears its lock in the same save
-    /// and the route does not.
+    /// Mutates <paramref name="note"/> in place. Does NOT save the note — the caller
+    /// owns the write, because the worker clears its lock in the same save and the
+    /// route does not.
     /// </summary>
-    Task<IReadOnlyList<TaskDocument>> ApplyAsync(
+    Task<VoiceCommitOutcome> ApplyAsync(
         VoiceNoteDocument note,
         VoiceGateResult gate,
         CancellationToken cancellationToken = default);
@@ -42,7 +55,7 @@ public sealed class VoiceExtractionCommit : IVoiceExtractionCommit
         _clarifications = clarifications;
     }
 
-    public async Task<IReadOnlyList<TaskDocument>> ApplyAsync(
+    public async Task<VoiceCommitOutcome> ApplyAsync(
         VoiceNoteDocument note,
         VoiceGateResult gate,
         CancellationToken cancellationToken = default)
@@ -59,11 +72,15 @@ public sealed class VoiceExtractionCommit : IVoiceExtractionCommit
 
         // Hold the answerable items as Clarifications (home banner → /clarify
         // slider). Idempotent per (user, item key) so a reclaim never duplicates.
-        await _clarifications.PersistAsync(note, cancellationToken).ConfigureAwait(false);
+        // The count it returns is questions RAISED, which is what the completion
+        // notification reports and is not the same as ClarifyItems.Count — the open
+        // queue cap can decline to ask, and a reclaim re-runs the same writes without
+        // raising anything.
+        var held = await _clarifications.PersistAsync(note, cancellationToken).ConfigureAwait(false);
 
         note.Status = note.ReviewItems.Count > 0 ? "needs_review" : "ready";
 
-        return created;
+        return new VoiceCommitOutcome(created, held);
     }
 
     /// <summary>Back-link each staged record to the Task it produced.</summary>

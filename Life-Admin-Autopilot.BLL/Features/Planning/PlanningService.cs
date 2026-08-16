@@ -79,21 +79,42 @@ public sealed class PlanningService
         _logger = logger;
     }
 
+    /// <summary>
+    /// Extraction on its own: one utterance in, unconflicted drafts out.
+    ///
+    /// <para>
+    /// Public because the VOICE worker needs the same reading of a sentence that
+    /// <c>/api/planning/propose</c> gets, and needs it without the conflict pass —
+    /// it runs its own, against a pool it has already loaded. If the two paths
+    /// extracted differently, the same sentence typed and spoken would produce
+    /// different matters, and neither answer would be explainable.
+    /// </para>
+    /// </summary>
+    /// <param name="at">
+    /// The instant relative dates are read against. The worker passes when the user
+    /// SPOKE, not when the note was picked up: a note captured at 23:55 and processed
+    /// at 00:02 must still resolve "tomorrow" to the day the speaker meant. Defaults
+    /// to now, which is right for the interactive route.
+    /// </param>
+    public async Task<IReadOnlyList<TaskDraft>> ExtractDraftsAsync(
+        string text,
+        string? timezone,
+        DateTime? at = null,
+        CancellationToken cancellationToken = default)
+    {
+        RequireConfigured();
+        return await ExtractAsync(text, timezone, at, cancellationToken).ConfigureAwait(false);
+    }
+
     public async Task<IReadOnlyList<TaskDraft>> ProposeAsync(
         ObjectId userId,
         string text,
         string? timezone,
         CancellationToken cancellationToken = default)
     {
-        if (!_options.IsConfigured)
-        {
-            throw new AppException(
-                503,
-                "planning_not_configured",
-                "Planning is not configured. Set PLANNING_API_KEY to enable it.");
-        }
+        RequireConfigured();
 
-        var extracted = await ExtractAsync(text, timezone, cancellationToken).ConfigureAwait(false);
+        var extracted = await ExtractAsync(text, timezone, at: null, cancellationToken).ConfigureAwait(false);
 
         // One read of the user's open matters, reused for every draft.
         var open = await _tasks.Tasks
@@ -126,12 +147,26 @@ public sealed class PlanningService
 
     // ---- Extraction -------------------------------------------------------
 
+    private void RequireConfigured()
+    {
+        if (!_options.IsConfigured)
+        {
+            throw new AppException(
+                503,
+                "planning_not_configured",
+                "Planning is not configured. Set PLANNING_API_KEY to enable it.");
+        }
+    }
+
     private async Task<List<TaskDraft>> ExtractAsync(
         string text,
         string? timezone,
+        DateTime? at,
         CancellationToken cancellationToken)
     {
-        var now = DateTimeOffset.UtcNow;
+        var now = at is { } anchor
+            ? new DateTimeOffset(DateTime.SpecifyKind(anchor, DateTimeKind.Utc))
+            : DateTimeOffset.UtcNow;
         var zone = string.IsNullOrWhiteSpace(timezone) ? "UTC" : timezone;
 
         var system =

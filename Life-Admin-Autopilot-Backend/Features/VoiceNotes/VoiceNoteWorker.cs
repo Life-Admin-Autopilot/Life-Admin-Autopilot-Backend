@@ -67,21 +67,16 @@ internal sealed class VoiceNoteWorker : KernelPollingWorker
                     || note.ReviewItems.Count > 0
                     || note.ClarifyItems.Count > 0);
 
-            if (hasExtraction)
-            {
-                await RepersistAsync(services, note, cancellationToken).ConfigureAwait(false);
-            }
-            else
-            {
-                await TranscribeAndExtractAsync(services, notes, note, cancellationToken).ConfigureAwait(false);
-            }
+            var held = hasExtraction
+                ? await RepersistAsync(services, note, cancellationToken).ConfigureAwait(false)
+                : await TranscribeAndExtractAsync(services, notes, note, cancellationToken).ConfigureAwait(false);
 
             note.LockedUntil = null;
             note.LastError = null;
             note.FailureReason = null;
             await notes.SaveAsync(note, cancellationToken).ConfigureAwait(false);
 
-            await NotifyAsync(services, notes, note, cancellationToken).ConfigureAwait(false);
+            await NotifyAsync(services, notes, note, held, cancellationToken).ConfigureAwait(false);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -96,7 +91,8 @@ internal sealed class VoiceNoteWorker : KernelPollingWorker
     /// <c>maxAttempts</c> times. Reclaiming the same in-progress note re-enters here
     /// and does count, which is correct: it re-transcribes from scratch.
     /// </summary>
-    private static async Task TranscribeAndExtractAsync(
+    /// <returns>How many of the note's matters ended up with a question attached.</returns>
+    private static async Task<int> TranscribeAndExtractAsync(
         IServiceProvider services,
         IVoiceNoteRepository notes,
         VoiceNoteDocument note,
@@ -130,14 +126,26 @@ internal sealed class VoiceNoteWorker : KernelPollingWorker
             ? Array.Empty<DraftVoiceItem>()
             : await services.GetRequiredService<IVoiceExtractor>()
                 .ExtractAsync(
-                    new VoiceExtractionRequest(note.Transcript, note.Timezone, locale),
+                    new VoiceExtractionRequest(
+                        note.UserId,
+                        note.Transcript,
+                        note.Timezone,
+                        locale,
+
+                        // When they SPOKE, not when we got to it. A note dictated at
+                        // 23:55 and claimed at 00:02 has to read "tomorrow" as the
+                        // day the speaker meant; anchoring on the worker's clock
+                        // moves every relative date in a late-night capture by a day.
+                        SpokenAt: note.ClientCapturedAt),
                     cancellationToken)
                 .ConfigureAwait(false);
 
         var gate = VoiceItemGate.GateAndKey(note.Id.ToString(), drafts);
-        await services.GetRequiredService<IVoiceExtractionCommit>()
+        var outcome = await services.GetRequiredService<IVoiceExtractionCommit>()
             .ApplyAsync(note, gate, cancellationToken)
             .ConfigureAwait(false);
+
+        return outcome.Held;
     }
 
     /// <summary>
@@ -145,7 +153,7 @@ internal sealed class VoiceNoteWorker : KernelPollingWorker
     /// clarify items are re-upserted too, which is why this cannot just skip
     /// straight to the status write.
     /// </summary>
-    private static async Task RepersistAsync(
+    private static async Task<int> RepersistAsync(
         IServiceProvider services,
         VoiceNoteDocument note,
         CancellationToken cancellationToken)
@@ -161,11 +169,13 @@ internal sealed class VoiceNoteWorker : KernelPollingWorker
 
         VoiceExtractionCommit.Backlink(note, created);
 
-        await services.GetRequiredService<IVoiceClarificationStaging>()
+        var held = await services.GetRequiredService<IVoiceClarificationStaging>()
             .PersistAsync(note, cancellationToken)
             .ConfigureAwait(false);
 
         note.Status = note.ReviewItems.Count > 0 ? "needs_review" : "ready";
+
+        return held;
     }
 
     private async Task HandleFailureAsync(
@@ -211,14 +221,23 @@ internal sealed class VoiceNoteWorker : KernelPollingWorker
     }
 
     /// <summary>
-    /// Always-surface push (product rule). The outbox guard is <c>notifiedAt</c>, so
-    /// a crash between the commit and the feed write re-sends rather than
-    /// double-sends.
+    /// Always-surface (product rule), and now the ONLY place the outcome exists: the
+    /// recording surface closed the moment the upload was accepted, so a note that
+    /// says nothing has, from the user's side, done nothing.
+    ///
+    /// <para>
+    /// The outbox guard is <c>notifiedAt</c>, so a crash between the commit and the
+    /// feed write re-sends rather than double-sends. Note this covers the COMPLETION
+    /// row only — the per-question rows are guarded separately, by whether their
+    /// clarification was actually inserted, because they are written where that is
+    /// known.
+    /// </para>
     /// </summary>
     private async Task NotifyAsync(
         IServiceProvider services,
         IVoiceNoteRepository notes,
         VoiceNoteDocument note,
+        int held,
         CancellationToken cancellationToken)
     {
         if ((note.Status != "needs_review" && note.Status != "ready") || note.NotifiedAt is not null)
@@ -226,8 +245,8 @@ internal sealed class VoiceNoteWorker : KernelPollingWorker
             return;
         }
 
-        await services.GetRequiredService<IVoiceNoteNotifications>()
-            .CreateReadyAsync(note.UserId, note.ExtractedTasks.Count, note.ClarifyItems.Count, cancellationToken)
+        await services.GetRequiredService<VoiceNoteOutcomeNotifier>()
+            .CompletedAsync(note.UserId, note.ExtractedTasks.Count, held, cancellationToken)
             .ConfigureAwait(false);
 
         note.NotifiedAt = DateTime.UtcNow;

@@ -57,19 +57,29 @@ public static class VoiceNoteWriteEndpoints
 
             var drafts = await extractor.ExtractAsync(
                 new VoiceExtractionRequest(
+                    note.UserId,
                     note.Transcript,
                     timezone,
-                    await ReadLocaleAsync(profiles, note, cancellationToken)),
+                    await ReadLocaleAsync(profiles, note, cancellationToken),
+
+                    // Same anchor as the worker's pass. A manual re-extract days
+                    // later must not silently re-read "tomorrow" as tomorrow.
+                    SpokenAt: note.ClientCapturedAt),
                 cancellationToken);
 
             var gate = VoiceItemGate.GateAndKey(note.Id.ToString(), drafts);
-            var created = await commit.ApplyAsync(note, gate, cancellationToken);
+            var outcome = await commit.ApplyAsync(note, gate, cancellationToken);
 
             await notes.SaveAsync(note, cancellationToken);
 
+            // The held count is deliberately NOT surfaced here. This route's response
+            // is a ported shape and the manual re-extract is a foreground action the
+            // user is watching — they will see the questions on the card stack. The
+            // background pass reports its counts through the notification feed, which
+            // is the only channel it has.
             return Results.Ok(new VoiceTasksResponse
             {
-                Tasks = created.Select(t => t.ToDto()).ToList(),
+                Tasks = outcome.Created.Select(t => t.ToDto()).ToList(),
                 VoiceNote = note.ToDto(),
             });
         })

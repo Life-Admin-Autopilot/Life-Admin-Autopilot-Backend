@@ -1,4 +1,5 @@
 using Life_Admin_Autopilot.DAL.Kernel.Errors;
+using MongoDB.Bson;
 
 namespace Life_Admin_Autopilot.BLL.Features.VoiceNotes;
 
@@ -39,7 +40,30 @@ public sealed record DraftVoiceItem(
     string? Notes = null,
     DraftClarification? Clarification = null);
 
-public sealed record VoiceExtractionRequest(string Transcript, string? Timezone, string? Locale);
+/// <param name="UserId">
+/// Whose matters the drafts are checked against. Extraction alone does not need it;
+/// deciding whether a draft is SETTLED does, because "clashes with something the
+/// user already has" is one of the four things that makes it not.
+/// </param>
+/// <param name="Timezone">
+/// The caller's IANA zone, as captured on the note. NOT validated on the way in —
+/// <c>POST /me/voice-notes</c> stores any 1..64 character string verbatim, which is
+/// the reference server's behaviour — so every consumer has to treat an
+/// unrecognisable value as absent rather than trusting it.
+/// </param>
+/// <param name="SpokenAt">
+/// When the user actually spoke, for resolving relative dates. The client sends
+/// <c>x-voice-note-captured-at</c> as the recording's START (now − durationMs), and
+/// that is the anchor the product means: a note dictated at 23:55 and picked up by
+/// the worker at 00:02 must still read "tomorrow" as the day the speaker meant, not
+/// the day the queue got to it. Null falls back to now.
+/// </param>
+public sealed record VoiceExtractionRequest(
+    ObjectId UserId,
+    string Transcript,
+    string? Timezone,
+    string? Locale,
+    DateTime? SpokenAt = null);
 
 /// <summary>
 /// The transcript → structured items seam.

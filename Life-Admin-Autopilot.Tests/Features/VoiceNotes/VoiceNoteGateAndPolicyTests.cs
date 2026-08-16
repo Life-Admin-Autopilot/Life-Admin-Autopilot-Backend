@@ -180,15 +180,17 @@ public sealed class VoiceNoteGateAndPolicyTests
 
     [Theory]
     [InlineData(0, 0, "Nothing to file from that one.")]
-    [InlineData(1, 0, "1 thing filed")]
-    [InlineData(3, 0, "3 things filed")]
-    [InlineData(0, 1, "1 thing filed · 1 guess to confirm")]
-    [InlineData(2, 2, "4 things filed · 2 guesses to confirm")]
-    public void counts_filed_items_across_both_lanes(int extracted, int clarify, string expected)
+    [InlineData(1, 0, "1 matter filed")]
+    [InlineData(3, 0, "3 matters filed")]
+    [InlineData(0, 1, "1 matter filed · 1 need your input")]
+    [InlineData(2, 2, "4 matters filed · 2 need your input")]
+    public void counts_filed_matters_across_both_lanes(int filed, int held, string expected)
     {
-        // The count the user cares about is how many things got FILED — the clarify
+        // The count the user cares about is how many matters got FILED — the held
         // lane produces a real Task too, so it is added in, not reported separately.
-        Assert.Equal(expected, VoiceNoteNotifications.BodyFor(extracted, clarify));
+        // The second half says what is WAITING ON THEM rather than what the machine
+        // is unsure about: "2 guesses to confirm" described our state, not theirs.
+        Assert.Equal(expected, VoiceNoteOutcomeNotifier.CompletionBody(filed, held));
     }
 
     // ---- The source quote --------------------------------------------------
