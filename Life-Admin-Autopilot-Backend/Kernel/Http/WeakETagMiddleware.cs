@@ -55,24 +55,104 @@ public sealed class WeakETagMiddleware
     public async Task InvokeAsync(HttpContext context)
     {
         var original = context.Response.Body;
-        using var buffer = new MemoryStream();
-        context.Response.Body = buffer;
+        await using var sentry = new EtagBodySentry(context.Response, original);
+        context.Response.Body = sentry;
 
         try
         {
             await _next(context);
 
-            if (ShouldTag(context.Response, buffer.Length))
+            if (!sentry.PassedThrough)
             {
-                context.Response.Headers.ETag = Compute(buffer.GetBuffer().AsSpan(0, (int)buffer.Length));
-            }
+                var buffer = sentry.Buffer;
+                if (ShouldTag(context.Response, buffer.Length))
+                {
+                    context.Response.Headers.ETag = Compute(buffer.GetBuffer().AsSpan(0, (int)buffer.Length));
+                }
 
-            buffer.Position = 0;
-            await buffer.CopyToAsync(original, context.RequestAborted);
+                buffer.Position = 0;
+                await buffer.CopyToAsync(original, context.RequestAborted);
+            }
         }
         finally
         {
             context.Response.Body = original;
+        }
+    }
+
+    /// <summary>
+    /// Buffers the body for hashing — EXCEPT when the response declares
+    /// <c>text/event-stream</c>, where it steps aside and writes straight through.
+    ///
+    /// <para>An ETag is a hash of the finished body, and an SSE body is not
+    /// finished until the stream ends — buffering it holds every frame (and the
+    /// keep-alive heartbeats) in memory until the turn completes, which turns a
+    /// live stream into one burst at the end. Measured on <c>/ai/ask</c>: TTFB
+    /// equalled total. Skipping SSE also matches the reference exactly: Express
+    /// computes ETags inside <c>res.send()</c>, and Node's SSE routes write with
+    /// <c>res.write()</c>, which never gets one.</para>
+    ///
+    /// <para>The decision is made lazily on the FIRST write or flush, because the
+    /// content type is unknown when the middleware runs but is always set by the
+    /// time a body byte exists — the SSE writer sets its headers before opening
+    /// the stream. Once made, the decision holds for the response's lifetime.</para>
+    /// </summary>
+    private sealed class EtagBodySentry(HttpResponse response, Stream original) : Stream
+    {
+        public MemoryStream Buffer { get; } = new();
+
+        public bool PassedThrough { get; private set; }
+
+        private bool _decided;
+
+        private Stream Route()
+        {
+            if (!_decided)
+            {
+                _decided = true;
+                PassedThrough = response.ContentType?.StartsWith(
+                    "text/event-stream", StringComparison.OrdinalIgnoreCase) == true;
+            }
+            return PassedThrough ? original : Buffer;
+        }
+
+        public override bool CanRead => false;
+        public override bool CanSeek => false;
+        public override bool CanWrite => true;
+        public override long Length => Route().Length;
+        public override long Position
+        {
+            get => Route().Position;
+            set => throw new NotSupportedException();
+        }
+
+        public override void Write(byte[] buffer, int offset, int count) =>
+            Route().Write(buffer, offset, count);
+
+        public override void Write(ReadOnlySpan<byte> buffer) => Route().Write(buffer);
+
+        public override Task WriteAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken) =>
+            Route().WriteAsync(buffer, offset, count, cancellationToken);
+
+        public override ValueTask WriteAsync(ReadOnlyMemory<byte> buffer, CancellationToken cancellationToken = default) =>
+            Route().WriteAsync(buffer, cancellationToken);
+
+        // A flush on the buffered path is a no-op on a MemoryStream; on the
+        // pass-through path it is the thing that pushes an SSE frame (and, on
+        // the first call, the response headers) onto the wire.
+        public override void Flush() => Route().Flush();
+
+        public override Task FlushAsync(CancellationToken cancellationToken) =>
+            Route().FlushAsync(cancellationToken);
+
+        public override int Read(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+        public override void SetLength(long value) => throw new NotSupportedException();
+
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing) Buffer.Dispose();
+            base.Dispose(disposing);
         }
     }
 
