@@ -152,12 +152,37 @@ public sealed class LangflowEventTranslator
     }
 
     /// <summary>
-    /// The tail of the turn: the fallback answer if nothing streamed, then
-    /// <c>done</c>. Always call it, including after an aborted stream — the route
-    /// depends on <c>done</c> to decide whether to refund the quota slot.
+    /// The tail of the turn: whatever the envelope reader still holds, then the
+    /// fallback answer if nothing streamed at all, then <c>done</c>. Always call it,
+    /// including after an aborted stream — the route depends on <c>done</c> to decide
+    /// whether to refund the quota slot.
+    ///
+    /// <para>
+    /// <b>Why the flush.</b> <see cref="PlanningEnvelopeReader"/> is a two-call
+    /// protocol — <c>Push</c> per chunk, then <c>Flush</c> at end of stream — because
+    /// it deliberately holds a chunk back while it is still undecided about what it
+    /// is reading (leading whitespace looks identical to the run-up to an envelope
+    /// and to the run-up to prose). Every other caller honours both halves;
+    /// <see cref="PlanningEnvelopeReader.ExtractReply"/> does it in one line. This
+    /// path only ever called <c>Push</c>, so a stream that ended while the reader was
+    /// still undecided dropped what it was holding on the floor.
+    /// </para>
+    ///
+    /// <para>
+    /// It also has to run BEFORE the <c>_streamed.Length == 0</c> test, or a turn
+    /// rescued by the flush would print the fallback copy on top of it and say the
+    /// same thing twice.
+    /// </para>
     /// </summary>
     public IEnumerable<AiStreamEvent> Complete()
     {
+        var remainder = _envelope.Flush();
+        if (remainder.Length > 0)
+        {
+            _streamed.Append(remainder);
+            yield return AiStreamEvents.Token(remainder);
+        }
+
         if (_streamed.Length == 0 && !string.IsNullOrEmpty(_fallbackText))
         {
             yield return AiStreamEvents.Token(_fallbackText);

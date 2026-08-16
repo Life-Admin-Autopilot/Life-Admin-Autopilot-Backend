@@ -163,6 +163,43 @@ public sealed class LangflowEnvelopeTranslationTests
         Assert.Equal("All set.", tail[0].Payload["text"]);
     }
 
+    [Fact]
+    public void completing_a_turn_drains_whatever_the_reader_is_still_holding()
+    {
+        var translator = new LangflowEventTranslator();
+
+        // The reader holds a chunk back while it is still undecided: leading
+        // whitespace is the run-up to an envelope and the run-up to prose alike, so
+        // it cannot be classified until a real character arrives. Mid-stream that
+        // resolves itself on the next chunk. At END of stream — Langflow dropped the
+        // connection, no `end` frame ever came — nobody was completing the reader's
+        // two-call protocol, and what it was holding went in the bin.
+        translator.Accept(Frame("  ")).ToList();
+
+        var tail = translator.Complete().ToList();
+
+        Assert.Equal(AiStreamEvents.TokenKind, tail[0].Kind);
+        Assert.Equal("  ", tail[0].Payload["text"]);
+        Assert.Equal(AiStreamEvents.DoneKind, tail[1].Kind);
+    }
+
+    [Fact]
+    public void the_drain_does_not_make_a_finished_envelope_speak_twice()
+    {
+        var translator = new LangflowEventTranslator();
+        translator.Accept(Frame("""{"mode":"chat","reply":"All set.","tasks":[]}""")).ToList();
+
+        // Everything inside `reply` already streamed, and the rest of the envelope is
+        // structure rather than speech. The drain must add nothing, and — because it
+        // runs before the "did anything stream?" test — must not let the fallback copy
+        // print the same sentence a second time either.
+        var tail = translator.Complete().ToList();
+
+        Assert.Single(tail);
+        Assert.Equal(AiStreamEvents.DoneKind, tail[0].Kind);
+        Assert.Equal("All set.", translator.AssistantText);
+    }
+
     private static LangflowFrame Frame(string chunk) =>
         new("token", System.Text.Json.JsonDocument
             .Parse(System.Text.Json.JsonSerializer.Serialize(new { chunk }))
