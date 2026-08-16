@@ -1,7 +1,7 @@
 {
-  "generated_at": "2026-08-16T17:10:31+00:00",
-  "label": "gate @ b883a4f, calibrated, rate-limit-aware",
-  "git_sha": "b883a4f",
+  "generated_at": "2026-08-16T17:32:48+00:00",
+  "label": "gate @ healthy langflow, spend cap raised",
+  "git_sha": "290cfb1",
   "prompt_sha": "1c6e563",
   "samples": "per-case",
   "note": "Last-known state per case. `--gate` fails only on a case that passed here and fails now. Regenerate with `python3 runner.py --update-baseline` once a fix has genuinely landed.",
@@ -14,8 +14,8 @@
     },
     "no-unasked-deletes": {
       "passed": true,
-      "flaky": true,
-      "samples": "2/3",
+      "flaky": false,
+      "samples": "3/3",
       "failed_checks": []
     },
     "simple-turn-latency": {
@@ -25,10 +25,12 @@
       "failed_checks": []
     },
     "batching-one-turn": {
-      "passed": true,
+      "passed": false,
       "flaky": false,
-      "samples": "1/1",
-      "failed_checks": []
+      "samples": "0/1",
+      "failed_checks": [
+        "max_tool_rounds"
+      ]
     },
     "no-date-no-stakes-silent": {
       "passed": true,
@@ -75,7 +77,7 @@
     "transcript-extraction": {
       "passed": false,
       "flaky": false,
-      "samples": "0/1",
+      "samples": "0/3",
       "failed_checks": [
         "no_question_in_prose"
       ]

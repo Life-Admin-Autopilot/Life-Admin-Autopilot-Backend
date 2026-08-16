@@ -1,7 +1,7 @@
 {
   "name": "batching-one-turn",
   "source": "planning-agent-md-2-most-chat-turns-create-nothing",
-  "description": "Three items in one sentence are three filings in one turn. Every question the turn needs is asked in that turn, so a follow-up message finds nothing outstanding. 'buy milk' is dateless and low-stakes and must not be questioned at all.",
+  "description": "Three items in one sentence are three filings in one turn. Every question the turn needs is asked in that turn, so a follow-up message finds nothing outstanding. 'buy milk' is dateless and low-stakes and must not be questioned at all. Gemini occasionally spends extra invocations on a batch (6 observed for 3 matters, outcome still correct); majority sampling separates efficiency wobble from real regression.",
   "timezone": "Africa/Cairo",
   "steps": [
     {
@@ -71,5 +71,6 @@
         "max": 1
       }
     ]
-  }
+  },
+  "samples": 3
 }
