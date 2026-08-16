@@ -121,7 +121,7 @@ public sealed class AiConfirmedToolRunner
         var conditions = new List<FilterDefinition<ClarificationDocument>>(3)
         {
             Builders<ClarificationDocument>.Filter.Eq(c => c.UserId, userId),
-            Builders<ClarificationDocument>.Filter.Eq(c => c.Status, "open"),
+            Builders<ClarificationDocument>.Filter.Eq(c => c.Status, ClarificationVocabulary.Open),
         };
 
         if (domain is not null)

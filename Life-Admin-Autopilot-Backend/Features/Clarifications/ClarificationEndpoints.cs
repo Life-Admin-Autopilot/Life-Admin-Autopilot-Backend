@@ -143,7 +143,7 @@ public static class ClarificationEndpoints
             // echo the current state rather than creating a second task. Note this
             // short-circuits BEFORE the body is parsed, so a closed row answers 200
             // even for a payload that would otherwise be a 400.
-            if (doc.Status != "open")
+            if (doc.Status != ClarificationVocabulary.Open)
             {
                 return Results.Ok(new ClarificationResolveResponse
                 {
@@ -180,7 +180,7 @@ public static class ClarificationEndpoints
                 await clarifications
                     .CloseOutAsync(
                         doc,
-                        new ClarificationPatch(Status: "dropped", ResolvedAt: now),
+                        new ClarificationPatch(Status: ClarificationVocabulary.Dropped, ResolvedAt: now),
                         now,
                         cancellationToken)
                     .ConfigureAwait(false);
@@ -202,7 +202,7 @@ public static class ClarificationEndpoints
             await clarifications
                 .CloseOutAsync(
                     doc,
-                    new ClarificationPatch(Status: "resolved", Answer: answerLabel, ResolvedAt: now),
+                    new ClarificationPatch(Status: ClarificationVocabulary.Resolved, Answer: answerLabel, ResolvedAt: now),
                     now,
                     cancellationToken)
                 .ConfigureAwait(false);
@@ -232,7 +232,7 @@ public static class ClarificationEndpoints
             var caller = context.RequireUser();
             var doc = await LoadAsync(clarifications, caller.Id, id, cancellationToken).ConfigureAwait(false);
 
-            if (doc.Status == "open")
+            if (doc.Status == ClarificationVocabulary.Open)
             {
                 var now = DateTime.UtcNow;
 
@@ -261,13 +261,13 @@ public static class ClarificationEndpoints
             var caller = context.RequireUser();
             var doc = await LoadAsync(clarifications, caller.Id, id, cancellationToken).ConfigureAwait(false);
 
-            if (doc.Status == "open")
+            if (doc.Status == ClarificationVocabulary.Open)
             {
                 var now = DateTime.UtcNow;
                 await clarifications
                     .CloseOutAsync(
                         doc,
-                        new ClarificationPatch(Status: "dropped", ResolvedAt: now),
+                        new ClarificationPatch(Status: ClarificationVocabulary.Dropped, ResolvedAt: now),
                         now,
                         cancellationToken)
                     .ConfigureAwait(false);

@@ -41,14 +41,14 @@ public sealed class ClarificationCascade
             .UpdateManyAsync(
                 Builders<ClarificationDocument>.Filter.And(
                     Builders<ClarificationDocument>.Filter.Eq(c => c.UserId, userId),
-                    Builders<ClarificationDocument>.Filter.Eq(c => c.Status, "open"),
+                    Builders<ClarificationDocument>.Filter.Eq(c => c.Status, ClarificationVocabulary.Open),
                     // TaskId is ObjectId? because legacy rows have no taskId at all;
                     // the ids being cascaded are always concrete, so lift them.
                     Builders<ClarificationDocument>.Filter.In(
                         c => c.TaskId,
                         taskIds.Select(id => (ObjectId?)id))),
                 Builders<ClarificationDocument>.Update
-                    .Set(c => c.Status, "dropped")
+                    .Set(c => c.Status, ClarificationVocabulary.Dropped)
                     .Set(c => c.ResolvedAt, DateTime.UtcNow),
                 cancellationToken: cancellationToken)
             .ConfigureAwait(false);
@@ -72,7 +72,7 @@ public sealed class ClarificationCascade
         var clauses = new List<FilterDefinition<ClarificationDocument>>
         {
             Builders<ClarificationDocument>.Filter.Eq(c => c.UserId, userId),
-            Builders<ClarificationDocument>.Filter.Eq(c => c.Status, "open"),
+            Builders<ClarificationDocument>.Filter.Eq(c => c.Status, ClarificationVocabulary.Open),
         };
 
         if (!string.IsNullOrEmpty(domain))
@@ -84,7 +84,7 @@ public sealed class ClarificationCascade
             .UpdateManyAsync(
                 Builders<ClarificationDocument>.Filter.And(clauses),
                 Builders<ClarificationDocument>.Update
-                    .Set(c => c.Status, "dropped")
+                    .Set(c => c.Status, ClarificationVocabulary.Dropped)
                     .Set(c => c.ResolvedAt, DateTime.UtcNow),
                 cancellationToken: cancellationToken)
             .ConfigureAwait(false);

@@ -98,10 +98,10 @@ public sealed class StaleClarificationSettler : MongoRepositoryBase<Clarificatio
     public Task SettleStaleAsync(DateTime now, CancellationToken ct = default) =>
         Collection.UpdateManyAsync(
             Filter.And(
-                Filter.Eq(c => c.Status, "open"),
+                Filter.Eq(c => c.Status, ClarificationVocabulary.Open),
                 Filter.Lte(c => c.CreatedAt, now - SettleAfter)),
             Update
-                .Set(c => c.Status, "dropped")
+                .Set(c => c.Status, ClarificationVocabulary.Dropped)
                 .Set(c => c.ResolvedAt, now)
                 .Set(c => c.Answer, SettledAnswer),
             cancellationToken: ct);

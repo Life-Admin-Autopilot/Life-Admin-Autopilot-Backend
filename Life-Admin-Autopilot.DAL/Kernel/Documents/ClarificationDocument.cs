@@ -3,11 +3,60 @@ using MongoDB.Bson.Serialization.Attributes;
 
 namespace Life_Admin_Autopilot.DAL.Kernel.Documents;
 
+/// <summary>
+/// The closed vocabularies a Clarification is allowed to carry.
+///
+/// <para>
+/// <b><see cref="Statuses"/> was fiction until it was reconciled.</b> It declared
+/// <c>answered</c>, <c>skipped</c> and <c>settled</c> — none of which any writer in
+/// the codebase has ever produced — and omitted <c>resolved</c>, which is what
+/// <c>POST /me/clarifications/{id}/resolve</c> actually stores. Nothing referenced
+/// the list, so nothing caught it: a vocabulary that is never read cannot be wrong
+/// out loud. Anyone writing a filter, a fixture or a migration off it got three
+/// statuses that never occur and missed the one that occurs most.
+/// </para>
+///
+/// <para>
+/// So the list is now the truth, and the three constants below are referenced at
+/// every site that assigns or filters a status. That is the part that keeps it
+/// true — a member no call site names drifts again the moment the routes move.
+/// </para>
+///
+/// <para>
+/// <b>Skip is deliberately absent, and that is not an omission.</b> Deferring a
+/// question leaves the row <c>open</c> and moves <c>deferredUntil</c> instead; it
+/// drops out of <c>VisibleOpen()</c> for the cooling-off window and comes back.
+/// A skipped question is still a question, and still occupies a slot against the
+/// open-queue cap.
+/// </para>
+/// </summary>
 public static class ClarificationVocabulary
 {
-    public static readonly IReadOnlyList<string> Statuses = new[] { "open", "answered", "skipped", "dropped", "settled" };
+    /// <summary>Raised and awaiting an answer. The only status a write route acts on.</summary>
+    public const string Open = "open";
+
+    /// <summary>The user answered. Written by <c>POST /me/clarifications/{id}/resolve</c>.</summary>
+    public const string Resolved = "resolved";
+
+    /// <summary>
+    /// Closed without an answer — discarded by the user, orphaned by the deletion of
+    /// its task, or timed out by the reminder tick's stale settler.
+    /// </summary>
+    public const string Dropped = "dropped";
+
+    public static readonly IReadOnlyList<string> Statuses = new[] { Open, Resolved, Dropped };
+
     public static readonly IReadOnlyList<string> Kinds = new[] { "date", "amount", "choice", "confirm" };
-    public static readonly IReadOnlyList<string> Costs = new[] { "high", "low" };
+
+    /// <summary>
+    /// How expensive a wrong guess is. <c>high</c> is the default everywhere: if the
+    /// model thought the item was worth asking about, the guess must not be acted on.
+    /// </summary>
+    public const string CostHigh = "high";
+
+    public const string CostLow = "low";
+
+    public static readonly IReadOnlyList<string> Costs = new[] { CostHigh, CostLow };
 }
 
 public sealed class ClarificationOptionDocument
@@ -69,7 +118,7 @@ public sealed class ClarificationDocument
     /// </summary>
     public ObjectId? TaskId { get; set; }
 
-    public string Status { get; set; } = "open";
+    public string Status { get; set; } = ClarificationVocabulary.Open;
 
     public ClarificationDraftDocument Draft { get; set; } = new();
 
@@ -77,7 +126,7 @@ public sealed class ClarificationDocument
 
     public string Kind { get; set; } = "date";
 
-    public string CostOfWrong { get; set; } = "high";
+    public string CostOfWrong { get; set; } = ClarificationVocabulary.CostHigh;
 
     public List<ClarificationOptionDocument> Options { get; set; } = new();
 

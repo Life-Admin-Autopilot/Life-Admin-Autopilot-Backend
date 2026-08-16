@@ -98,7 +98,7 @@ public sealed class ClarificationRepository : MongoRepositoryBase<ClarificationD
     /// </summary>
     public Task<long> CountOpenAsync(ObjectId userId, CancellationToken cancellationToken = default) =>
         Collection.CountDocumentsAsync(
-            Filter.And(UserScoped(userId), Filter.Eq(c => c.Status, "open")),
+            Filter.And(UserScoped(userId), Filter.Eq(c => c.Status, ClarificationVocabulary.Open)),
             cancellationToken: cancellationToken);
 
     /// <summary>

@@ -108,11 +108,11 @@ public sealed class ClarificationHoldService
 
         // Defaults to 'high': if the model felt the item was worth asking about, do
         // not act on the guess.
-        var costOfWrong = input.CostOfWrong ?? "high";
+        var costOfWrong = input.CostOfWrong ?? ClarificationVocabulary.CostHigh;
         var priority = input.Priority ?? "normal";
         var tags = input.Tags ?? Array.Empty<string>();
 
-        var kind = dueAt.HasValue && costOfWrong == "low" ? "reminder" : "list";
+        var kind = dueAt.HasValue && costOfWrong == ClarificationVocabulary.CostLow ? "reminder" : "list";
 
         var task = await _tasks
             .CreateAsync(
@@ -152,7 +152,7 @@ public sealed class ClarificationHoldService
             Id = ObjectId.GenerateNewId(),
             UserId = userId,
             TaskId = task.Id,
-            Status = "open",
+            Status = ClarificationVocabulary.Open,
             Draft = new ClarificationDraftDocument
             {
                 Title = input.Title,

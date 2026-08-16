@@ -128,7 +128,7 @@ public sealed class VoiceClarificationStaging : IVoiceClarificationStaging
             ["userId"] = note.UserId,
             ["taskId"] = taskId,
             ["sourceKey"] = item.Key,
-            ["status"] = "open",
+            ["status"] = ClarificationVocabulary.Open,
             ["draft"] = draft,
             ["question"] = item.Question,
             ["kind"] = item.Kind,
