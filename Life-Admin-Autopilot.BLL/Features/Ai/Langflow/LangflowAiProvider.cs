@@ -373,8 +373,38 @@ public sealed class LangflowAiProvider : IAiProvider
             // EndOfStream: that property BLOCKS to fill the buffer, which on a stream
             // deliberately held open between tokens is a synchronous wait on the
             // network inside an async read (CA2024).
-            while (await reader.ReadLineAsync(cancellationToken).ConfigureAwait(false) is { } line)
+            //
+            // Each read carries its own idle deadline. client.Timeout stops covering
+            // the connection once the headers arrive (ResponseHeadersRead), so a
+            // Langflow that accepts the run and then stalls — a provider retry
+            // storm, a wedged agent loop — holds the body open forever and the user
+            // watches a spinner. Measured: one turn sat 219.92s producing nothing.
+            // The deadline is per LINE, not per turn: any frame resets it, so a
+            // long multi-tool turn that keeps talking is untouched; only true
+            // silence trips it. 90s comfortably clears the slowest single model
+            // call we have observed while ending a wedged turn while the user
+            // plausibly still cares.
+            while (true)
             {
+                string? line;
+                using (var idle = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken))
+                {
+                    idle.CancelAfter(IdleReadTimeout);
+                    try
+                    {
+                        line = await reader.ReadLineAsync(idle.Token).ConfigureAwait(false);
+                    }
+                    catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+                    {
+                        throw new AppException(
+                            504,
+                            "agent_timeout",
+                            "The agent took too long to respond. Try again.");
+                    }
+                }
+
+                if (line is null) break;
+
                 if (LangflowWireContract.TryParseLine(line, ref pendingEventName, out var frame))
                 {
                     yield return frame;
@@ -382,6 +412,13 @@ public sealed class LangflowAiProvider : IAiProvider
             }
         }
     }
+
+    /// <summary>
+    /// How long the body stream may go without a single line before the turn is
+    /// declared wedged. Resets on every line — heartbeats, tokens, tool frames all
+    /// count — so it bounds silence, not turn length.
+    /// </summary>
+    private static readonly TimeSpan IdleReadTimeout = TimeSpan.FromSeconds(90);
 
     private HttpRequestMessage BuildRequest(
         string sessionId,

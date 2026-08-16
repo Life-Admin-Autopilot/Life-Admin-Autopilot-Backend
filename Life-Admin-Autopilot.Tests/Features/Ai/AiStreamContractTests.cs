@@ -118,6 +118,46 @@ public sealed class AiStreamContractTests
     }
 
     [Fact]
+    public async Task a_turn_that_neither_speaks_nor_acts_earns_an_empty_turn_error()
+    {
+        // The shape a provider retry storm produces: a healthy-looking stream —
+        // sources, done — carrying nothing. Measured live at 219.92s of spinner
+        // with zero tokens, zero tools, zero errors. The route must refuse to end
+        // a turn shapeless: the client needs ONE frame it can render as failure.
+        using var factory = Factory(new ScriptedAiProvider(new[]
+        {
+            AiStreamEvents.Sources(Array.Empty<AiStreamSource>()),
+            AiStreamEvents.Done(),
+        }));
+
+        var frames = await FramesAsync(await AskAsync(factory));
+        var types = frames.Select(f => f.GetProperty("type").GetString()).ToArray();
+
+        Assert.Equal(new[] { "conversation", "sources", "error", "done", "quota" }, types);
+        // Before done, so a client that stops listening at done has seen it.
+        Assert.Equal("empty_turn", frames[2].GetProperty("code").GetString());
+    }
+
+    [Fact]
+    public async Task the_empty_turn_error_defers_to_an_error_the_provider_already_sent()
+    {
+        // One explanation per failure: a turn the fabricated-action guard already
+        // rejected must not stack a second, vaguer error on top of the first.
+        using var factory = Factory(new ScriptedAiProvider(new[]
+        {
+            AiStreamEvents.Sources(Array.Empty<AiStreamSource>()),
+            AiStreamEvents.Error("unverified_action", "The assistant described an action it did not perform."),
+            AiStreamEvents.Done(),
+        }));
+
+        var frames = await FramesAsync(await AskAsync(factory));
+        var errors = frames.Where(f => f.GetProperty("type").GetString() == "error").ToArray();
+
+        Assert.Single(errors);
+        Assert.Equal("unverified_action", errors[0].GetProperty("code").GetString());
+    }
+
+    [Fact]
     public async Task every_frame_is_a_bare_data_line_with_no_sse_field_names()
     {
         using var factory = Factory(new ScriptedAiProvider(ScriptedAiProvider.HappyTurn()));

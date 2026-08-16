@@ -57,10 +57,35 @@ internal static class AiStreamTurns
 
             try
             {
+                // A turn that neither speaks nor acts is broken in every mode, and
+                // it happens: a provider retry storm ends the stream with a healthy
+                // shape and an empty envelope, and the client renders… nothing.
+                // Measured live: 219.92s of spinner, zero tokens, zero tools, zero
+                // errors. Track the turn's substance and refuse to end it shapeless.
+                var spoke = false;
+                var acted = false;
+                var errored = false;
+
                 await foreach (var value in ai.AskAsync(request, cancellationToken)
                                    .WithCancellation(cancellationToken)
                                    .ConfigureAwait(false))
                 {
+                    spoke |= value.Kind == AiStreamEvents.TokenKind;
+                    acted |= value.Kind == AiStreamEvents.ToolCallKind;
+                    errored |= value.Kind == AiStreamEvents.ErrorKind;
+
+                    if (value.Kind == AiStreamEvents.DoneKind && !spoke && !acted && !errored)
+                    {
+                        // Before the done frame, so a client that stops listening at
+                        // done has already seen it. Suppressed when the provider
+                        // reported its own error — one explanation per failure.
+                        await sse
+                            .SendAsync(
+                                AiStreamEvents.Error("empty_turn", "The agent returned nothing. Try again."),
+                                cancellationToken)
+                            .ConfigureAwait(false);
+                    }
+
                     await sse.SendAsync(value, cancellationToken).ConfigureAwait(false);
 
                     if (value.Kind != AiStreamEvents.DoneKind)
@@ -72,6 +97,19 @@ internal static class AiStreamTurns
                     // This only republishes the counter so the UI can update.
                     reachedDone = true;
                     await SendQuotaAsync(sse, quota, caller.Id, tier, cancellationToken).ConfigureAwait(false);
+                }
+
+                // A stream that just ENDS — no done, no error, nothing said or
+                // done — is the same shapeless turn without even the courtesy of a
+                // terminator. Name it, so the client shows a failure instead of a
+                // spinner that quietly stopped meaning anything.
+                if (!reachedDone && !spoke && !acted && !errored)
+                {
+                    await sse
+                        .SendAsync(
+                            AiStreamEvents.Error("empty_turn", "The agent returned nothing. Try again."),
+                            cancellationToken)
+                        .ConfigureAwait(false);
                 }
             }
             catch (Exception ex)
