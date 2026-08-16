@@ -335,7 +335,7 @@ public sealed class LangflowProviderTests
     }
 
     [Fact]
-    public async Task refuses_to_transcribe_rather_than_pretending_to_be_unconfigured()
+    public async Task answers_the_contract_503_when_asked_to_transcribe()
     {
         if (Database is null)
         {
@@ -345,10 +345,22 @@ public sealed class LangflowProviderTests
         var provider = Provider(Handler(string.Empty));
 
         // Langflow's run endpoint is text-only and the baseline flow has no speech
-        // input. Answering 503 ai_not_configured would misreport a real gap as
-        // "switched off".
-        await Assert.ThrowsAsync<NotSupportedException>(() =>
+        // input, so this adapter genuinely cannot transcribe. It used to say so with
+        // a NotSupportedException, on the argument that a real gap should fail loudly
+        // — but the route has already passed IsConfigured by then, so "loudly" meant
+        // a bare 500 at a caller who did nothing wrong and cannot tell a missing
+        // capability from a broken server. The contract has a code for exactly this.
+        var error = await Assert.ThrowsAsync<AppException>(() =>
             provider.TranscribeAsync(new AiTranscriptionRequest(Array.Empty<byte>(), "audio/m4a", "en")));
+
+        Assert.Equal(503, error.Status);
+        Assert.Equal("ai_not_configured", error.Code);
+
+        // Byte-for-byte the literal the route's own pre-flight check uses
+        // (AiShellErrors.Transcribe). It OMITS the trailing " to enable." that
+        // /ai/ask carries — verified live against the reference server, and the
+        // differ compares these strings exactly.
+        Assert.Equal("AI is not configured. Set GEMINI_API_KEY in server/.env.", error.Message);
     }
 
     // ---- configuration ------------------------------------------------------

@@ -80,18 +80,37 @@ public sealed class LangflowAiProvider : IAiProvider
     /// <summary>
     /// <b>Not provided by this adapter, and deliberately not faked.</b> Node's
     /// transcription is a Gemini audio call; the baseline flow has no audio input and
-    /// Langflow's run endpoint takes text. Throwing loudly is the honest answer — a
-    /// deployment that configures Langflow and then calls this route has a real gap,
-    /// and answering 503 <c>ai_not_configured</c> would misreport it as "switched
-    /// off". See the slice report.
+    /// Langflow's run endpoint takes text.
+    ///
+    /// <para>
+    /// <b>Why this is a 503 and not a throw.</b> It used to raise
+    /// <see cref="NotSupportedException"/> on the argument that a deployment with a
+    /// real gap should fail loudly. It failed loudly at the WRONG party: the route
+    /// has already passed <see cref="IsConfigured"/> by the time it gets here, so the
+    /// caller received a bare <c>500 internal_error</c> for a capability the server
+    /// simply does not have — indistinguishable, from the client's side, from the
+    /// server being broken. The contract already has a code for "this needs AI that
+    /// is not wired up", every client branches on it, and the route's own
+    /// pre-flight check answers with exactly this literal
+    /// (<c>AiShellErrors.Transcribe</c> — note it omits the trailing
+    /// <c>" to enable."</c> that <c>/ai/ask</c> carries, which is verified live and
+    /// must not be tidied up). The quota reservation is released by the route's
+    /// <c>catch</c> either way, so the user is not billed for the refusal.
+    /// </para>
+    ///
+    /// <para>
+    /// The gap itself is still real and still worth closing — the Nemotron adapter
+    /// behind <c>IVoiceTranscriber</c> could serve this route as well. That is a
+    /// deliberate follow-up, not something to slip in behind an exception.
+    /// </para>
     /// </summary>
     public Task<string> TranscribeAsync(
         AiTranscriptionRequest request,
         CancellationToken cancellationToken = default) =>
-        throw new NotSupportedException(
-            "POST /ai/voice/transcribe has no Langflow counterpart: the run endpoint is text-only and " +
-            "the baseline flow has no speech input. Wire a transcription provider, or leave the route " +
-            "on NotConfiguredAiProvider.");
+        throw new AppException(
+            503,
+            "ai_not_configured",
+            "AI is not configured. Set GEMINI_API_KEY in server/.env.");
 
     /// <summary>
     /// One turn of <c>POST /ai/ask</c>.
