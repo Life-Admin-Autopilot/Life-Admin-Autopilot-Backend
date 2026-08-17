@@ -90,6 +90,44 @@ public sealed class ClarificationEnvelope
 }
 
 /// <summary>
+/// <c>GET /me/clarifications/by-ids</c> — what became of questions a caller
+/// already holds the ids of.
+///
+/// <para>
+/// The list endpoint cannot answer this. It returns VISIBLE OPEN rows, so a row
+/// missing from it may have been resolved, dropped, or merely deferred out of
+/// sight — three different things a chat transcript must render three different
+/// ways. Absence is not an answer, so this reads the rows by id and reports
+/// their status outright.
+/// </para>
+/// </summary>
+public sealed class ClarificationStatusResponse
+{
+    [JsonPropertyName("clarifications")]
+    public List<ClarificationStatusDto> Clarifications { get; init; } = new();
+}
+
+/// <summary>One row's outcome, plus the matter as it stands NOW.</summary>
+public sealed class ClarificationStatusDto
+{
+    [JsonPropertyName("clarification")]
+    public ClarificationDto Clarification { get; init; } = new();
+
+    /// <summary>
+    /// The task the answer patched, current — not the draft the question was
+    /// raised against.
+    ///
+    /// <para>
+    /// This is what lets a re-read transcript show the CONFIRMED time rather than
+    /// the guess the card asked about. Null when the task has since been deleted.
+    /// </para>
+    /// </summary>
+    [JsonPropertyName("task")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.Never)]
+    public TaskDto? Task { get; init; }
+}
+
+/// <summary>
 /// <c>POST /me/clarifications/{id}/resolve</c> — <c>{clarification, task}</c>.
 /// </summary>
 public sealed class ClarificationResolveResponse

@@ -96,6 +96,72 @@ public static class ClarificationEndpoints
         })
         .RequireAuthorization();
 
+        // GET /me/clarifications/by-ids?ids=a,b,c — what became of these questions.
+        //
+        // The chat card asks this on every mount, and it exists because the card
+        // used to know only what happened while it was on screen. Answer a question,
+        // reopen the conversation tomorrow, and the transcript re-rendered the hold
+        // from the tool call in history — options untapped, Save armed, no trace of
+        // the answer. The row was resolved server-side the whole time; nothing had
+        // ever asked.
+        //
+        // Not served by the list endpoint: that returns VISIBLE OPEN rows, so a row
+        // absent from it may be resolved, dropped, or deferred, and those must not
+        // render the same way. Reading by id is the only read that distinguishes
+        // them.
+        endpoints.MapGet("/me/clarifications/by-ids", async (
+            HttpContext context,
+            ClarificationRepository clarifications,
+            TaskRepository tasks,
+            CancellationToken cancellationToken) =>
+        {
+            var caller = context.RequireUser();
+
+            // Bounded by the same cap that bounds the open queue: a transcript can
+            // hold more holds than that across its whole history, but a card asking
+            // about more rows than the user could ever have open is asking on
+            // someone else's behalf.
+            var ids = (context.Request.Query["ids"].ToString() ?? string.Empty)
+                .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .Distinct(StringComparer.Ordinal)
+                .Take(ClarificationHoldService.MaxOpenClarifications * 4)
+                .Select(raw => ObjectId.TryParse(raw, out var parsed) ? parsed : (ObjectId?)null)
+                // An unparseable id is a row that cannot exist, which is the same
+                // outcome as one that does not: omitted from the response. It is not
+                // a 400 — a transcript carrying one bad id would lose every good one.
+                .Where(parsed => parsed.HasValue)
+                .Select(parsed => parsed!.Value)
+                .ToList();
+
+            var docs = await clarifications
+                .FindOwnedManyAsync(caller.Id, ids, cancellationToken)
+                .ConfigureAwait(false);
+
+            var rows = new List<ClarificationStatusDto>(docs.Count);
+            foreach (var doc in docs)
+            {
+                // Only for a row that was actually answered. An open question's task
+                // is the guess the card is still asking about, and the card already
+                // has that from the tool call in history.
+                TaskDocument? task = null;
+                if (doc.Status == ClarificationVocabulary.Resolved
+                    && doc.TaskId is { } linked
+                    && linked != ObjectId.Empty)
+                {
+                    task = await tasks.FindLiveAsync(caller.Id, linked, cancellationToken).ConfigureAwait(false);
+                }
+
+                rows.Add(new ClarificationStatusDto
+                {
+                    Clarification = doc.ToDto(),
+                    Task = task?.ToDto(),
+                });
+            }
+
+            return Results.Ok(new ClarificationStatusResponse { Clarifications = rows });
+        })
+        .RequireAuthorization();
+
         // POST /me/clarifications — file an uncertain item AND the questions about it.
         //
         // ONE task, one row per question. `questions` (max 3) is optional and

@@ -70,6 +70,23 @@ public sealed class HoldBody
     [JsonPropertyName("questions")]
     public JsonElement Questions { get; init; }
 
+    /// <summary>
+    /// A figure the user STATED, in major units — 500 for "send 500 EGP".
+    ///
+    /// <para>
+    /// Held matters carry amounts for the same reason filed ones do. What made a
+    /// matter uncertain is almost never the money: "send 500 EGP to Louisa" is a
+    /// hold because the TIME is missing, and refusing the figure on those grounds
+    /// loses the one fact the sentence stated plainly.
+    /// </para>
+    /// </summary>
+    [JsonPropertyName("amount")]
+    public JsonElement Amount { get; init; }
+
+    /// <summary>ISO 4217 code for <see cref="Amount"/>. Never a symbol.</summary>
+    [JsonPropertyName("currency")]
+    public JsonElement Currency { get; init; }
+
     [JsonPropertyName("sourceText")]
     public JsonElement SourceText { get; init; }
 
@@ -197,6 +214,16 @@ public static class HoldBinder
         var options = Options(f, body.Options, "options");
         var questions = Questions(f, body.Questions);
         var sourceText = f.PlainString(body.SourceText, "sourceText", max: MaxSourceText);
+
+        // Through the money gate here rather than in the service, so an
+        // unresolvable currency drops the FIGURE and still files the matter. The
+        // model is guessing; a dropped guess costs the user a manual amount, and
+        // rejecting the whole hold over it would cost them the task and the
+        // question with it.
+        var amount = MoneyVocabulary.Normalize(
+            f.Decimal(body.Amount, "amount", min: 0m, max: MoneyVocabulary.MaxMajorUnits, required: false),
+            f.PlainString(body.Currency, "currency", max: 3),
+            source: "ai");
         var timezone = Timezone(f, body.Timezone);
 
         Answerable(f, kind, dueAtGuess, options, questions);
@@ -216,7 +243,8 @@ public static class HoldBinder
             options,
             sourceText,
             timezone,
-            questions);
+            questions,
+            amount);
     }
 
     /// <summary>

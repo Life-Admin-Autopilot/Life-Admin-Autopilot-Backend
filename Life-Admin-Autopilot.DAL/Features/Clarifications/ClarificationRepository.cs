@@ -115,6 +115,28 @@ public sealed class ClarificationRepository : MongoRepositoryBase<ClarificationD
             .FirstOrDefaultAsync(cancellationToken)!;
 
     /// <summary>
+    /// The same read as <see cref="FindOwnedAsync"/>, for a handful of ids at once.
+    ///
+    /// <para>
+    /// No status filter, for the same reason: the caller is asking what became of
+    /// rows it already knows about, and "resolved" is the answer it most needs. A
+    /// chat transcript re-read tomorrow asks this about the questions in it.
+    /// </para>
+    /// </summary>
+    public async Task<IReadOnlyList<ClarificationDocument>> FindOwnedManyAsync(
+        ObjectId userId,
+        IReadOnlyCollection<ObjectId> ids,
+        CancellationToken cancellationToken = default)
+    {
+        if (ids.Count == 0) return Array.Empty<ClarificationDocument>();
+
+        return await Collection
+            .Find(Filter.And(Filter.In(c => c.Id, ids), UserScoped(userId)))
+            .ToListAsync(cancellationToken)
+            .ConfigureAwait(false);
+    }
+
+    /// <summary>
     /// Port of the route's <c>closeOut</c> — an atomic <c>$set</c>, deliberately NOT
     /// a document save.
     ///
