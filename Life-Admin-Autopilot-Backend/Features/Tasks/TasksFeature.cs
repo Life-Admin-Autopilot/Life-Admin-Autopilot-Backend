@@ -21,6 +21,7 @@ public static class TasksFeature
         services.TryAddScoped<TaskRepository>();
         services.TryAddScoped<TaskWriteService>();
         services.TryAddScoped<TaskCountsService>();
+        services.TryAddScoped<FinancialInsightsService>();
         services.TryAddScoped<CategorizeService>();
         services.TryAddScoped<TranslateQuotaService>();
         services.TryAddScoped<UserLocaleReader>();

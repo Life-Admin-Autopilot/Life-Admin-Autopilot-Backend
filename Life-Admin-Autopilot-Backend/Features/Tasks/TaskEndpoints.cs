@@ -26,6 +26,7 @@ public static class TaskEndpoints
     {
         // Literal-segment routes first.
         TaskListEndpoints.Map(endpoints);
+        FinancialInsightsEndpoints.Map(endpoints);
         TaskTrashEndpoints.Map(endpoints);
         TaskBulkEndpoints.Map(endpoints);
         TaskAiEndpoints.Map(endpoints);
