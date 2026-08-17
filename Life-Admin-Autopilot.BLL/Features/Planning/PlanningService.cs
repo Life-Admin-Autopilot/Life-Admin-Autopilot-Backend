@@ -38,7 +38,8 @@ public sealed record TaskDraft(
     string SourceType,
     double Confidence,
     IReadOnlyList<PlanningConflict> Conflicts,
-    bool TimeAssumed = false);
+    bool TimeAssumed = false,
+    MoneyDocument? Amount = null);
 
 /// <summary>
 /// The propose half of propose/commit: turn one utterance into draft tasks and
@@ -186,6 +187,7 @@ public sealed class PlanningService
             + "\"priority\":one of low|normal|high|urgent, \"kind\":\"reminder\"|\"list\", "
             + "\"dueAt\":ISO-8601 with offset or null, "
             + "\"duePrecision\":\"time\"|\"day\"|\"none\", \"notes\":string|null, "
+            + "\"amount\":number|null, \"currency\":ISO-4217 code|null, "
             + "\"confidence\":number between 0 and 1}\n"
             // "the user's own language" was read as their PREFERRED language, not this
             // sentence's: the same English utterance came back once as "Renew passport"
@@ -207,7 +209,23 @@ public sealed class PlanningService
             + "  \"day\" — they named a day or date but NO clock time (\"Wednesday\", "
             + "\"next week\", \"الأربع\"). Still fill dueAt: use 09:00 in the user's "
             + "timezone as a placeholder, and mark it \"day\" so it can be confirmed.\n"
-            + "  \"none\" — no date at all; dueAt is null.";
+            + "  \"none\" — no date at all; dueAt is null.\n"
+            // The figure the user SAID, not one inferred from what a thing usually
+            // costs. "Pay 200 dollars for Claude" carries an amount; "pay the
+            // electricity bill" does not, and guessing one there would put an
+            // invented number into a spending total the user checks against paper.
+            + "amount is the figure the user actually STATED, in MAJOR units as "
+            + "spoken (200 for \"200 dollars\", 49.99 for \"49.99\"). Never infer a "
+            + "price from what something typically costs — no figure stated means "
+            + "amount null.\n"
+            // Symbols are ambiguous by construction: $ is USD, CAD, AUD and more.
+            // MoneyVocabulary.NormalizeCurrency refuses anything that is not three
+            // letters, so an unresolvable currency drops the whole amount rather
+            // than filing it under a guessed one.
+            + "currency is the ISO 4217 CODE (USD, EGP, EUR) — never a symbol. "
+            + "Resolve \"dollars\" to USD, \"pounds\"/\"جنيه\" to EGP for this user "
+            + "unless they clearly meant another country's. If amount is null, "
+            + "currency is null; if you cannot tell the currency, set BOTH to null.";
 
         var request = new GeminiRequest(
             new[] { new GeminiContent(new[] { new GeminiPart(text) }) },
@@ -343,7 +361,16 @@ public sealed class PlanningService
                 SourceType: "text",
                 Confidence: Num(element, "confidence") ?? 0.5,
                 Conflicts: Array.Empty<PlanningConflict>(),
-                TimeAssumed: IsTimeAssumed(element, dueAt)));
+                TimeAssumed: IsTimeAssumed(element, dueAt),
+                // Through the same gate a scanned figure goes through, so a
+                // spoken amount and a read one are bounded, rounded and
+                // currency-checked identically. It returns null on anything it
+                // cannot make safe — no currency, absurd magnitude — and a
+                // draft with no amount is the ordinary case, not a failure.
+                Amount: MoneyVocabulary.Normalize(
+                    (decimal?)Num(element, "amount"),
+                    Str(element, "currency"),
+                    source: "ai")));
         }
 
         return drafts;
