@@ -123,6 +123,27 @@ public static class ClarificationEndpoints
                 .HoldAsync(caller.Id, HoldBinder.Parse(body), cancellationToken: cancellationToken)
                 .ConfigureAwait(false);
 
+            // INVARIANT: a hold either raised a question, or says WHY it did not.
+            //
+            // The chat card reads this response to decide whether the turn asked the
+            // user anything. It can only be right if "no receipts" always comes with a
+            // reason, because a success carrying neither is indistinguishable from a
+            // question that simply failed to persist — and the card's only safe reading
+            // of that is to invent a question from the arguments, which is the
+            // 2026-08-17 phantom-questions incident.
+            //
+            // `queueFull` is the one reason that exists today. A second decline path —
+            // a per-matter cap, quiet hours, a dedupe that suppresses a repeat — must
+            // ship its own flag rather than silently returning nothing, and this is
+            // where forgetting that becomes loud instead of becoming a phantom card.
+            if (outcome.Rows.Count == 0 && !outcome.QueueFull)
+            {
+                throw new InvalidOperationException(
+                    "Hold raised no question and gave no reason. Every decline path must "
+                    + "report itself: the chat cannot tell a silent decline from a lost "
+                    + "question, and renders the second as a question nobody was asked.");
+            }
+
             return Results.Created((string?)null, new ClarificationCreateResponse
             {
                 Clarification = outcome.Clarification?.ToDto(),
