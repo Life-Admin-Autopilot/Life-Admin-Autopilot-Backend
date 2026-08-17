@@ -141,12 +141,17 @@ public sealed class DigestEndpointTests : IClassFixture<DigestWebApplicationFact
 
         foreach (var field in new[]
         {
-            "localDate", "generatedAt", "headline", "counts",
+            "localDate", "generatedAt", "headline", "prosePending", "counts",
             "estimatedMinutesToday", "themes", "busiestDay", "duplicates",
         })
         {
             Assert.True(digest.TryGetProperty(field, out _), $"missing {field}");
         }
+
+        // No model configured means no sentence is coming, and the dashboard polls
+        // while this is true. Claiming otherwise here would have every client on a
+        // key-less deployment refetching the digest every two seconds, forever.
+        Assert.False(digest.GetProperty("prosePending").GetBoolean());
 
         // The labels are the only model-written part, and there is no earlier row to
         // inherit any from.

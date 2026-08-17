@@ -52,6 +52,33 @@ public sealed class DailyDigestDocument
     public string? Locale { get; set; }
 
     /// <summary>
+    /// The <see cref="SourceHash"/> a model has already been asked to write a sentence
+    /// for, whether or not it produced one.
+    ///
+    /// <para>
+    /// <b>This is what makes the prose attempt happen exactly once per state.</b> The
+    /// sentence is written in the background, so the read that triggers it is a
+    /// different read from the one that sees the result — and most reads are cache
+    /// hits. Without a record on the row, either no hit ever queues a sentence (and a
+    /// row written before the model was reachable keeps its computed headline all
+    /// day) or every hit queues one (and a day the model is down becomes a request
+    /// per dashboard load, forever).
+    /// </para>
+    ///
+    /// <para>
+    /// Stamped on COMPLETION rather than on queueing, so a job lost to a restart is
+    /// retried rather than written off. Cleared by every rebuild: a new fingerprint is
+    /// a new day's worth of facts and deserves its own attempt.
+    /// </para>
+    ///
+    /// <para>
+    /// Null on every row written before this field existed, which reads as "not yet
+    /// attempted" — the correct answer for all of them.
+    /// </para>
+    /// </summary>
+    public string? ProseAttemptedHash { get; set; }
+
+    /// <summary>
     /// The instant the digest was COMPUTED. TTL-indexed at 7 days — a digest is
     /// worthless the day after it describes.
     /// </summary>

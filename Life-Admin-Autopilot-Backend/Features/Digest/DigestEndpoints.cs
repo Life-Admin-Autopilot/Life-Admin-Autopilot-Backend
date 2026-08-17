@@ -41,9 +41,9 @@ internal static class DigestEndpoints
             // An INVALID zone does not fail the request — buildDailyDigest validates
             // it and falls back to UTC, because a client typo must not take down the
             // one read the dashboard cannot render without.
-            var payload = await digests.BuildAsync(user.Id, tz, cancellationToken: ct).ConfigureAwait(false);
+            var result = await digests.BuildAsync(user.Id, tz, cancellationToken: ct).ConfigureAwait(false);
 
-            return Results.Ok(new DigestResponse { Digest = payload.ToDto() });
+            return Results.Ok(new DigestResponse { Digest = result.ToDto() });
         }).RequireAuthorization();
 
         return endpoints;

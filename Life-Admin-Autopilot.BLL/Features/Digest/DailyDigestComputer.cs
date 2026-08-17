@@ -11,13 +11,23 @@ namespace Life_Admin_Autopilot.BLL.Features.Digest;
 /// <param name="EstimatedMinutesToday">Summed over today's estimated matters.</param>
 /// <param name="BusiestDay">Heaviest day in the week ahead, or null.</param>
 /// <param name="Duplicates">Same-title bins in the pool.</param>
-/// <param name="PoolIds">Ids of the matters a theme is allowed to name.</param>
+/// <param name="Pool">
+/// The matters a theme may name and a sentence may describe, soonest deadline first.
+/// Carries the title and domain as well as the id because <see cref="DigestProseWriter"/>
+/// is handed this set rather than re-reading it — one query, one view of the day, so
+/// the counts and the sentence cannot describe different states.
+/// </param>
 public sealed record ComputedDigest(
     DailyDigestCountsDocument Counts,
     DailyDigestEstimateDocument EstimatedMinutesToday,
     DailyDigestBusiestDayDocument? BusiestDay,
     List<DailyDigestDuplicateDocument> Duplicates,
-    HashSet<string> PoolIds);
+    IReadOnlyList<DigestPoolMatter> Pool)
+{
+    /// <summary>Ids of the matters a theme is allowed to name.</summary>
+    public HashSet<string> PoolIds { get; } =
+        Pool.Select(m => m.Id).ToHashSet(StringComparer.Ordinal);
+}
 
 /// <summary>
 /// Port of <c>computeDigest</c> from <c>server/src/modules/tasks/dailyDigest.ts</c>.
@@ -82,12 +92,10 @@ public sealed class DailyDigestComputer
             ["deletedAt"] = new BsonDocument("$exists", false),
         };
 
-        // "Live" is open-or-snoozed: every bucket describes work still in front of
-        // the user.
-        var live = new BsonDocument(scope)
-        {
-            ["status"] = new BsonDocument("$in", new BsonArray { "open", "snoozed" }),
-        };
+        // Shared with ReadPoolAsync, so the matters the model is shown are exactly the
+        // ones the counts were taken over. Two spellings of "live" that drifted apart
+        // would put a sentence about matters no bucket contains.
+        var live = Live(userId);
 
         var facetPipeline = new[]
         {
@@ -154,15 +162,7 @@ public sealed class DailyDigestComputer
             .Limit(MaxTodayRows)
             .ToListAsync(cancellationToken);
 
-        // Everything live with a deadline inside the horizon, OVERDUE INCLUDED. The
-        // themes, the duplicate check and the model's view all come from this one
-        // set, so they cannot describe different days. An undated matter is absent:
-        // `$lt` does not match a missing field.
-        var poolRowsTask = tasks
-            .Find(With(live, "dueAt", new BsonDocument("$lt", day.WeekEnd)))
-            .Sort(new BsonDocument("dueAt", 1))
-            .Limit(MaxTasksToModel)
-            .ToListAsync(cancellationToken);
+        var poolRowsTask = FindPoolRowsAsync(tasks, live, day.WeekEnd, cancellationToken);
 
         await Task.WhenAll(facetTask, todayRowsTask, poolRowsTask).ConfigureAwait(false);
 
@@ -178,11 +178,7 @@ public sealed class DailyDigestComputer
             estimate.Max += max;
         }
 
-        var pool = poolRows
-            .Select(row => new DuplicateCandidate(
-                row.GetValue("_id", BsonNull.Value).ToString() ?? string.Empty,
-                row.TryGetValue("title", out var title) && title.IsString ? title.AsString : string.Empty))
-            .ToList();
+        var pool = poolRows.Select(ReadPoolMatter).ToList();
 
         var busiest = FirstOf(facet, "busiestDay");
 
@@ -204,9 +200,79 @@ public sealed class DailyDigestComputer
                     Date = busiest.GetValue("_id", string.Empty).AsString,
                     Count = busiest.GetValue("n", 0).ToInt32(),
                 },
-            DigestDuplicates.Find(pool),
-            pool.Select(p => p.Id).ToHashSet(StringComparer.Ordinal));
+            DigestDuplicates.Find(pool.Select(m => new DuplicateCandidate(m.Id, m.Title)).ToList()),
+            pool);
     }
+
+    /// <summary>
+    /// The pool ALONE, for a read that already has a valid cached payload and only
+    /// needs the matters a sentence would be about.
+    ///
+    /// <para>
+    /// Split out rather than reached by recomputing the whole digest: a cache hit that
+    /// rebuilt everything just to queue some prose would rewrite <c>generatedAt</c>,
+    /// and that field repeating across calls is the only external proof the cache is
+    /// real. One find, and the row is left exactly as it was.
+    /// </para>
+    /// </summary>
+    public async Task<IReadOnlyList<DigestPoolMatter>> ReadPoolAsync(
+        ObjectId userId,
+        DateTime now,
+        string? timezone,
+        CancellationToken cancellationToken = default)
+    {
+        var day = TaskQuery.GetDayBoundaries(now, timezone);
+        var tasks = _database.GetCollection<BsonDocument>(MongoCollections.Tasks);
+
+        var rows = await FindPoolRowsAsync(tasks, Live(userId), day.WeekEnd, cancellationToken)
+            .ConfigureAwait(false);
+
+        return rows.Select(ReadPoolMatter).ToList();
+    }
+
+    /// <summary>
+    /// Everything live with a deadline inside the horizon, OVERDUE INCLUDED. The
+    /// themes, the duplicate check and the model's view all come from this one set, so
+    /// they cannot describe different days. An undated matter is absent: <c>$lt</c>
+    /// does not match a missing field.
+    /// </summary>
+    private static Task<List<BsonDocument>> FindPoolRowsAsync(
+        IMongoCollection<BsonDocument> tasks,
+        BsonDocument live,
+        DateTime weekEnd,
+        CancellationToken cancellationToken) =>
+        tasks
+            .Find(With(live, "dueAt", new BsonDocument("$lt", weekEnd)))
+            .Sort(new BsonDocument("dueAt", 1))
+            .Limit(MaxTasksToModel)
+            .ToListAsync(cancellationToken);
+
+    /// <summary>
+    /// Open-or-snoozed and not trashed: every bucket the digest reports describes work
+    /// still in front of the user.
+    /// </summary>
+    private static BsonDocument Live(ObjectId userId) => new()
+    {
+        ["userId"] = userId,
+        ["deletedAt"] = new BsonDocument("$exists", false),
+        ["status"] = new BsonDocument("$in", new BsonArray { "open", "snoozed" }),
+    };
+
+    /// <summary>
+    /// One raw pool row as the rest of the slice sees it. Every field is read
+    /// DEFENSIVELY — these documents come back as Mongo stored them, not as the
+    /// schema promises, and a matter written before a field existed simply does not
+    /// have it. A missing title or domain becomes an empty string rather than an
+    /// exception, because the digest's headline read is contractually not allowed to
+    /// fail on one odd row.
+    /// </summary>
+    private static DigestPoolMatter ReadPoolMatter(BsonDocument row) => new(
+        row.GetValue("_id", BsonNull.Value).ToString() ?? string.Empty,
+        row.TryGetValue("title", out var title) && title.IsString ? title.AsString : string.Empty,
+        row.TryGetValue("domain", out var domain) && domain.IsString ? domain.AsString : string.Empty,
+        row.TryGetValue("dueAt", out var dueAt) && dueAt.IsValidDateTime
+            ? DateTime.SpecifyKind(dueAt.ToUniversalTime(), DateTimeKind.Utc)
+            : null);
 
     /// <summary>
     /// Port of <c>readEstimate</c>. <c>estimate</c> is optional on every matter and

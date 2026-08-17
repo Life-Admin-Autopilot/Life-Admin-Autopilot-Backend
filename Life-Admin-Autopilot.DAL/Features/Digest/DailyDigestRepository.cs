@@ -63,6 +63,13 @@ public sealed class DailyDigestRepository : MongoRepositoryBase<DailyDigestDocum
                 ["generatedAt"] = generatedAt,
                 ["payload"] = payload.ToBsonDocument(),
                 ["updatedAt"] = generatedAt,
+
+                // A rebuild means the facts moved, so any earlier attempt was for a
+                // state that no longer exists. Clearing it is what lets the next read
+                // ask for a sentence about the new one. Written as an explicit null
+                // rather than $unset so the field's absence never has to mean two
+                // different things.
+                ["proseAttemptedHash"] = BsonNull.Value,
             },
             ["$setOnInsert"] = new BsonDocument
             {
@@ -76,6 +83,62 @@ public sealed class DailyDigestRepository : MongoRepositoryBase<DailyDigestDocum
             update,
             new FindOneAndUpdateOptions<DailyDigestDocument> { IsUpsert = true },
             cancellationToken);
+    }
+
+    /// <summary>
+    /// Record that a model was asked for this day's sentence, and store the sentence
+    /// if it wrote one.
+    ///
+    /// <para>
+    /// <b>Conditional on <paramref name="sourceHash"/>, which is the whole point.</b>
+    /// The sentence is written in the background, so by the time it lands the user may
+    /// already have completed, added or moved a matter — and the row will have been
+    /// rebuilt against the new state. Matching the fingerprint the sentence was
+    /// generated FROM means a stale one is silently dropped instead of overwriting a
+    /// current headline with a description of a day that has moved on. No match, no
+    /// write, no error: the plain sentence in the row is still true.
+    /// </para>
+    ///
+    /// <para>
+    /// It touches <c>payload.headline</c> and nothing else inside the payload. Every
+    /// count in the row was computed from documents and stays exactly as the build
+    /// left it — the model is not permitted to move a number, and an update that
+    /// wrote the whole payload would make that a matter of trust rather than of shape.
+    /// </para>
+    /// </summary>
+    /// <param name="headline">
+    /// The sentence the model wrote, or NULL when it produced nothing usable. A null
+    /// still records the attempt — that is the difference between "no sentence yet"
+    /// and "asked, and the answer was nothing", and only the second one should stop
+    /// the next read asking again.
+    /// </param>
+    /// <returns>True if the row was still describing the same state and was patched.</returns>
+    public async Task<bool> CompleteProseAsync(
+        ObjectId userId,
+        string localDate,
+        string sourceHash,
+        string? headline,
+        DateTime updatedAt,
+        CancellationToken cancellationToken = default)
+    {
+        var update = Builders<DailyDigestDocument>.Update
+            .Set(d => d.ProseAttemptedHash, sourceHash)
+            .Set(d => d.UpdatedAt, updatedAt);
+
+        if (headline is not null)
+        {
+            update = update.Set(d => d.Payload.Headline, headline);
+        }
+
+        var result = await Collection.UpdateOneAsync(
+            Filter.And(
+                UserScoped(userId),
+                Filter.Eq(d => d.LocalDate, localDate),
+                Filter.Eq(d => d.SourceHash, sourceHash)),
+            update,
+            cancellationToken: cancellationToken).ConfigureAwait(false);
+
+        return result.MatchedCount > 0;
     }
 }
 
