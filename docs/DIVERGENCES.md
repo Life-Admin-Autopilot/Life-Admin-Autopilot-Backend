@@ -992,3 +992,96 @@ Delete `ReminderDuration.cs` and its tests, drop the `durationMinutes` parameter
 `ComputeRules` so the final entry returns to `due`, revert `RefineWithAiAsync`'s clamp
 to `d <= due`, and drop `MatchKeyword`/`MatterKeyword` from `ReminderLeadTime`. Doing
 so restores a schedule whose last nudge always arrives too late to act on.
+
+---
+
+## 13. A conflict is window overlap, not "the deadlines are close"
+
+**Decided:** Phase 3 of `Steward/docs/smart-reminder-conflict-spec.md` — interval-merge
+conflict detection with an urgency-driven resolution.
+**Status:** implemented. Full .NET suite **1849 passed / 0 failed**, four consecutive
+runs, up from 1821 after Phase 2. Verified end to end against a live server through
+`POST /me/conflicts`.
+
+### What Node does
+
+Nothing. There is no conflict detection anywhere in `server/src` — no clash rule, no
+duplicate rule, and no `/conflicts` route of any kind. `ConflictService`,
+`SlotSuggester` and the three endpoints are .NET-only, from the `ai_flow_V4` split.
+
+**So this entry records a behaviour change, not a divergence from a reference.** It is
+here because the change is large, four call sites depend on it, and the surface it
+rewrites had no test of any kind to describe what it used to do.
+
+### What .NET did before this
+
+`|other.dueAt - candidate.dueAt| <= 2 hours` — a fixed symmetric radius, identical for
+a ten-minute bill and a four-hour tax return, with the reason string *"Scheduled
+within two hours of this."* That is exactly the "is the date close" test the spec §3.3
+names as **not** conflict detection, and it was wrong in both directions at once.
+
+### What .NET does now
+
+`MatterWindow` (`BLL/Kernel/Reminders/`) gives every matter the span it occupies —
+`[dueAt - duration, dueAt]`, the same interval Phase 2 schedules the final nudge
+against — and two matters conflict when those spans overlap after one is given 15
+minutes of breathing room.
+
+Measured on a live server against the same three drafts:
+
+| draft | old rule | now |
+| --- | --- | --- |
+| 10-min bill, 90 min before another 10-min bill | clash | **clear** |
+| 45-min chore overlapping a 45-min repair | clash | clash |
+| two 4-hour jobs, deadlines 3 hours apart | **clear** | clash |
+
+`MatterConflict` also gained `urgency`, `otherUrgency` and `yields`, so the answer
+names which of the two should move rather than reporting that a problem exists.
+Both sides are scored at NOW, not at their own deadlines: scored at its own deadline
+every matter reads as maximally pressing and the comparison carries no information.
+A tie leaves the incumbent alone — it is the commitment the user already made.
+
+### Why the buffer is fixed at fifteen minutes
+
+Touching intervals are not really fine: nothing accounts for travel, for finding the
+right document, or for the minutes a person needs between one thing and the next. It
+is deliberately not scaled to the longer matter — a boundary that moves per pair
+cannot be explained to a user in one sentence, and this rule has to be predictable
+before it is clever.
+
+### What it costs
+
+- **Fewer clashes reported on lists of short matters, more on lists of long ones.**
+  That is the intended correction, but it IS a visible change for existing users: a
+  list of bills an hour apart stops warning, and two long jobs that never warned start
+  to.
+- **`ClashesWithin` changed signature.** It now takes the candidate, because an
+  overlap test needs the candidate's own duration and not just an instant. This is the
+  predicate `SlotSuggester` proposes free times through, and the endpoint's own comment
+  requires that "a suggestion cannot be refused the moment it is taken" — pinned by
+  `ConflictServiceTests.agrees_with_the_check_about_which_instants_are_free`.
+- **`CheckAsync` takes a `MatterCandidate`** (title, domain, priority, estimate)
+  instead of a bare title, because duration and the yields verdict both need more than
+  a title. All five call sites were updated; `ConflictPreviewBody` gained optional
+  `domain` and `priority` so a draft can be checked as it will actually be saved.
+- **`ConflictService.ClashWindow` is gone.** `VoiceAutoFilePolicy` derived its "Later
+  that day" offer from it; that offer keeps its previous size through
+  `MatterWindow.SuggestedShift`, deliberately decoupled so a detection change cannot
+  silently move a UI affordance.
+- **No parity row, no contract operation.** Node answers its HTML 404 for all three
+  routes.
+
+### A pre-existing behaviour left alone
+
+`SlotSuggester` walks each day from the start of the matter's part of day rather than
+from the requested time, so it can propose a slot EARLIER than the one asked for. It
+is unchanged here and its suggestions are still validated against the same pool, but
+it surfaced during the Phase 3 proof and is worth a deliberate look.
+
+### How to revert
+
+Delete `MatterWindow.cs` and its tests, restore `ClashWindow = TimeSpan.FromHours(2)`
+with the `(other - due).Duration() > ClashWindow` test, drop `Urgency`/`OtherUrgency`/
+`Yields` from `MatterConflict` and the endpoint mapper, and revert the five call sites
+to passing a bare title. Doing so restores a rule that flags two quick errands ninety
+minutes apart and misses two four-hour jobs that genuinely collide.

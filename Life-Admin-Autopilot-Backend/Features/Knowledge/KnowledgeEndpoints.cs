@@ -178,9 +178,24 @@ public static class KnowledgeEndpoints
                 throw AppException.BadRequest("invalid_input", "A non-empty 'title' is required.");
             }
 
+            // Domain and priority are optional here: this route is reachable before
+            // the user has chosen either. Absent, the duration falls to the keyword
+            // table and the matter scores as 'normal' — the same answer it would get
+            // if saved that way, which is the point of checking before saving.
+            var candidate = new ConflictService.MatterCandidate(
+                title,
+                body.Domain ?? string.Empty,
+                body.Priority ?? "normal");
+
             var pool = await conflicts.OpenMattersAsync(caller.Id, cancellationToken).ConfigureAwait(false);
             var found = await conflicts
-                .CheckAsync(caller.Id, title, body.DueAt, pool, excludeTaskId: null, cancellationToken)
+                .CheckAsync(
+                    caller.Id,
+                    candidate,
+                    body.DueAt,
+                    pool,
+                    excludeTaskId: null,
+                    cancellationToken: cancellationToken)
                 .ConfigureAwait(false);
 
             // A refusal the user cannot act on is just an obstacle. When there IS
@@ -193,7 +208,11 @@ public static class KnowledgeEndpoints
             {
                 var offset = OffsetFor(body.Timezone, wanted);
                 suggestions = SlotSuggester
-                    .Suggest(title, wanted, offset, at => ConflictService.ClashesWithin(at, pool, null))
+                    .Suggest(
+                        title,
+                        wanted,
+                        offset,
+                        at => ConflictService.ClashesWithin(at, candidate, pool, null))
                     .ToArray();
                 reason = SlotSuggester.ReasonFor(title);
             }
@@ -248,10 +267,24 @@ public static class KnowledgeEndpoints
 
             var pool = await conflicts.OpenMattersAsync(caller.Id, cancellationToken).ConfigureAwait(false);
 
+            // The rest of the matter as it currently stands, so a change of TIME is
+            // measured against the real duration and priority rather than defaults.
+            var candidate = new ConflictService.MatterCandidate(
+                title,
+                body.Domain ?? task.Domain,
+                body.Priority ?? task.Priority,
+                task.Estimate);
+
             // Excluded from its own pool — otherwise every task is a perfect duplicate
-            // of itself, zero minutes away from itself.
+            // of itself, overlapping itself exactly.
             var found = await conflicts
-                .CheckAsync(caller.Id, title, dueAt, pool, excludeTaskId: taskId, cancellationToken)
+                .CheckAsync(
+                    caller.Id,
+                    candidate,
+                    dueAt,
+                    pool,
+                    excludeTaskId: taskId,
+                    cancellationToken: cancellationToken)
                 .ConfigureAwait(false);
 
             return Results.Ok(new
@@ -282,6 +315,12 @@ public static class KnowledgeEndpoints
         }
     }
 
+    /// <summary>
+    /// The identifying fields name the OTHER matter — the one already in the list.
+    /// <c>urgency</c> is the candidate's own score and <c>otherUrgency</c> belongs to
+    /// the matter named here, so a client can show the comparison rather than just
+    /// the verdict; <c>yields</c> is that verdict.
+    /// </summary>
     private static object Conflict(MatterConflict c) => new
     {
         taskId = c.TaskId.ToString(),
@@ -289,12 +328,16 @@ public static class KnowledgeEndpoints
         dueAt = c.DueAt,
         kind = c.Kind,
         reason = c.Reason,
+        urgency = c.Urgency,
+        otherUrgency = c.OtherUrgency,
+        yields = c.Yields,
     };
 }
 
 /// <summary>
-/// <c>{ dueAt?: ISO-8601, title?: string }</c> — the proposed change, not the task.
-/// Both optional: an omitted field means "leave it as it is and check the rest".
+/// <c>{ dueAt?: ISO-8601, title?: string, domain?, priority? }</c> — the proposed
+/// change, not the task. All optional: an omitted field means "leave it as it is and
+/// check the rest".
 /// </summary>
 public sealed class ConflictPreviewBody
 {
@@ -303,6 +346,17 @@ public sealed class ConflictPreviewBody
 
     [JsonPropertyName("title")]
     public string? Title { get; set; }
+
+    /// <summary>
+    /// Decides how long the matter occupies when it carries no estimate, which is
+    /// almost always. Absent, the keyword table answers alone.
+    /// </summary>
+    [JsonPropertyName("domain")]
+    public string? Domain { get; set; }
+
+    /// <summary>Decides which side yields when the windows overlap.</summary>
+    [JsonPropertyName("priority")]
+    public string? Priority { get; set; }
 
     /// <summary>IANA zone. Without it "evening" would mean UTC's evening.</summary>
     [JsonPropertyName("timezone")]

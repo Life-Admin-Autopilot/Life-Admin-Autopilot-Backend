@@ -131,7 +131,16 @@ public sealed class PlanningService
             // implementation, so a draft and a saved task can never disagree about
             // what counts as a conflict.
             var found = await _conflicts
-                .CheckAsync(userId, raw.Title, raw.DueAt, open, excludeTaskId: null, cancellationToken)
+                .CheckAsync(
+                    userId,
+                    // A draft has no estimate — nothing in the extraction schema asks
+                    // for one — so its span comes from the duration table, exactly as
+                    // it will once saved.
+                    new ConflictService.MatterCandidate(raw.Title, raw.Domain, raw.Priority),
+                    raw.DueAt,
+                    open,
+                    excludeTaskId: null,
+                    cancellationToken: cancellationToken)
                 .ConfigureAwait(false);
 
             drafts.Add(raw with

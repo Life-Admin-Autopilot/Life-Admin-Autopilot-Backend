@@ -83,8 +83,17 @@ public static class VoiceAutoFilePolicy
         (18, "Evening"),
     };
 
-    /// <summary>How far a clashing matter is offered to move. Clear of the two-hour window.</summary>
-    private static readonly TimeSpan ClashShift = ConflictService.ClashWindow + TimeSpan.FromMinutes(30);
+    /// <summary>
+    /// How far a clashing matter is offered to move.
+    ///
+    /// <para>
+    /// A coarse affordance, not the detection rule. It used to be derived from the
+    /// old fixed two-hour clash radius, which no longer exists now that a clash is
+    /// window overlap; the offered jump keeps its previous size deliberately, so this
+    /// card does not change behaviour for a reason unrelated to it.
+    /// </para>
+    /// </summary>
+    private static readonly TimeSpan ClashShift = ConflictService.SuggestedShift;
 
     /// <summary>
     /// Turn one planning draft into the voice slice's item shape, with a

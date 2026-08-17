@@ -64,7 +64,13 @@ public sealed class KnowledgeAgentService
     {
         var pool = await _conflicts.OpenMattersAsync(userId, cancellationToken).ConfigureAwait(false);
         return await _conflicts
-            .CheckAsync(userId, task.Title, task.DueAt, pool, excludeTaskId: task.Id, cancellationToken)
+            .CheckAsync(
+                userId,
+                ConflictService.MatterCandidate.From(task),
+                task.DueAt,
+                pool,
+                excludeTaskId: task.Id,
+                cancellationToken: cancellationToken)
             .ConfigureAwait(false);
     }
 
@@ -95,12 +101,24 @@ public sealed class KnowledgeAgentService
             .ToList();
 
         // Only clashes among what is actually on today's plate are worth surfacing.
+        //
+        // Driven off the source documents rather than the briefing items: a conflict
+        // check needs the priority and estimate that decide how long a matter runs
+        // and which side yields, and BriefingItem deliberately carries neither.
+        var byId = open.ToDictionary(t => t.Id);
         var conflicts = new List<MatterConflict>();
         var seen = new HashSet<(ObjectId, ObjectId)>();
         foreach (var item in items.Where(i => i.DueAt is not null))
         {
             var found = await _conflicts
-                .CheckAsync(userId, item.Title, item.DueAt, open, excludeTaskId: item.TaskId, cancellationToken)
+                .CheckAsync(
+                    userId,
+                    ConflictService.MatterCandidate.From(byId[item.TaskId]),
+                    item.DueAt,
+                    open,
+                    excludeTaskId: item.TaskId,
+                    now: now,
+                    cancellationToken: cancellationToken)
                 .ConfigureAwait(false);
 
             foreach (var c in found.Where(c => c.Kind == MatterConflict.TimeClash))

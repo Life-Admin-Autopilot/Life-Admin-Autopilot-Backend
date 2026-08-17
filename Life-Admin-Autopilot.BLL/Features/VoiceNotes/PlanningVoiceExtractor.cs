@@ -82,7 +82,13 @@ public sealed class PlanningVoiceExtractor : IVoiceExtractor
         foreach (var draft in drafts)
         {
             var found = await _conflicts
-                .CheckAsync(request.UserId, draft.Title, draft.DueAt, open, excludeTaskId: null, cancellationToken)
+                .CheckAsync(
+                    request.UserId,
+                    new ConflictService.MatterCandidate(draft.Title, draft.Domain, draft.Priority),
+                    draft.DueAt,
+                    open,
+                    excludeTaskId: null,
+                    cancellationToken: cancellationToken)
                 .ConfigureAwait(false);
 
             items.Add(VoiceAutoFilePolicy.Apply(

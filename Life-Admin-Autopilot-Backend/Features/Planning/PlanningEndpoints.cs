@@ -132,7 +132,16 @@ public static class PlanningEndpoints
             {
                 var pool = await conflicts.OpenMattersAsync(caller.Id, cancellationToken).ConfigureAwait(false);
                 var found = await conflicts
-                    .CheckAsync(caller.Id, title, body.DueDate, pool, excludeTaskId: null, cancellationToken)
+                    .CheckAsync(
+                        caller.Id,
+                        new ConflictService.MatterCandidate(
+                            title,
+                            PlanningService.NormaliseDomain(body.Category),
+                            PlanningService.NormalisePriority(body.Priority)),
+                        body.DueDate,
+                        pool,
+                        excludeTaskId: null,
+                        cancellationToken: cancellationToken)
                     .ConfigureAwait(false);
 
                 if (found.Count > 0)
@@ -207,7 +216,16 @@ public static class PlanningEndpoints
 
             var pool = await conflicts.OpenMattersAsync(caller.Id, cancellationToken).ConfigureAwait(false);
             var found = await conflicts
-                .CheckAsync(caller.Id, title, due, pool, excludeTaskId: null, cancellationToken)
+                .CheckAsync(
+                    caller.Id,
+                    new ConflictService.MatterCandidate(
+                        title,
+                        PlanningService.NormaliseDomain(category),
+                        PlanningService.NormalisePriority(body.Priority)),
+                    due,
+                    pool,
+                    excludeTaskId: null,
+                    cancellationToken: cancellationToken)
                 .ConfigureAwait(false);
 
             return Results.Ok(new
