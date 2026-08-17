@@ -1,3 +1,4 @@
+using Life_Admin_Autopilot.BLL.Features.Admin;
 using Life_Admin_Autopilot.BLL.Features.Auth;
 using Life_Admin_Autopilot.BLL.Kernel.Mappers;
 using Life_Admin_Autopilot.DAL.Features.Auth;
@@ -123,6 +124,19 @@ public static class AuthPasswordEndpoints
         {
             throw AuthErrors.WrongEmailOrPassword();
         }
+
+        // Suspension, checked AFTER the password.
+        //
+        // Order matters and this order is deliberate: refusing a suspended account
+        // before verifying its password would answer differently for "suspended
+        // account, wrong password" than for "unknown address", which turns the
+        // suspension into an account-enumeration oracle. Checking it second means
+        // only someone who already proved they own the account learns it is
+        // suspended — which is exactly who should be told.
+        //
+        // Parity: SuspendedAt is null on every account the reference server writes,
+        // so this branch is unreachable in a parity run.
+        AdminSuspension.ThrowIfSuspended(user);
 
         var tokens = await sessions.IssueAsync(user, null, context.SessionMeta(), cancellationToken).ConfigureAwait(false);
 

@@ -3,8 +3,10 @@ using System.Runtime.CompilerServices;
 using System.Text;
 using System.Text.Json;
 using Life_Admin_Autopilot.BLL.Features.Ai.Grounding;
+using Life_Admin_Autopilot.BLL.Kernel.Telemetry;
 using Life_Admin_Autopilot.DAL.Features.Ai;
 using Life_Admin_Autopilot.DAL.Kernel.Errors;
+using Life_Admin_Autopilot.DAL.Kernel.Telemetry;
 using MongoDB.Bson;
 
 namespace Life_Admin_Autopilot.BLL.Features.Ai.Langflow;
@@ -53,14 +55,21 @@ public sealed class LangflowAiProvider : IAiProvider
     private readonly AiConversationRepository _conversations;
     private readonly AiGroundingRepository _grounding;
     private readonly TimeProvider _time;
+    private readonly IAiUsageRecorder _usage;
 
+    /// <summary>
+    /// <paramref name="usage"/> is optional so the two hand-built construction sites
+    /// in the test suite keep compiling unchanged; DI always supplies one, because
+    /// <see cref="NullAiUsageRecorder"/> is registered unconditionally.
+    /// </summary>
     public LangflowAiProvider(
         IHttpClientFactory clients,
         LangflowOptions options,
         LangflowInputBinding binding,
         AiConversationRepository conversations,
         AiGroundingRepository grounding,
-        TimeProvider? time = null)
+        TimeProvider? time = null,
+        IAiUsageRecorder? usage = null)
     {
         _clients = clients;
         _options = options;
@@ -68,6 +77,7 @@ public sealed class LangflowAiProvider : IAiProvider
         _conversations = conversations;
         _grounding = grounding;
         _time = time ?? TimeProvider.System;
+        _usage = usage ?? new NullAiUsageRecorder();
     }
 
     /// <summary>
@@ -214,15 +224,33 @@ public sealed class LangflowAiProvider : IAiProvider
         var translator = new LangflowEventTranslator();
         yield return translator.Start();
 
+        // Cost telemetry. Sniffed off the raw frames rather than the translated
+        // events on purpose: `AiStreamEvent` is what the SSE writer forwards to the
+        // customer app, and token counts have no business travelling there.
+        //
+        // LAST value wins, not a sum. Langflow redelivers the completed `add_message`
+        // row several times per turn with identical counts, so accumulating would
+        // multiply a turn's cost by however many times it happened to be resent.
+        var startedAt = _time.GetTimestamp();
+        LangflowTokenUsage? observed = null;
+
         await foreach (var frame in ReadFramesAsync(
                                userId, sessionId, prompt, accessToken, timezone, mode, cancellationToken)
                            .ConfigureAwait(false))
         {
+            if (LangflowUsage.TryRead(frame, out var usage))
+            {
+                observed = usage;
+            }
+
             foreach (var translated in translator.Accept(frame))
             {
                 yield return translated;
             }
         }
+
+        await RecordUsageAsync(userId, conversationId, observed, startedAt, cancellationToken)
+            .ConfigureAwait(false);
 
         // Did the answer claim work nothing did? See FabricatedActionGuard: a turn
         // that says "Added it." and wrote nothing is the one failure here that no
@@ -265,6 +293,47 @@ public sealed class LangflowAiProvider : IAiProvider
         {
             yield return tail;
         }
+    }
+
+    /// <summary>
+    /// Bank what the turn cost.
+    ///
+    /// <para>
+    /// <b>A turn that reported no usage is still recorded</b>, with zero counts and an
+    /// error outcome. The alternative — writing nothing — makes a broken flow look
+    /// like an idle one on every chart, which is the failure mode hardest to notice
+    /// and most expensive to miss. A zero-token row with <c>usage_missing</c> on it
+    /// says "this ran and we could not price it", which is the truth.
+    /// </para>
+    /// </summary>
+    private Task RecordUsageAsync(
+        ObjectId userId,
+        string? conversationId,
+        LangflowTokenUsage? observed,
+        long startedAt,
+        CancellationToken cancellationToken)
+    {
+        var elapsed = (long)_time.GetElapsedTime(startedAt).TotalMilliseconds;
+        var usage = observed ?? default;
+
+        return _usage.RecordAsync(
+            new AiUsageRecord(
+                userId,
+                AiUsageFeature.Chat,
+                Provider: "langflow",
+
+                // Langflow never names the model on the wire — see LangflowUsage — so
+                // the recorder falls back to the configured default chat model.
+                Model: null,
+                usage.InputTokens,
+                usage.OutputTokens,
+                elapsed)
+            {
+                Outcome = observed is null ? AiUsageOutcome.Error : AiUsageOutcome.Ok,
+                ErrorCode = observed is null ? "usage_missing" : null,
+                CorrelationId = conversationId,
+            },
+            cancellationToken);
     }
 
     /// <summary>

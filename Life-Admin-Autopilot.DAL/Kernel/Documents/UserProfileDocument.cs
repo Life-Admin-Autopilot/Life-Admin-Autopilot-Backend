@@ -136,4 +136,30 @@ public sealed class UserProfileDocument
     public DateTime CreatedAt { get; set; }
 
     public DateTime UpdatedAt { get; set; }
+
+    /// <summary>
+    /// When an admin suspended this account, or null for the overwhelming majority
+    /// that never are.
+    ///
+    /// <para>
+    /// <b>Not in the Node reference, and parity-safe because of the null.</b> Every
+    /// guard that reads it is written as "refuse only when this is set", so a
+    /// database written by the reference server — where the field is absent
+    /// entirely — behaves exactly as it did before this field existed. The
+    /// <c>IgnoreExtraElements</c> convention makes the absence a read of null rather
+    /// than an error.
+    /// </para>
+    ///
+    /// <para>
+    /// <b>Why not Identity's <c>LockoutEnd</c>.</b> That would have been free, but
+    /// <c>/auth/signin</c> verifies the password through
+    /// <c>IAuthCredentialStore.VerifyPasswordAsync</c> and never consults
+    /// <c>SignInManager</c>, so lockout is not read anywhere on the sign-in path. A
+    /// suspension implemented there would have looked correct and done nothing.
+    /// </para>
+    /// </summary>
+    public DateTime? SuspendedAt { get; set; }
+
+    /// <summary>The admin's typed reason, mirrored from the audit row so support can see it in context.</summary>
+    public string? SuspendedReason { get; set; }
 }

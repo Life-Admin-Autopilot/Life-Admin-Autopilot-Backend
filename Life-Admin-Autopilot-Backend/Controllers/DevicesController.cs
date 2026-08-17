@@ -22,12 +22,30 @@ namespace Life_Admin_Autopilot_Backend.Controllers
         }
 
         [HttpPost("register")]
-        public async Task<IActionResult> Register(RegisterDeviceRequest request)
+        public async Task<IActionResult> Register([FromBody] RegisterDeviceRequest? request)
         {
+            // A body that failed to bind arrives as null. Dereferencing it produced a
+            // 500 for every malformed request - including, before DevicePlatform
+            // learned to read its own name, every REAL request the app sent.
+            if (request is null)
+                return BadRequest("Send a JSON body with a token and a platform.");
+
             if (string.IsNullOrWhiteSpace(request.Token))
                 return BadRequest("A device token is required.");
 
-            var device = await _notificationService.RegisterDeviceAsync(CurrentUserId, request);
+            if (request.Platform is not { } platform)
+                return BadRequest("A platform is required: 'Ios' or 'Android'.");
+
+            // Enum.IsDefined is what rejects a numeric value outside the enum. The
+            // string converter accepts integers by default, so without this a
+            // "platform": 42 would be stored and every later push to that row would
+            // pick a provider that does not exist.
+            if (!Enum.IsDefined(platform))
+                return BadRequest("Platform must be 'Ios' or 'Android'.");
+
+            var device = await _notificationService.RegisterDeviceAsync(
+                CurrentUserId,
+                request with { Platform = platform });
 
             return Ok(device);
         }

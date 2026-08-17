@@ -29,8 +29,8 @@ namespace Life_Admin_Autopilot.BLL.Services
             var stored = await _deviceTokenRepository.UpsertAsync(new DeviceToken
             {
                 UserId = userId,
-                Token = request.Token,
-                Platform = request.Platform,
+                Token = request.Token!,
+                Platform = request.Platform!.Value,
                 DeviceModel = request.DeviceModel
             });
 

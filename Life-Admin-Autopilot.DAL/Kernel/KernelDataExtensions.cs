@@ -1,5 +1,6 @@
 using Life_Admin_Autopilot.DAL.Kernel.Mongo;
 using Life_Admin_Autopilot.DAL.Kernel.Quota;
+using Life_Admin_Autopilot.DAL.Kernel.Telemetry;
 using Life_Admin_Autopilot.DAL.Kernel.UserData;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
@@ -20,6 +21,14 @@ public static class KernelDataExtensions
 
         services.TryAddSingleton<IMongoConnectionState, MongoPingConnectionState>();
         services.TryAddScoped<IUsageQuotaStore, MongoUsageQuotaStore>();
+
+        // The no-op default, so every AI provider resolves a recorder whether or not
+        // the admin slice is present. AddAdminFeature() Replace()s it with the one
+        // that actually writes. Registered here rather than in the slice because
+        // LangflowAiProvider takes it as a constructor dependency, and a missing
+        // registration would be a startup failure in a deployment that simply has no
+        // console.
+        services.TryAddScoped<IAiUsageRecorder, NullAiUsageRecorder>();
         services.TryAddScoped<MongoIndexInitializer>();
         services.AddMongoIndexProvider<KernelIndexProvider>();
 
