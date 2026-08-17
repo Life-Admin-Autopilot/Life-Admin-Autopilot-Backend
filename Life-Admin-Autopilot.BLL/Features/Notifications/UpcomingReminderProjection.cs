@@ -1,3 +1,4 @@
+using Life_Admin_Autopilot.BLL.Kernel.Reminders;
 using Life_Admin_Autopilot.DAL.Kernel.Documents;
 
 namespace Life_Admin_Autopilot.BLL.Features.Notifications;
@@ -39,6 +40,15 @@ public static class UpcomingReminderProjection
                 At = r.At,
                 Kind = r.Kind,
                 DueAt = task.DueAt,
+
+                // Scored at the reminder's OWN instant, not at `now`: this entry is
+                // going to fire in the future, and what matters is how pressing it
+                // will be THEN. Carried so the device can rank a batch it receives
+                // all at once; it does not affect the order or the cap below.
+                UrgencyScore = ReminderUrgency.Score(
+                    new ReminderTaskShape(task.Title, task.Domain, task.Kind, task.DueAt),
+                    task.Priority,
+                    r.At),
             }));
 
         return flattened

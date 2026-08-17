@@ -1,5 +1,6 @@
 using Life_Admin_Autopilot.BLL.Dtos;
 using Life_Admin_Autopilot.BLL.Interfaces;
+using Life_Admin_Autopilot.BLL.Kernel.Reminders;
 using Life_Admin_Autopilot.DAL.Features.DocumentScans;
 using Life_Admin_Autopilot.DAL.Features.Notifications;
 using Life_Admin_Autopilot.DAL.Kernel.Documents;
@@ -46,6 +47,26 @@ public sealed class ReminderTick
         _logger = logger;
     }
 
+    /// <summary>
+    /// One reminder entry paired with the matter it belongs to, scored once so the
+    /// sort does not recompute it per comparison.
+    /// </summary>
+    private sealed record PendingReminder(TaskDocument Matter, ReminderEntryDocument Reminder)
+    {
+        public double Score { get; } = ReminderUrgency.Score(
+            new ReminderTaskShape(Matter.Title, Matter.Domain, Matter.Kind, Matter.DueAt),
+            Matter.Priority,
+            Reminder.At);
+    }
+
+    /// <summary>
+    /// Drops sub-millisecond precision, because BSON's DateTime carries none: an
+    /// in-memory stamp that still has it would compare as distinct here and land
+    /// identical in Mongo, which is the whole failure this guards against.
+    /// </summary>
+    private static DateTime TruncateToMillisecond(DateTime value) =>
+        new(value.Ticks - (value.Ticks % TimeSpan.TicksPerMillisecond), value.Kind);
+
     /// <summary>Number of notifications actually written. Diagnostic; Node returns nothing.</summary>
     public async Task<int> RunAsync(DateTime now, CancellationToken cancellationToken = default)
     {
@@ -59,52 +80,87 @@ public sealed class ReminderTick
 
         var fired = 0;
 
-        foreach (var task in due)
+        // Flattened across tasks BEFORE anything is written, because the ranking below
+        // has to see the whole batch: a tick that ordered each task's entries
+        // separately would still hand the user its tasks in Mongo's order.
+        //
+        // The batch spans every account, and mixing them is harmless — a stable sort
+        // over the whole list leaves each user's own reminders in the same relative
+        // order they would have had alone, and nobody ever sees another account's row.
+        var ready = due
+            .SelectMany(task => task.Reminders
+                // Re-filter in memory: the $elemMatch selected the TASK, so the document
+                // still carries its already-fired and not-yet-due entries.
+                .Where(r => r.FiredAt is null && r.At <= now)
+                .Select(reminder => new PendingReminder(task, reminder)))
+            .ToList();
+
+        // Least urgent first. The list is deliberately reversed relative to what the
+        // user sees — see ReminderUrgency.DeliveryOrder for why.
+        var ordered = ReminderUrgency.DeliveryOrder(ready, p => p.Score, p => p.Reminder.At);
+
+        // The high-water mark that keeps the ranking above from being thrown away.
+        var lastWrittenAt = DateTime.MinValue;
+
+        foreach (var (task, reminder) in ordered)
         {
             var timeZone = zones.TryGetValue(task.UserId, out var zone)
                 ? zone
                 : ReminderUserTimezoneReader.DefaultTimezone;
 
-            // Re-filter in memory: the $elemMatch selected the TASK, so the document
-            // still carries its already-fired and not-yet-due entries.
-            var ready = task.Reminders.Where(r => r.FiredAt is null && r.At <= now).ToList();
+            // Atomically claim THIS entry before writing anything. If another
+            // tick got there first the claim fails and we skip — no double-send.
+            var won = await _tasks
+                .TryClaimReminderAsync(task.Id, reminder.At, now, cancellationToken)
+                .ConfigureAwait(false);
 
-            foreach (var reminder in ready)
+            if (!won)
             {
-                // Atomically claim THIS entry before writing anything. If another
-                // tick got there first the claim fails and we skip — no double-send.
-                var won = await _tasks
-                    .TryClaimReminderAsync(task.Id, reminder.At, now, cancellationToken)
-                    .ConfigureAwait(false);
-
-                if (!won)
-                {
-                    continue;
-                }
-
-                // `timestamps: true` stamps at SAVE time, not at the top of the tick,
-                // so a batch carries distinct createdAt values.
-                var writtenAt = DateTime.UtcNow;
-                var body = ReminderNotificationText.Body(task.DueAt, reminder.Kind, timeZone);
-
-                await _notifications.InsertAsync(
-                    new NotificationDocument
-                    {
-                        Id = ObjectId.GenerateNewId(),
-                        UserId = task.UserId,
-                        Kind = "reminder",
-                        TaskId = task.Id,
-                        Title = task.Title,
-                        Body = body,
-                        CreatedAt = writtenAt,
-                        UpdatedAt = writtenAt,
-                    },
-                    cancellationToken).ConfigureAwait(false);
-
-                await DeliverAsync(task, body, cancellationToken).ConfigureAwait(false);
-
-                fired++;
+                continue;
             }
+
+            // `timestamps: true` stamps at SAVE time, not at the top of the tick, so
+            // a batch carries distinct createdAt values — USUALLY.
+            //
+            // "Usually" is not good enough here, and this was measured rather than
+            // reasoned about. The feed sorts on {createdAt: -1} with no tie-break, so
+            // two rows sharing a stamp come back in whatever order Mongo chose, and
+            // the ranking above is silently discarded. Against a local Mongo two
+            // consecutive claims-and-writes routinely finish inside the SAME
+            // millisecond — which is BSON's resolution — so the denser the batch, the
+            // likelier the ordering is lost. Dense batches are the only ones where
+            // ordering matters at all.
+            //
+            // So the stamp is made strictly increasing across the batch: truthful
+            // whenever the clock has moved on, nudged forward a millisecond when it
+            // has not. It never moves backwards and never lands in the past.
+            var writtenAt = TruncateToMillisecond(DateTime.UtcNow);
+            if (writtenAt <= lastWrittenAt)
+            {
+                writtenAt = lastWrittenAt.AddMilliseconds(1);
+            }
+
+            lastWrittenAt = writtenAt;
+
+            var body = ReminderNotificationText.Body(task.DueAt, reminder.Kind, timeZone);
+
+            await _notifications.InsertAsync(
+                new NotificationDocument
+                {
+                    Id = ObjectId.GenerateNewId(),
+                    UserId = task.UserId,
+                    Kind = "reminder",
+                    TaskId = task.Id,
+                    Title = task.Title,
+                    Body = body,
+                    CreatedAt = writtenAt,
+                    UpdatedAt = writtenAt,
+                },
+                cancellationToken).ConfigureAwait(false);
+
+            await DeliverAsync(task, body, cancellationToken).ConfigureAwait(false);
+
+            fired++;
         }
 
         await _clarifications.SettleStaleAsync(now, cancellationToken).ConfigureAwait(false);

@@ -796,6 +796,298 @@ summary is a per-render endpoint on a page the user navigates back to, and
 anything per-render that calls a model is a cost bug waiting to happen. The only
 AI in the feature is the extraction pass that was already running.
 
+---
+
+## 11. `GET /me/reminders/upcoming` carries an `urgencyScore` Node does not send
+
+**Decided:** Phase 1 of `Steward/docs/smart-reminder-conflict-spec.md` — "priority
+becomes load-bearing". Scope was deliberately held to ordering and ranking; nothing
+in this change can move, add, drop or delay a reminder.
+**Status:** implemented. Adds no parity row and changes no status code. Full .NET
+suite **1783 passed / 0 failed**, three consecutive runs, up from 1692 at baseline.
+
+### What Node does
+
+`server/src/routes/me.reminders.ts` builds each entry in plain JavaScript with six
+keys — `id`, `taskId`, `title`, `at`, `kind`, `dueAt` — and sorts the flattened list
+by `at`. Priority is read nowhere in the reminder path: not in `leadTime.ts`, not in
+`planReminders.ts`, not in `reminderWorker.ts`.
+
+`reminderWorker.ts` iterates `Task.find(...)` with **no sort clause at all**, so when
+several reminders come due in the same 30-second tick, the order the user meets them
+in is whatever order Mongo returned the documents in.
+
+### What .NET does
+
+Adds `ReminderUrgency` (`BLL/Kernel/Reminders/`), a pure scoring function, and uses
+it in two places:
+
+- **`ReminderTick` ranks a batch before writing it.** Entries are flattened across
+  tasks, scored, and written least-urgent-first — reversed, because both the in-app
+  feed (`{createdAt: -1}`) and the OS tray show newest first, so the last row written
+  is the one on top.
+- **`UpcomingReminderDto` gains `urgencyScore`**, a double in `[0, 4]`. Advisory
+  only: the array is still ordered by `at` and still capped at the soonest 60.
+
+The score is `priorityRank + deadlinePressure`, where pressure is how far the
+reminder has travelled through the warning window `ReminderLeadTime` already assigns
+that kind of matter — 0 at the heads-up, 1 at the deadline, clamped when overdue.
+Normalising against that table is how the spec's `task_domain` term enters without
+inventing a ranking of domains against each other.
+
+### Why
+
+The spec's case, restated: a due-date-only system cannot tell "renew the car
+insurance sometime" from "renew it or the policy lapses", and firing both as
+equal-weight pings is how notification fatigue is manufactured. Priority is already
+inferred from the user's own words at every capture point and already surfaced as
+`priorityRank` on the task DTO — it was simply never read once a reminder existed.
+
+Ordering was chosen as the whole of Phase 1 because it is the only part with no
+downside: no reminder can be lost, delayed or suppressed by a scoring bug. The two
+tempting extensions were both rejected for this phase — re-ranking the 60-entry cap
+can silently evict a near-term reminder on a busy account, and on iOS without push
+that list is the *only* delivery path; and letting priority modulate lead time makes
+the deterministic floor depend on a field a language model infers.
+
+### A real defect this surfaced
+
+The ranking was initially thrown away under load. `createdAt` is stamped per row from
+`DateTime.UtcNow`, BSON stores milliseconds, and the feed sorts on `{createdAt: -1}`
+with no tie-break — so two rows written inside the same millisecond come back in
+arbitrary order. Against a local Mongo that happens routinely, and it happens most in
+exactly the dense batches where ordering is the point.
+
+Found by a flaky test, not by review. The stamp is now strictly increasing across a
+batch: truthful whenever the clock has moved on, nudged a millisecond when it has
+not, never backwards and never into the past. Pinned by
+`ReminderWorkerTests.gives_every_row_in_a_batch_its_own_millisecond`, which asserts
+distinctness rather than order so the failure reads as its true cause.
+
+### What it costs
+
+- **One key on one ported response.** The harness row `reminders-upcoming`
+  (`tools/parity/scenarios/60-clarifications-digest.yaml`) runs against an account
+  whose only task — `Pay council tax` — carries no `dueAt`, so no reminder is ever
+  planned and both servers answer `{"reminders":[]}`. **That is luck, not design:**
+  give that scenario a dated task and the row diverges on this key. The key set is
+  pinned instead by
+  `NotificationEndpointTests.carries_exactly_the_ported_keys_plus_the_one_documented_addition`.
+- **Parity was not re-measured end to end.** The Node reference tree
+  (`Steward/server`) is currently deleted from that repo's working tree, so `:4100`
+  cannot be booted without restoring it. The claim above is read off the scenario
+  file and the two implementations, not off a harness run.
+- **Notification `createdAt` values within one tick are now synthetic to the
+  millisecond.** Nothing reads them as a measurement; the feed and the relative-time
+  label both only need ordering.
+- **No client reads the new field yet.** `Steward/lib/notifications/syncReminders.ts`
+  ignores it, as TypeScript does with any unmodelled key.
+
+### How to revert
+
+Delete `ReminderUrgency.cs` and its two test files, drop `UrgencyScore` from
+`UpcomingReminderDto` and the projection, and restore `ReminderTick`'s nested
+`foreach (var task in due)` loop with `writtenAt = DateTime.UtcNow`. Doing so
+reinstates the arbitrary ordering above — including for the users whose batches are
+dense enough for it to matter.
+
+---
+
+## 12. A reminder's final nudge fires a working duration BEFORE the deadline
+
+**Decided:** Phase 2 of `Steward/docs/smart-reminder-conflict-spec.md` — "auto-detected
+windows". Scope held to the reminder schedule; the estimate stored on a matter is not
+touched, and neither is the daily digest.
+**Status:** implemented. Full .NET suite **1821 passed / 0 failed**, four consecutive
+runs, up from 1783 after Phase 1. Verified end to end against a live server: five
+matters sharing one deadline, each final nudge landing its own resolved duration
+early.
+
+### What Node does
+
+`leadTime.ts` schedules the second entry at exactly `dueAt`:
+
+```js
+out.push({ at: due, kind: 'due' })
+```
+
+Node has the estimate data — `ESTIMATE_BUCKETS`, `snapToEstimateBucket`,
+`TaskEstimate {minMinutes, maxMinutes, source}` — and reads it in exactly one place,
+the daily digest total. Nothing in the reminder path consults it, and there is no
+fallback for a matter that has none.
+
+### What .NET does
+
+Adds `ReminderDuration` (`BLL/Kernel/Reminders/`), which resolves the minutes a
+matter needs: its own `estimate.maxMinutes` when it has one, else a keyword default,
+else a domain default, else 30. `ComputeRules` now takes that duration and places the
+final entry at `dueAt - duration`. `RefineWithAiAsync` clamps its suggestions to the
+same instant, so both scheduling paths agree on where the last useful nudge is.
+
+The keyword rows are the SAME eight patterns the lead-time table uses, matched once
+through `ReminderLeadTime.MatchKeyword` rather than restated — the two tables answer
+different questions about the same shapes of matter, and duplicated regexes would
+drift the first time either was edited.
+
+`durationMinutes` is a required parameter, not a defaulted one: a caller that has not
+thought about the window should have to say so.
+
+### Why
+
+The final nudge used to arrive at the one moment it could no longer be acted on.
+Telling someone at 17:00 that a two-hour tax return was due at 17:00 is an
+accusation, not a reminder — and "renew the insurance sometime this month" versus
+"renew it in the next twenty minutes or the policy lapses" is the exact failure the
+spec opens with.
+
+**The default is derived on read and never stored.** Persisting one would put an
+`estimate` object on every task response where Node sends none, and add a third value
+to a `source` enum Node defines as `['ai','user']` — a divergence across
+`30-tasks-core.yaml` and `40-tasks-bulk.yaml`, the two most heavily covered scenario
+files. Deriving it keeps `GET /me/tasks` byte-identical and confines the change to
+the reminder schedule, which is inference all the way down already.
+
+**Why a default is needed at all**: almost no matter carries an estimate. Neither the
+Langflow planning agent (`PLANNING-AGENT.md` has no such field) nor the voice
+extractor (`PlanningVoiceExtractor` never sets it) produces one, so only a hand-typed
+estimate or a Gemini document scan ever populates it. Without a fallback, window-aware
+scheduling would apply to a rounding-error fraction of real matters.
+
+### What was deliberately NOT changed
+
+`DailyDigestComputer.ReadEstimate` still contributes ZERO for an unestimated matter,
+so `estimatedMinutesToday` continues to under-report a day of unestimated work. That
+is not an oversight — it is an argued decision carried over from Node and stated in
+that method's own summary: *"a fabricated number in a digest whose whole premise is
+that it has none is worse than a low total."* A guess is acceptable where the system
+already guesses (the entire lead-time table) and not where a headline number is read
+as fact. Revisit it deliberately or not at all.
+
+### What it costs
+
+- **`GET /me/reminders/upcoming` reports different `at` values than Node** for any
+  dated reminder — earlier by the resolved duration. The harness row
+  `reminders-upcoming` still matches because its account's only task carries no
+  `dueAt` and both servers answer `{"reminders":[]}`, the same clipped corner Phase 1
+  relies on. Any scenario that gains a dated task diverges on both this and
+  `urgencyScore`.
+- **Phase 1's urgency scores moved.** A final nudge is no longer AT the deadline, so
+  its deadline pressure is now marginally below 1 — a `low` matter reads `0.994`
+  rather than `1.0`. This is a strict improvement: the pressure term was previously
+  degenerate, taking only the values 0 and 1, because the rules floor placed entries
+  only at the two ends of the window. It is now continuous, which is what §3.1
+  described.
+- **Notifications for long matters arrive earlier in wall-clock terms.** A 4-hour
+  matter now nudges 4 hours before its deadline. No EXTRA notification is created —
+  the count per matter is unchanged at two, which the anti-nag position in
+  `reminderWorker`'s clarification-settling comment requires.
+- **Snooze is untouched.** `SetSnoozeReminderAsync` fires exactly at the moment the
+  user named; subtracting an estimate from a time a person chose would move the one
+  instant the system must not second-guess. Pinned by
+  `ReminderPlannerTests.fires_a_snooze_once_at_the_snooze_moment_with_no_window_applied`.
+
+### How to revert
+
+Delete `ReminderDuration.cs` and its tests, drop the `durationMinutes` parameter from
+`ComputeRules` so the final entry returns to `due`, revert `RefineWithAiAsync`'s clamp
+to `d <= due`, and drop `MatchKeyword`/`MatterKeyword` from `ReminderLeadTime`. Doing
+so restores a schedule whose last nudge always arrives too late to act on.
+
+---
+
+## 13. A conflict is window overlap, not "the deadlines are close"
+
+**Decided:** Phase 3 of `Steward/docs/smart-reminder-conflict-spec.md` — interval-merge
+conflict detection with an urgency-driven resolution.
+**Status:** implemented. Full .NET suite **1849 passed / 0 failed**, four consecutive
+runs, up from 1821 after Phase 2. Verified end to end against a live server through
+`POST /me/conflicts`.
+
+### What Node does
+
+Nothing. There is no conflict detection anywhere in `server/src` — no clash rule, no
+duplicate rule, and no `/conflicts` route of any kind. `ConflictService`,
+`SlotSuggester` and the three endpoints are .NET-only, from the `ai_flow_V4` split.
+
+**So this entry records a behaviour change, not a divergence from a reference.** It is
+here because the change is large, four call sites depend on it, and the surface it
+rewrites had no test of any kind to describe what it used to do.
+
+### What .NET did before this
+
+`|other.dueAt - candidate.dueAt| <= 2 hours` — a fixed symmetric radius, identical for
+a ten-minute bill and a four-hour tax return, with the reason string *"Scheduled
+within two hours of this."* That is exactly the "is the date close" test the spec §3.3
+names as **not** conflict detection, and it was wrong in both directions at once.
+
+### What .NET does now
+
+`MatterWindow` (`BLL/Kernel/Reminders/`) gives every matter the span it occupies —
+`[dueAt - duration, dueAt]`, the same interval Phase 2 schedules the final nudge
+against — and two matters conflict when those spans overlap after one is given 15
+minutes of breathing room.
+
+Measured on a live server against the same three drafts:
+
+| draft | old rule | now |
+| --- | --- | --- |
+| 10-min bill, 90 min before another 10-min bill | clash | **clear** |
+| 45-min chore overlapping a 45-min repair | clash | clash |
+| two 4-hour jobs, deadlines 3 hours apart | **clear** | clash |
+
+`MatterConflict` also gained `urgency`, `otherUrgency` and `yields`, so the answer
+names which of the two should move rather than reporting that a problem exists.
+Both sides are scored at NOW, not at their own deadlines: scored at its own deadline
+every matter reads as maximally pressing and the comparison carries no information.
+A tie leaves the incumbent alone — it is the commitment the user already made.
+
+### Why the buffer is fixed at fifteen minutes
+
+Touching intervals are not really fine: nothing accounts for travel, for finding the
+right document, or for the minutes a person needs between one thing and the next. It
+is deliberately not scaled to the longer matter — a boundary that moves per pair
+cannot be explained to a user in one sentence, and this rule has to be predictable
+before it is clever.
+
+### What it costs
+
+- **Fewer clashes reported on lists of short matters, more on lists of long ones.**
+  That is the intended correction, but it IS a visible change for existing users: a
+  list of bills an hour apart stops warning, and two long jobs that never warned start
+  to.
+- **`ClashesWithin` changed signature.** It now takes the candidate, because an
+  overlap test needs the candidate's own duration and not just an instant. This is the
+  predicate `SlotSuggester` proposes free times through, and the endpoint's own comment
+  requires that "a suggestion cannot be refused the moment it is taken" — pinned by
+  `ConflictServiceTests.agrees_with_the_check_about_which_instants_are_free`.
+- **`CheckAsync` takes a `MatterCandidate`** (title, domain, priority, estimate)
+  instead of a bare title, because duration and the yields verdict both need more than
+  a title. All five call sites were updated; `ConflictPreviewBody` gained optional
+  `domain` and `priority` so a draft can be checked as it will actually be saved.
+- **`ConflictService.ClashWindow` is gone.** `VoiceAutoFilePolicy` derived its "Later
+  that day" offer from it; that offer keeps its previous size through
+  `MatterWindow.SuggestedShift`, deliberately decoupled so a detection change cannot
+  silently move a UI affordance.
+- **No parity row, no contract operation.** Node answers its HTML 404 for all three
+  routes.
+
+### A pre-existing behaviour left alone
+
+`SlotSuggester` walks each day from the start of the matter's part of day rather than
+from the requested time, so it can propose a slot EARLIER than the one asked for. It
+is unchanged here and its suggestions are still validated against the same pool, but
+it surfaced during the Phase 3 proof and is worth a deliberate look.
+
+### How to revert
+
+Delete `MatterWindow.cs` and its tests, restore `ClashWindow = TimeSpan.FromHours(2)`
+with the `(other - due).Duration() > ClashWindow` test, drop `Urgency`/`OtherUrgency`/
+`Yields` from `MatterConflict` and the endpoint mapper, and revert the five call sites
+to passing a bare title. Doing so restores a rule that flags two quick errands ninety
+minutes apart and misses two four-hour jobs that genuinely collide.
+
+---
+
 ## Typed clarification answers (`{type:'custom'}` on resolve)
 
 Ported 2026-08-17 (`CustomAnswerInterpreter`), faithful to

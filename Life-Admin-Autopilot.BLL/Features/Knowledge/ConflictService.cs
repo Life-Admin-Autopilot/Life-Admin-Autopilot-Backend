@@ -1,3 +1,4 @@
+using Life_Admin_Autopilot.BLL.Kernel.Reminders;
 using Life_Admin_Autopilot.DAL.Features.Tasks;
 using Life_Admin_Autopilot.DAL.Kernel.Documents;
 using Microsoft.Extensions.Logging;
@@ -6,8 +7,40 @@ using MongoDB.Driver;
 
 namespace Life_Admin_Autopilot.BLL.Features.Knowledge;
 
-/// <summary>A clash between a matter and something the user already has.</summary>
-public sealed record MatterConflict(ObjectId TaskId, string Title, DateTime? DueAt, string Kind, string Reason)
+/// <summary>
+/// A clash between a matter and something the user already has.
+///
+/// <para>
+/// <b>The identifying fields describe the OTHER matter</b> — the thing already in the
+/// list that the candidate ran into. <see cref="Urgency"/> is the candidate's own
+/// score and <see cref="OtherUrgency"/> belongs to the matter named here, which is
+/// the pairing <see cref="Yields"/> is decided from.
+/// </para>
+/// </summary>
+/// <param name="Urgency">
+/// The candidate's urgency, scored at the moment of the check. Zero on a duplicate,
+/// where nothing about time is in question.
+/// </param>
+/// <param name="Yields">
+/// True when the CANDIDATE is the one that should move.
+///
+/// <para>
+/// The spec's §3.3 requirement, and the point of scoring at all: reporting that two
+/// matters collide leaves the user to work out which one they cared about, which is
+/// the decision they were already failing to make when they double-booked. The lower
+/// urgency gives way. On a tie the candidate yields, because the matter already in
+/// the list is the one the user has previously committed to.
+/// </para>
+/// </param>
+public sealed record MatterConflict(
+    ObjectId TaskId,
+    string Title,
+    DateTime? DueAt,
+    string Kind,
+    string Reason,
+    double Urgency = 0,
+    double OtherUrgency = 0,
+    bool Yields = false)
 {
     public const string TimeClash = "time_clash";
     public const string Duplicate = "duplicate";
@@ -25,8 +58,11 @@ public sealed record MatterConflict(ObjectId TaskId, string Title, DateTime? Due
 /// </summary>
 public sealed class ConflictService
 {
-    /// <summary>Two dated matters this close together are flagged as clashing.</summary>
-    public static readonly TimeSpan ClashWindow = TimeSpan.FromHours(2);
+    /// <summary>
+    /// How far a clashing matter is offered to move. A UI affordance, not the
+    /// detection rule — see <see cref="MatterWindow.SuggestedShift"/>.
+    /// </summary>
+    public static TimeSpan SuggestedShift => MatterWindow.SuggestedShift;
 
     /// <summary>
     /// Cosine similarity above which two matters are the same thing. 0.92 is the
@@ -58,16 +94,45 @@ public sealed class ConflictService
     /// which is why this is the same comparison rather than a second one.
     /// </para>
     /// </summary>
-    public static bool ClashesWithin(DateTime at, IReadOnlyList<TaskDocument> pool, ObjectId? excludeTaskId)
+    public static bool ClashesWithin(
+        DateTime at,
+        MatterCandidate candidate,
+        IReadOnlyList<TaskDocument> pool,
+        ObjectId? excludeTaskId)
     {
+        // The candidate's OWN span moves with the instant being tested — a
+        // four-hour job proposed for 14:00 occupies 10:00-14:00, and a suggester
+        // that only knew the instant would offer slots it then refuses.
+        var mine = MatterWindow.For(candidate.Title, candidate.Domain, candidate.Estimate, at);
+
         foreach (var task in pool)
         {
             if (excludeTaskId is not null && task.Id == excludeTaskId) continue;
-            if (task.DueAt is not { } other) continue;
-            if ((other - at).Duration() <= ClashWindow) return true;
+            if (MatterWindow.For(task) is not { } theirs) continue;
+            if (MatterWindow.Overlap(mine, theirs)) return true;
         }
 
         return false;
+    }
+
+    /// <summary>
+    /// The facts about a matter that conflict detection needs, whether or not it has
+    /// been saved yet.
+    ///
+    /// <para>
+    /// <c>Domain</c> and <c>Estimate</c> resolve how long it occupies;
+    /// <c>Priority</c> decides which side yields. A draft has all three before it is
+    /// written, which is what lets the same check run at propose time and at save.
+    /// </para>
+    /// </summary>
+    public readonly record struct MatterCandidate(
+        string Title,
+        string Domain,
+        string Priority,
+        TaskEstimateDocument? Estimate = null)
+    {
+        public static MatterCandidate From(TaskDocument task) =>
+            new(task.Title, task.Domain, task.Priority, task.Estimate);
     }
 
     /// <summary>Every open matter for this user — the pool both checks run against.</summary>
@@ -90,37 +155,72 @@ public sealed class ConflictService
     /// </summary>
     public async Task<IReadOnlyList<MatterConflict>> CheckAsync(
         ObjectId userId,
-        string title,
+        MatterCandidate candidate,
         DateTime? dueAt,
         IReadOnlyList<TaskDocument> pool,
         ObjectId? excludeTaskId = null,
+        DateTime? now = null,
         CancellationToken cancellationToken = default)
     {
+        var at = now ?? DateTime.UtcNow;
         var conflicts = new List<MatterConflict>();
         var candidates = pool.Where(t => excludeTaskId is null || t.Id != excludeTaskId).ToList();
 
         if (dueAt is { } due)
         {
+            var mine = MatterWindow.For(candidate.Title, candidate.Domain, candidate.Estimate, due);
+
+            // Both sides are scored at the SAME instant, and at NOW rather than at
+            // either deadline. Scored at its own deadline every matter reads as
+            // maximally pressing, which is exactly the comparison that carries no
+            // information; scored at today, a matter due tomorrow properly outranks
+            // the same matter due in three weeks.
+            var myUrgency = UrgencyOf(candidate.Title, candidate.Domain, candidate.Priority, due, at);
+
             foreach (var task in candidates)
             {
-                if (task.DueAt is not { } other) continue;
-                if ((other - due).Duration() > ClashWindow) continue;
+                if (MatterWindow.For(task) is not { } theirs) continue;
+                if (!MatterWindow.Overlap(mine, theirs)) continue;
+
+                var theirUrgency = UrgencyOf(
+                    task.Title, task.Domain, task.Priority, task.DueAt!.Value, at);
+
+                // A tie leaves the incumbent alone: it is the commitment the user has
+                // already made, and moving it needs a reason better than "equal".
+                var yields = myUrgency <= theirUrgency;
 
                 conflicts.Add(new MatterConflict(
                     task.Id,
                     task.Title,
                     task.DueAt,
                     MatterConflict.TimeClash,
-                    "Scheduled within two hours of this."));
+                    ClashReason(task.Title, yields),
+                    myUrgency,
+                    theirUrgency,
+                    yields));
             }
         }
 
-        var duplicate = await DuplicateAsync(userId, title, candidates, excludeTaskId, cancellationToken)
+        var duplicate = await DuplicateAsync(
+                userId, candidate.Title, candidates, excludeTaskId, cancellationToken)
             .ConfigureAwait(false);
         if (duplicate is not null) conflicts.Add(duplicate);
 
         return conflicts;
     }
+
+    private static double UrgencyOf(string title, string domain, string priority, DateTime dueAt, DateTime at) =>
+        ReminderUrgency.Score(new ReminderTaskShape(title, domain, "reminder", dueAt), priority, at);
+
+    /// <summary>
+    /// Says which of the two should move, not merely that a problem exists. Naming
+    /// the other matter is what makes the sentence actionable — "this clashes with
+    /// something" is a fact the user cannot do anything with.
+    /// </summary>
+    private static string ClashReason(string otherTitle, bool yields) =>
+        yields
+            ? $"Overlaps \"{otherTitle}\", the more pressing of the two — better to move this one."
+            : $"Overlaps \"{otherTitle}\", and this is the more pressing of the two.";
 
     /// <summary>
     /// Near-duplicate over the embedded corpus. Best-effort: with retrieval

@@ -78,7 +78,10 @@ public sealed class ReminderPlanner
         try
         {
             var entries = ReminderLeadTime
-                .ComputeRules(new ReminderTaskShape(task.Title, task.Domain, task.Kind, task.DueAt), at)
+                .ComputeRules(
+                    new ReminderTaskShape(task.Title, task.Domain, task.Kind, task.DueAt),
+                    at,
+                    ReminderDuration.ResolveMinutes(task))
                 .Select(e => new ReminderEntryDocument { At = e.At, Kind = e.Kind })
                 .ToList();
 
@@ -165,8 +168,14 @@ public sealed class ReminderPlanner
             }
 
             var due = task.DueAt.Value;
+
+            // The AI path respects the same window as the rules floor. A nudge
+            // between "too late to start" and the deadline cannot be acted on, so it
+            // is clamped out rather than scheduled.
+            var startAt = ReminderLeadTime.LastMomentToStart(due, ReminderDuration.ResolveMinutes(task));
+
             var suggestions = await _refiner.SuggestAsync(task, now, cancellationToken).ConfigureAwait(false);
-            var valid = suggestions.Where(d => d > now && d <= due).ToList();
+            var valid = suggestions.Where(d => d > now && d <= startAt).ToList();
 
             // Keep the rules floor rather than replacing it with nothing.
             if (valid.Count == 0)
@@ -176,10 +185,10 @@ public sealed class ReminderPlanner
 
             var entries = valid.Select(at => new ReminderEntryDocument { At = at, Kind = "ai" }).ToList();
 
-            // Always keep a nudge at the deadline itself.
-            if (!valid.Any(d => Math.Abs((d - due).TotalMilliseconds) < 60_000))
+            // Always keep a nudge at the last moment it can still be started.
+            if (!valid.Any(d => Math.Abs((d - startAt).TotalMilliseconds) < 60_000))
             {
-                entries.Add(new ReminderEntryDocument { At = due, Kind = "due" });
+                entries.Add(new ReminderEntryDocument { At = startAt, Kind = "due" });
             }
 
             // Dedupe by minute, sorted.

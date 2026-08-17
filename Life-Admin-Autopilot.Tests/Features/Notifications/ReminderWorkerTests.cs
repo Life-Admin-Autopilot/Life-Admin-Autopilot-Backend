@@ -384,6 +384,148 @@ public sealed class ReminderWorkerTests
 
     // ---- helpers -----------------------------------------------------------
 
+    // ---- urgency ordering (spec Phase 1) ---------------------------------------
+
+    [Fact]
+    public async Task writes_a_batch_so_the_most_urgent_matter_ends_up_on_top_of_the_feed()
+    {
+        // Before this, a tick that fired five reminders at once handed them over in
+        // whatever order Mongo returned — FindDueBatchAsync carries no sort at all.
+        //
+        // The assertion runs against the SAME sort the feed endpoint uses
+        // ({createdAt: -1}), because that is the only place the write order becomes
+        // observable. Each iteration of the tick is at least two round trips, so no
+        // two rows in one batch share a millisecond.
+        var db = TryGetDatabase();
+        if (db is null)
+        {
+            return;
+        }
+
+        var userId = await SeedUserAsync(db, "UTC");
+        var now = DateTime.UtcNow;
+        var due = now.AddMinutes(5);
+
+        // Identical in every respect except the priority the user gave them, so
+        // nothing but the ranking can explain the order.
+        await SeedTaskAsync(db, userId, "Calm matter", due, new[] { Entry(now, "due") }, priority: "low");
+        await SeedTaskAsync(db, userId, "Loud matter", due, new[] { Entry(now, "due") }, priority: "urgent");
+        await SeedTaskAsync(db, userId, "Middling matter", due, new[] { Entry(now, "due") }, priority: "normal");
+
+        Assert.Equal(3, await Tick(db).RunAsync(now));
+
+        Assert.Equal(
+            new[] { "Loud matter", "Middling matter", "Calm matter" },
+            await FeedTitlesAsync(db, userId));
+    }
+
+    [Fact]
+    public async Task ranks_the_nearer_deadline_higher_among_equally_important_matters()
+    {
+        // The deadline half of the score, end to end. Both are 'normal', both are in
+        // the 'home' domain (a 5-day warning window), so only how far each has
+        // travelled through that window separates them.
+        var db = TryGetDatabase();
+        if (db is null)
+        {
+            return;
+        }
+
+        var userId = await SeedUserAsync(db, "UTC");
+        var now = DateTime.UtcNow;
+
+        await SeedTaskAsync(db, userId, "Due in four days", now.AddDays(4), new[] { Entry(now, "due") });
+        await SeedTaskAsync(db, userId, "Due in one day", now.AddDays(1), new[] { Entry(now, "due") });
+
+        Assert.Equal(2, await Tick(db).RunAsync(now));
+
+        Assert.Equal(
+            new[] { "Due in one day", "Due in four days" },
+            await FeedTitlesAsync(db, userId));
+    }
+
+    [Fact]
+    public async Task keeps_a_stated_priority_above_a_merely_nearer_deadline()
+    {
+        // The judgement call the score encodes, pinned so a future reweighting is a
+        // deliberate act: what the user CALLED urgent outranks what we inferred is
+        // pressing. Flip the weighting and this is the test that goes red.
+        var db = TryGetDatabase();
+        if (db is null)
+        {
+            return;
+        }
+
+        var userId = await SeedUserAsync(db, "UTC");
+        var now = DateTime.UtcNow;
+
+        await SeedTaskAsync(db, userId, "Trivial but imminent", now, new[] { Entry(now, "due") }, priority: "low");
+        await SeedTaskAsync(
+            db,
+            userId,
+            "Urgent but distant",
+            now.AddDays(5),
+            new[] { Entry(now, "due") },
+            priority: "urgent");
+
+        Assert.Equal(2, await Tick(db).RunAsync(now));
+
+        Assert.Equal(
+            new[] { "Urgent but distant", "Trivial but imminent" },
+            await FeedTitlesAsync(db, userId));
+    }
+
+    [Fact]
+    public async Task gives_every_row_in_a_batch_its_own_millisecond()
+    {
+        // The defect this pins was found by a flaky ordering test, not by reading the
+        // code: against a local Mongo, consecutive claims-and-writes finish inside one
+        // millisecond, BSON stores no finer, and {createdAt: -1} has no tie-break — so
+        // the ranking survived or not depending on machine speed.
+        //
+        // Asserting distinctness rather than order makes the failure legible: an
+        // ordering assertion alone goes red intermittently and reads as "the ranking
+        // is wrong" when the real fault is that the rows are indistinguishable.
+        var db = TryGetDatabase();
+        if (db is null)
+        {
+            return;
+        }
+
+        var userId = await SeedUserAsync(db, "UTC");
+        var now = DateTime.UtcNow;
+
+        for (var i = 0; i < 12; i++)
+        {
+            await SeedTaskAsync(db, userId, $"Matter {i}", now.AddMinutes(5), new[] { Entry(now, "due") });
+        }
+
+        Assert.Equal(12, await Tick(db).RunAsync(now));
+
+        var stamps = await Notifications(db)
+            .Find(Builders<BsonDocument>.Filter.Eq("userId", userId))
+            .Project(Builders<BsonDocument>.Projection.Include("createdAt"))
+            .ToListAsync();
+
+        var distinct = stamps.Select(s => s["createdAt"].ToUniversalTime()).Distinct().Count();
+
+        Assert.Equal(12, distinct);
+    }
+
+    /// <summary>
+    /// The feed's own ordering — <c>{createdAt: -1}</c>, newest first, exactly as
+    /// <c>GET /me/notifications</c> reads it.
+    /// </summary>
+    private static async Task<IReadOnlyList<string>> FeedTitlesAsync(IMongoDatabase db, ObjectId userId)
+    {
+        var rows = await Notifications(db)
+            .Find(Builders<BsonDocument>.Filter.Eq("userId", userId))
+            .Sort(Builders<BsonDocument>.Sort.Descending("createdAt"))
+            .ToListAsync();
+
+        return rows.Select(r => r["title"].AsString).ToList();
+    }
+
     private static ReminderTick Tick(IMongoDatabase db) => NewTick(db).Tick;
 
     /// <summary>
@@ -498,7 +640,8 @@ public sealed class ReminderWorkerTests
         DateTime? dueAt,
         IEnumerable<BsonDocument> reminders,
         string status = "open",
-        DateTime? deletedAt = null)
+        DateTime? deletedAt = null,
+        string priority = "normal")
     {
         var id = ObjectId.GenerateNewId();
         var task = new BsonDocument
@@ -509,7 +652,7 @@ public sealed class ReminderWorkerTests
             ["domain"] = "home",
             ["kind"] = "task",
             ["status"] = status,
-            ["priority"] = "normal",
+            ["priority"] = priority,
             ["subtasks"] = new BsonArray(),
             ["tags"] = new BsonArray(),
             ["reminders"] = new BsonArray(reminders),
