@@ -388,20 +388,24 @@ to be a second, separate leak.
 
 ## 6. Tweaks the backend must send
 
-**Eight tweaks**, targeting the `PlanningInput-v4` node. Six are unchanged from v3; two
-grounding blocks were added since (`dateReference` and `myTasks` — see
-`LangflowInputBinding.cs`, which owns the field names via `Ai:Langflow:Fields:*`).
+**Seven tweaks** targeting the `PlanningInput-v4` node, plus **one tweak on each of the
+eleven tool nodes**. See `LangflowInputBinding.cs`, which owns the input field names via
+`Ai:Langflow:Fields:*`.
 
-| Tweak | Required | Value |
-|---|---|---|
-| `currentDate` | always | **ISO-8601 with the user's UTC offset**, e.g. `2026-08-10T14:23:00+03:00` |
-| `dateReference` | always | the rendered 14-day weekday → date table plus literal phrase anchors ("this weekend", "end of this month") — the authority the prompt reads dates off |
-| `accessToken` | always | raw bearer token, no `Bearer ` prefix |
-| `mode` | always | `chat` \| `transcript` \| `document` \| `clarification` |
-| `myTasks` | always | the rendered MY TASKS block — the user's open/snoozed matters with their real `[task:...]` ids, capped at 20; `(no open tasks)` when empty |
-| `transcript` | chat, transcript, document | the payload — prose, or the Document Agent's JSON |
-| `pendingTasks` | clarification | JSON array of tasks with open questions, each with its real id |
-| `answers` | clarification | JSON array of `{taskId, question, answer}` |
+`accessToken` is **no longer an input-node tweak and no longer in the prompt at all** — the
+token goes straight to the tools instead. See "The token goes to the tools" below for the
+incident that forced the change.
+
+| Tweak | Node | Required | Value |
+|---|---|---|---|
+| `currentDate` | input | always | **ISO-8601 with the user's UTC offset**, e.g. `2026-08-10T14:23:00+03:00` |
+| `dateReference` | input | always | the rendered 14-day weekday → date table plus literal phrase anchors ("this weekend", "end of this month") — the authority the prompt reads dates off |
+| `access_token` | each of the 11 tool nodes | always | raw bearer token, no `Bearer ` prefix |
+| `mode` | input | always | `chat` \| `transcript` \| `document` \| `clarification` |
+| `myTasks` | input | always | the rendered MY TASKS block — the user's open/snoozed matters with their real `[task:...]` ids, capped at 20; `(no open tasks)` when empty |
+| `transcript` | input | chat, transcript, document | the payload — prose, or the Document Agent's JSON |
+| `pendingTasks` | input | clarification | JSON array of tasks with open questions, each with its real id |
+| `answers` | input | clarification | JSON array of `{taskId, question, answer}` |
 
 ### Two changes the backend must make
 
@@ -415,19 +419,41 @@ two of them. Renaming it, or splitting it into `userMessage` / `transcript` /
 `documentCandidates`, would be clearer — but each of those is a new tweak and therefore a
 .NET change, so v4 reuses the existing slot and documents it instead. Flagging, not assuming.
 
-### Optional hardening (a .NET change — not assumed)
+### The token goes to the tools — DONE, and no longer optional (2026-08-17)
 
-Each tool component's `access_token` is `tool_mode: true`, so today the **agent** passes the
-token through, exactly as v3 did. That works with zero backend change, but it puts a live
-JWT in the model's context on every turn and lets a confused model corrupt it.
+This section used to describe the arrangement below as optional hardening. An incident made
+it mandatory, so it is now the only arrangement.
 
-The better arrangement is for the backend to tweak `access_token` on each of the eleven tool
-nodes directly (same value, same tweak name, additional node ids in the tweak map). The
-fields already exist and take precedence when the model omits the argument, so the two
-degrade into each other and can be switched without touching the flow. Node ids are
+**What it used to be.** Each tool component's `access_token` was `tool_mode: true`, so the
+**agent** carried the token: it was published into the model's context in an `ACCESS TOKEN`
+block and copied back out as an argument on every single tool call.
+
+**Why that broke.** A model that forgets to copy it gets
+`"access_token is empty"` back from the tool and has to repair by re-issuing the whole
+batch. It forgot in **4 separate turns out of ~40** — 9 of 322 persisted tool calls (2.8%),
+always the entire first batch, always repaired on the second attempt. Each forgotten call
+still persists as a receipt, so the transcript ends up holding a failed call beside its
+successful retry. On **2026-08-17** that produced the *phantom questions* incident: a failed
+`holdForClarification` and its successful retry rendered as two answerable question cards
+("2 QUESTIONS") for one matter that had been filed exactly once.
+
+**What it is now.** The backend tweaks `access_token` on each of the eleven tool nodes
+directly, and the field is `tool_mode: false` on all of them, so the argument is not in the
+schema the model is shown. The model cannot supply it, cannot omit it, and never sees it —
+which also keeps a live JWT out of the model's context and out of every eval transcript.
+
+Node ids, which are a contract with `LangflowInputBinding.ToolNodes`:
 `CreateTaskTool-v4`, `UpdateTaskTool-v4`, `CompleteTaskTool-v4`, `DeleteTaskTool-v4`,
 `DeleteAllTasksTool-v4`, `SnoozeTaskTool-v4`, `QueryTasksTool-v4`, `AddSubtaskTool-v4`,
 `ToggleSubtaskTool-v4`, `RemoveSubtaskTool-v4`, `HoldForClarificationTool-v4`.
+
+Three layers have to agree per node or Langflow rebuilds the one that was missed:
+`template.access_token.tool_mode`, the `tool_mode=` keyword in the component's own `code`,
+and the absence of `access_token` from `tools_metadata[*].args`.
+
+A tweak naming a node the flow does not have is ignored by Langflow, so a deployment
+pointed at a different flow degrades to "the tools get no token from us" rather than
+erroring.
 
 Conversation history is a run parameter (`session_id`), not a tweak; the Agent component's
 `n_messages` controls how much is replayed. It is set to **30** (down from 100) — replaying
