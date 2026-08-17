@@ -1,6 +1,7 @@
 using System.IdentityModel.Tokens.Jwt;
 using System.Security.Claims;
 using System.Text;
+using Life_Admin_Autopilot.BLL.Features.Admin;
 using Life_Admin_Autopilot.BLL.Kernel.Auth;
 using Life_Admin_Autopilot.DAL.Features.Auth;
 using Life_Admin_Autopilot.DAL.Kernel.Documents;
@@ -158,6 +159,24 @@ public sealed class SessionService : ISessionService
         {
             return null;
         }
+
+        // A SUSPENDED ACCOUNT DOES NOT GET A NEW TOKEN PAIR, and this THROWS rather
+        // than returning null with the five modes above it.
+        //
+        // Suspending from the console already revokes every refresh token, so in the
+        // normal flow a suspended client is stopped one branch earlier and never
+        // reaches this line. This is the belt to that braces: a SuspendedAt written
+        // any other way — a direct database edit, a restore that half-completed, a
+        // future code path that forgets the revoke — would otherwise leave the
+        // account renewing its session indefinitely, because nothing else on the
+        // refresh path ever looks at the profile it just loaded.
+        //
+        // Deliberately NOT folded into the null contract: the whole point of
+        // AdminSuspension is that this must be a 403 and not a 401, because a 401
+        // makes the app clear the session and invite a sign-in the user cannot
+        // complete, with nothing anywhere saying why. Free of charge, too — the
+        // profile is already in hand.
+        AdminSuspension.ThrowIfSuspended(user);
 
         // The new row inherits the old row's metadata only when the request supplies
         // none. Node uses `??`, so an empty-string User-Agent on the request WINS

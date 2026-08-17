@@ -1,6 +1,7 @@
 using System.Text.Json;
 using Life_Admin_Autopilot.BLL.Features.Ai;
 using Life_Admin_Autopilot.DAL.Kernel.Errors;
+using Life_Admin_Autopilot.DAL.Kernel.Ops;
 using Life_Admin_Autopilot_Backend.Kernel.Auth;
 using Life_Admin_Autopilot_Backend.Kernel.Binding;
 using Life_Admin_Autopilot_Backend.Kernel.RateLimiting;
@@ -40,6 +41,16 @@ namespace Life_Admin_Autopilot_Backend.Features.Ai;
 /// <c>/ai/voice/transcribe</c> checks availability FIRST, so an 11 MB body is a 503
 /// and not a 400. <c>/ai/tools/confirm</c> has no availability gate at all.
 /// </para>
+///
+/// <para>
+/// <b>All three routes also consult a kill switch</b>
+/// (<see cref="FeatureFlags.AiChat"/>, <see cref="FeatureFlags.Transcription"/>),
+/// each gate placed immediately after that route's availability check so the
+/// parity-verified ordering above it is untouched. Every one of them is
+/// unreachable on the parity target, where no flag row is disabled — which is what
+/// makes adding a gate to this file safe at all. See
+/// <see cref="Life_Admin_Autopilot.DAL.Kernel.Ops.FeatureDisabled"/>.
+/// </para>
 /// </summary>
 public static class AiStreamEndpoints
 {
@@ -69,6 +80,7 @@ public static class AiStreamEndpoints
         endpoints.MapPost("/ai/ask", async (
             HttpContext context,
             IAiProvider ai,
+            IFeatureFlagStore flags,
             AiQuotaService quota,
             AiConversationThreadService threads,
             CancellationToken cancellationToken) =>
@@ -97,6 +109,18 @@ public static class AiStreamEndpoints
             if (!ai.IsConfigured)
             {
                 throw AiShellErrors.Ask();
+            }
+
+            // 4b. The kill switch, immediately AFTER availability rather than before
+            //     it. On the parity target no flag row is ever disabled, so this gate
+            //     never fires there and every ordering above it stays byte-identical
+            //     to the reference — which is the only reason it is safe to add a gate
+            //     to a file whose gate order is itself the contract. IsDisabledAsync
+            //     never throws and answers false on a Mongo failure, so an unreadable
+            //     switch leaves chat running.
+            if (await flags.IsDisabledAsync(FeatureFlags.AiChat, cancellationToken).ConfigureAwait(false))
+            {
+                throw FeatureDisabled.AiChat();
             }
 
             // 5. ATOMIC RESERVE, before any expensive work and before the headers
@@ -149,6 +173,7 @@ public static class AiStreamEndpoints
             string callId,
             HttpContext context,
             IAiProvider ai,
+            IFeatureFlagStore flags,
             AiQuotaService quota,
             AiConversationService conversations,
             AiConfirmedToolRunner tools,
@@ -173,6 +198,22 @@ public static class AiStreamEndpoints
             // then it emits `{"type":"done","usage":{}}` rather than an error. With
             // no key no pending call can ever have been created, so every call
             // lands on the durable-record lookup below and 404s. Verified live.
+            //
+            // The KILL SWITCH is a different matter and does gate this route, because
+            // FeatureFlags.AiChat is documented to stop "/ai/ask and the confirm
+            // continuation" — a switch that stopped new questions but still let
+            // queued tool calls dispatch would not be a stop. Pulling it mid-flight
+            // leaves the pending call untouched in the database: it becomes
+            // confirmable again when the switch goes back on, so the cost of pulling
+            // the switch is a delay and never a lost confirmation.
+            //
+            // Unreachable on the parity target for the same reason the lookup below
+            // is: no flag row there is disabled.
+            if (await flags.IsDisabledAsync(FeatureFlags.AiChat, cancellationToken).ConfigureAwait(false))
+            {
+                throw FeatureDisabled.AiChat();
+            }
+
             var call = await conversations
                 .RequirePendingToolCallAsync(caller.Id, callId, cancellationToken)
                 .ConfigureAwait(false);
@@ -224,6 +265,7 @@ public static class AiStreamEndpoints
         endpoints.MapPost("/ai/voice/transcribe", async (
             HttpContext context,
             IAiProvider ai,
+            IFeatureFlagStore flags,
             AiQuotaService quota,
             CancellationToken cancellationToken) =>
         {
@@ -248,6 +290,16 @@ public static class AiStreamEndpoints
             if (!ai.IsConfigured)
             {
                 throw AiShellErrors.Transcribe();
+            }
+
+            // a2. The kill switch, kept on the SAME side of the payload checks as the
+            //     availability gate above it. That is the whole point of this route's
+            //     odd ordering: an 11 MB body with transcription switched off answers
+            //     503 rather than 400, because the size of a recording nobody will
+            //     transcribe is not the user's problem to fix.
+            if (await flags.IsDisabledAsync(FeatureFlags.Transcription, cancellationToken).ConfigureAwait(false))
+            {
+                throw FeatureDisabled.Transcription();
             }
 
             // b. + c. The friendly ceilings, in Node's order.

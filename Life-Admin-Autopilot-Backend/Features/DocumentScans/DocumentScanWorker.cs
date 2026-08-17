@@ -4,6 +4,7 @@ using Life_Admin_Autopilot.BLL.Features.DocumentScans;
 using Life_Admin_Autopilot.DAL.Features.Account;
 using Life_Admin_Autopilot.DAL.Features.DocumentScans;
 using Life_Admin_Autopilot.DAL.Kernel.Documents;
+using Life_Admin_Autopilot.DAL.Kernel.Ops;
 using Life_Admin_Autopilot_Backend.Kernel.Hosting;
 
 namespace Life_Admin_Autopilot_Backend.Features.DocumentScans;
@@ -44,6 +45,23 @@ internal sealed class DocumentScanWorker : KernelPollingWorker
     protected override async Task RunOnceAsync(CancellationToken cancellationToken)
     {
         using var scope = Services.CreateScope();
+
+        // The kill switch is checked BEFORE claiming, and that placement is the whole
+        // design. Claiming and then refusing would burn an attempt, write a
+        // failureReason, and eventually mark the scan `failed` — so pulling the switch
+        // for ten minutes would permanently fail every document uploaded during it.
+        // Not claiming leaves rows `pending` with their NextRunAt in the past: the
+        // queue simply stops draining and resumes on its own within ten seconds of the
+        // switch going back on, with nothing lost and no attempt spent.
+        //
+        // This is also why the upload route has no gate — see FeatureDisabled.
+        var flags = scope.ServiceProvider.GetRequiredService<IFeatureFlagStore>();
+
+        if (await flags.IsDisabledAsync(FeatureFlags.DocumentScan, cancellationToken).ConfigureAwait(false))
+        {
+            return;
+        }
+
         var scans = scope.ServiceProvider.GetRequiredService<IScannedDocumentRepository>();
 
         var claimed = await scans
