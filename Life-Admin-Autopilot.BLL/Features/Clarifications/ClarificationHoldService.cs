@@ -200,12 +200,14 @@ public sealed class ClarificationHoldService
         // Queue full → the task above is the whole answer. Skip the questions rather
         // than growing a pile the user never reaches. The cap counts ROWS, so a
         // three-question hold spends three slots and a user one slot from the cap
-        // gets the first question only.
+        // gets asked one thing.
         var capacity = await CapacityAsync(userId, cancellationToken).ConfigureAwait(false);
         if (capacity <= 0)
         {
             return new HoldOutcome(task, null, QueueFull: true, Array.Empty<ClarificationDocument>());
         }
+
+        var asked = Prioritize(questions, capacity);
 
         // A FRESH draft per row rather than one shared instance: the documents are
         // mutable and independent from here on, and an alias between two of them is
@@ -223,7 +225,7 @@ public sealed class ClarificationHoldService
         var sourceText = SourceQuote.Clamp(input.SourceText);
         var rows = new List<ClarificationDocument>();
 
-        foreach (var question in questions.Take(capacity))
+        foreach (var question in asked)
         {
             var clarification = new ClarificationDocument
             {
@@ -290,6 +292,41 @@ public sealed class ClarificationHoldService
                 q.Kind ?? input.Kind,
                 q.CostOfWrong ?? costOfWrong,
                 q.Options is null ? options : Normalize(q.Options, input.Timezone)))
+            .ToList();
+    }
+
+    /// <summary>
+    /// Which questions actually get asked when the queue has room for only some.
+    ///
+    /// <para>
+    /// <b>The DATE question survives first.</b> It is the only one that can unblock
+    /// the task: a held matter sits at <c>kind:'list'</c> until a confirmed date
+    /// promotes it, and that promotion happens when the date question is answered.
+    /// Truncating in plain array order can therefore keep a <c>detail</c> gap and
+    /// drop the date — leaving a reminder that is withheld forever with nothing left
+    /// to ask that would release it. Which is this feature's own bug, one level up.
+    /// </para>
+    ///
+    /// <para>
+    /// Order is otherwise preserved, including among the survivors: the card stack
+    /// reads them in the order they were asked, and the model puts the
+    /// deadline-defining question first anyway, so nothing moves in the common case.
+    /// </para>
+    /// </summary>
+    private static List<HoldQuestion> Prioritize(List<HoldQuestion> questions, int capacity)
+    {
+        if (questions.Count <= capacity)
+        {
+            return questions;
+        }
+
+        return questions
+            .Select((question, index) => (question, index))
+            .OrderBy(entry => entry.question.Kind == "date" ? 0 : 1)
+            .ThenBy(entry => entry.index)
+            .Take(capacity)
+            .OrderBy(entry => entry.index)
+            .Select(entry => entry.question)
             .ToList();
     }
 

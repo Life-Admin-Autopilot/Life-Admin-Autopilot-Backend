@@ -632,6 +632,81 @@ public sealed class ClarificationHoldTests : IClassFixture<ClarificationsWebAppl
     }
 
     [Fact]
+    public async Task the_last_slot_goes_to_the_date_question_wherever_it_sat()
+    {
+        var db = TryGetDatabase();
+        if (db is null)
+        {
+            return;
+        }
+
+        var userId = await ResetAsync(db);
+
+        await Clarifications(db).InsertManyAsync(
+            Enumerable.Range(0, ClarificationHoldService.MaxOpenClarifications - 1)
+                .Select(i => Existing(userId, i, deferred: false)));
+
+        // One slot, and the DETAIL gap is listed first. Truncating in array order
+        // would keep it and drop the date — and the date question is the only one
+        // that can promote the task, so the reminder would be withheld forever with
+        // nothing left to ask that could release it.
+        var json = await PostCreatedAsync(userId, """
+        {
+          "title": "Renew the passport",
+          "domain": "home",
+          "question": "Which office?",
+          "kind": "detail",
+          "questions": [
+            {"question": "Which office?", "kind": "detail", "options": []},
+            {
+              "question": "Is it the 15th or the 18th?",
+              "kind": "date",
+              "options": [{"label": "The 15th", "dueAt": "2026-09-15T10:30:00Z"}]
+            }
+          ]
+        }
+        """);
+
+        var rows = json.GetProperty("clarifications");
+        Assert.Equal(1, rows.GetArrayLength());
+        Assert.Equal("date", rows[0].GetProperty("kind").GetString());
+        Assert.Equal("Is it the 15th or the 18th?", rows[0].GetProperty("question").GetString());
+    }
+
+    [Fact]
+    public async Task with_room_for_everything_the_asked_order_is_the_order_given()
+    {
+        var db = TryGetDatabase();
+        if (db is null)
+        {
+            return;
+        }
+
+        var userId = await ResetAsync(db);
+
+        // Prioritising is a TRUNCATION rule, not a sort. With room for both, a
+        // deliberately detail-first hold stays detail-first — the card stack reads
+        // them in the order they were asked.
+        var json = await PostCreatedAsync(userId, """
+        {
+          "title": "Renew the passport",
+          "domain": "home",
+          "question": "Which office?",
+          "kind": "detail",
+          "questions": [
+            {"question": "Which office?", "kind": "detail", "options": []},
+            {"question": "Is it the 15th or the 18th?", "kind": "date", "options": []}
+          ]
+        }
+        """);
+
+        var rows = json.GetProperty("clarifications");
+        Assert.Equal(2, rows.GetArrayLength());
+        Assert.Equal("Which office?", rows[0].GetProperty("question").GetString());
+        Assert.Equal("Is it the 15th or the 18th?", rows[1].GetProperty("question").GetString());
+    }
+
+    [Fact]
     public async Task past_the_cap_a_multi_question_hold_files_the_task_and_no_rows()
     {
         var db = TryGetDatabase();
