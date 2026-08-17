@@ -165,6 +165,13 @@ public sealed class ClarificationHoldService
         // The reminder is withheld if ANY question is expensive to get wrong. The
         // guard exists to stop a GUESSED date firing, and a matter is only as safe
         // as its riskiest open gap — a 'low' sibling cannot license the guess.
+        //
+        // Deliberately over EVERY question asked for, including any the queue cap
+        // drops below. A gap the user will never be shown is unresolved forever, so
+        // it is the last thing that should release a guess; counting only the filed
+        // rows would let a full queue turn a high-cost hold into a firing reminder.
+        // Withholding is never a dead end — the DATE question survives truncation
+        // (see Prioritize) and answering it promotes the task exactly as usual.
         var effectiveCost = questions.Any(q => q.CostOfWrong == ClarificationVocabulary.CostHigh)
             ? ClarificationVocabulary.CostHigh
             : ClarificationVocabulary.CostLow;
@@ -350,6 +357,17 @@ public sealed class ClarificationHoldService
     /// question the user skipped is still queued and still comes back, so it still
     /// occupies a slot. Counting only the currently-visible ones would let a user with
     /// twelve deferred questions accumulate twelve more.
+    /// </para>
+    ///
+    /// <para>
+    /// <b>Check-then-insert, with no transaction.</b> The count and the writes are
+    /// separate operations, so two concurrent holds for one user can both read the
+    /// same remainder and overshoot the cap. That race predates this change; what
+    /// grew is its size, from at most one extra row per collision to at most three.
+    /// Left alone deliberately: nothing in this codebase opens a Mongo session, the
+    /// cap is backpressure rather than an invariant, and a user who briefly holds
+    /// fourteen open questions is in no way harmed — the next hold simply files no
+    /// question at all.
     /// </para>
     /// </summary>
     private async Task<int> CapacityAsync(ObjectId userId, CancellationToken cancellationToken)

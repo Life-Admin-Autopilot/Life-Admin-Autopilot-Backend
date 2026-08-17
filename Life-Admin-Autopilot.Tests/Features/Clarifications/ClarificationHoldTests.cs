@@ -707,6 +707,60 @@ public sealed class ClarificationHoldTests : IClassFixture<ClarificationsWebAppl
     }
 
     [Fact]
+    public async Task a_dropped_expensive_question_still_withholds_and_the_date_still_releases()
+    {
+        var db = TryGetDatabase();
+        if (db is null)
+        {
+            return;
+        }
+
+        var userId = await ResetAsync(db);
+
+        await Clarifications(db).InsertManyAsync(
+            Enumerable.Range(0, ClarificationHoldService.MaxOpenClarifications - 1)
+                .Select(i => Existing(userId, i, deferred: false)));
+
+        // One slot, and the expensive question is the one that gets dropped. The
+        // task's kind is decided over EVERY question the caller asked, filed or not:
+        // a gap nobody will ever be asked about is unresolved forever, so it is the
+        // last thing that should license a guessed date to fire.
+        var json = await PostCreatedAsync(userId, """
+        {
+          "title": "Pay the rent",
+          "domain": "finance",
+          "question": "Which day is it due?",
+          "kind": "date",
+          "costOfWrong": "low",
+          "timezone": "Africa/Cairo",
+          "questions": [
+            {
+              "question": "Which day is it due?",
+              "kind": "date",
+              "costOfWrong": "low",
+              "options": [{"label": "The 1st", "dueAt": "2026-09-01T09:00:00+03:00"}]
+            },
+            {"question": "Morning or evening nudge?", "kind": "choice", "costOfWrong": "high", "options": []}
+          ]
+        }
+        """);
+
+        var rows = json.GetProperty("clarifications");
+        Assert.Equal(1, rows.GetArrayLength());
+        Assert.Equal("Which day is it due?", rows[0].GetProperty("question").GetString());
+        Assert.Equal("list", json.GetProperty("task").GetProperty("kind").GetString());
+
+        // ...and it is NOT stranded. The date question survived the truncation, and
+        // answering it promotes the task exactly as it would have with no cap in
+        // sight. Withholding is a delay, never a dead end.
+        var resolved = await ResolveAsync(userId, rows[0].GetProperty("id").GetString()!, index: 0);
+
+        Assert.Equal("reminder", resolved.GetProperty("task").GetProperty("kind").GetString());
+        Assert.Equal("2026-09-01T06:00:00.000Z", resolved.GetProperty("task").GetProperty("dueAt").GetString());
+        Assert.NotEmpty(resolved.GetProperty("task").GetProperty("reminders").EnumerateArray());
+    }
+
+    [Fact]
     public async Task past_the_cap_a_multi_question_hold_files_the_task_and_no_rows()
     {
         var db = TryGetDatabase();
