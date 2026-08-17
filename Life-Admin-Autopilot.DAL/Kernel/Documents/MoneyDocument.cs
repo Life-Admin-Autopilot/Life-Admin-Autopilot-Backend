@@ -79,20 +79,7 @@ public static class MoneyVocabulary
     }
 
     /// <summary>
-    /// The single gate every figure passes through, from any source.
-    ///
-    /// <para>
-    /// Returns null — no money at all — rather than a half-answer, because every
-    /// rejection here is a value that would be WRONG on screen: an amount with
-    /// no currency is not a quantity of anything, a negative is a direction
-    /// dressed as a magnitude, and a figure too large to be a personal document
-    /// is a misread decimal separator. A missing row on the summary is
-    /// recoverable; a confident wrong number is the failure the trust contract
-    /// exists to prevent.
-    /// </para>
-    /// </summary>
-    /// <summary>
-    /// The same gate for a figure that ALREADY counts minor units.
+    /// The gate for a figure that ALREADY counts minor units.
     ///
     /// <para>
     /// This is the client's entry point: a matter's amount arrives from the app in
@@ -127,6 +114,19 @@ public static class MoneyVocabulary
         };
     }
 
+    /// <summary>
+    /// The gate for a figure in MAJOR units — what the reader saw printed.
+    ///
+    /// <para>
+    /// Both gates return null — no money at all — rather than a half-answer,
+    /// because every rejection here is a value that would be WRONG on screen: an
+    /// amount with no currency is not a quantity of anything, a negative is a
+    /// direction dressed as a magnitude, and a figure too large to be a personal
+    /// document is a misread decimal separator. A missing row on the summary is
+    /// recoverable; a confident wrong number is the failure the trust contract
+    /// exists to prevent.
+    /// </para>
+    /// </summary>
     /// <param name="amount">The figure as printed, in MAJOR units (142.37).</param>
     public static MoneyDocument? Normalize(decimal? amount, string? currency, string source, string? direction = null)
     {
