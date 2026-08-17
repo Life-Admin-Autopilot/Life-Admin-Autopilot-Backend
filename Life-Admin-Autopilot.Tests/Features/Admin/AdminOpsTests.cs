@@ -191,7 +191,10 @@ public sealed class AdminOpsTests : IClassFixture<AdminWebApplicationFactory>
 
         var db = _factory.Database();
 
-        // Ten signups; six verified; four onboarded; two with a matter.
+        // Ten signups; six verified; four onboarded; two with a matter — and the
+        // sets are NESTED here on purpose. That is what made this test pass against
+        // the broken implementation, which is why
+        // `the_funnel_does_not_widen_when_the_steps_are_not_nested` exists below.
         for (var i = 0; i < 10; i++)
         {
             var index = i;
@@ -232,6 +235,111 @@ public sealed class AdminOpsTests : IClassFixture<AdminWebApplicationFactory>
                 steps[i] <= steps[i - 1],
                 $"step {i} ({steps[i]}) is wider than step {i - 1} ({steps[i - 1]})");
         }
+    }
+
+    /// <summary>
+    /// <b>The case that exposed the original bug.</b>
+    ///
+    /// <para>
+    /// Nobody is onboarded, yet two people have created a matter — which is
+    /// entirely possible in the real product. The first implementation counted each
+    /// rung independently and reported "Onboarded: 0 → Created a matter: 2", a
+    /// funnel that widens. The earlier monotonicity test passed only because it
+    /// happened to seed nested data.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public async Task the_funnel_does_not_widen_when_the_steps_are_not_nested()
+    {
+        if (!_factory.MongoIsUp()) return;
+        await ResetAsync();
+
+        var db = _factory.Database();
+
+        // Six signups, three verified, NOBODY onboarded.
+        for (var i = 0; i < 6; i++)
+        {
+            var index = i;
+            await AdminTestData.SeedUserAsync(db, $"nonnested{i}@test.local", doc =>
+            {
+                doc["hasOnboarded"] = false;
+                if (index < 3)
+                {
+                    doc["emailVerifiedAt"] = DateTime.UtcNow;
+                }
+            });
+        }
+
+        // Two of them create a matter anyway.
+        var everyone = await db.GetCollection<BsonDocument>("users").Find(new BsonDocument()).ToListAsync();
+        for (var i = 0; i < 2; i++)
+        {
+            await db.GetCollection<BsonDocument>("tasks").InsertOneAsync(new BsonDocument
+            {
+                ["userId"] = everyone[i]["_id"],
+                ["title"] = "a matter created without onboarding",
+                ["createdAt"] = DateTime.UtcNow,
+            });
+        }
+
+        var json = await AdminTestData.ReadAsync(
+            await _factory.AdminClient().GetAsync("/admin/insights/funnel"));
+
+        var steps = json.EnumerateArray().Select(s => s.GetProperty("users").GetInt32()).ToList();
+
+        Assert.Equal(6, steps[0]); // signed up
+        Assert.Equal(3, steps[1]); // verified
+        Assert.Equal(0, steps[2]); // onboarded
+
+        // The rung AFTER an empty one must also be empty — a funnel cannot refill.
+        Assert.Equal(0, steps[3]);
+
+        for (var i = 1; i < steps.Count; i++)
+        {
+            Assert.True(steps[i] <= steps[i - 1], $"step {i} widened: {steps[i]} > {steps[i - 1]}");
+        }
+    }
+
+    /// <summary>
+    /// Adoption is reported as independent counts, so it is allowed to exceed a
+    /// funnel rung. Chat, scan and voice are parallel features and stacking them
+    /// into a sequence would invent a progression the product does not have.
+    /// </summary>
+    [Fact]
+    public async Task adoption_counts_features_independently()
+    {
+        if (!_factory.MongoIsUp()) return;
+        await ResetAsync();
+
+        var db = _factory.Database();
+        var alice = await AdminTestData.SeedUserAsync(db, "adopter@test.local");
+        var bob = await AdminTestData.SeedUserAsync(db, "scanner@test.local");
+
+        await db.GetCollection<BsonDocument>("aiconversations")
+            .InsertOneAsync(new BsonDocument { ["userId"] = alice, ["scope"] = "personal" });
+
+        await db.GetCollection<BsonDocument>("scanneddocuments")
+            .InsertManyAsync(new[]
+            {
+                new BsonDocument { ["userId"] = alice },
+                new BsonDocument { ["userId"] = bob },
+            });
+
+        var json = await AdminTestData.ReadAsync(
+            await _factory.AdminClient().GetAsync("/admin/insights/adoption"));
+
+        var rows = json.EnumerateArray().ToList();
+
+        var scans = rows.Single(r => r.GetProperty("step").GetString() == "Scanned a document");
+        var chat = rows.Single(r => r.GetProperty("step").GetString() == "Used AI chat");
+
+        // Two distinct scanners, not two scans.
+        Assert.Equal(2, scans.GetProperty("users").GetInt32());
+        Assert.Equal(1, chat.GetProperty("users").GetInt32());
+
+        // Sorted most-adopted first.
+        Assert.Equal(rows.Select(r => r.GetProperty("users").GetInt32()).OrderByDescending(n => n),
+            rows.Select(r => r.GetProperty("users").GetInt32()));
     }
 
     [Fact]

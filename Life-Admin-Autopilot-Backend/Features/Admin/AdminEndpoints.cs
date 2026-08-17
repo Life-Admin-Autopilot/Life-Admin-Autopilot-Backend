@@ -172,6 +172,12 @@ public static class AdminEndpoints
             AdminOpsService ops,
             CancellationToken cancellationToken) =>
             Results.Ok(await ops.FunnelAsync(cancellationToken).ConfigureAwait(false)));
+
+        // Feature adoption — deliberately NOT funnel rungs. See AdoptionAsync.
+        console.MapGet("/insights/adoption", async (
+            AdminOpsService ops,
+            CancellationToken cancellationToken) =>
+            Results.Ok(await ops.AdoptionAsync(cancellationToken).ConfigureAwait(false)));
     }
 
     // ---- customers ---------------------------------------------------------

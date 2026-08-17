@@ -175,89 +175,160 @@ public sealed class AdminOpsService
     // ---- funnel ------------------------------------------------------------
 
     /// <summary>
-    /// Activation, as counts of distinct users who ever reached each step.
+    /// Activation, as a TRUE funnel: each rung counts people who reached it
+    /// <b>having reached every rung before it</b>.
     ///
     /// <para>
-    /// <b>Cumulative-ever, not per-cohort-window.</b> Each rung counts users who
-    /// have EVER done the thing, so the steps are monotonically non-increasing and
-    /// the drop between two rungs is real. A windowed version would let a later
-    /// rung exceed an earlier one — a user who onboarded last year and scanned a
-    /// document today — which reads as a bug even when the data is right.
+    /// <b>This is a set intersection, not a column of independent counts.</b> The
+    /// first version counted each step separately and called the result a funnel,
+    /// which produced "Onboarded: 0 → First matter: 2" on real data — a funnel that
+    /// widens, which is not a funnel. A customer genuinely can create a matter
+    /// without finishing onboarding, so the counts were each correct and the shape
+    /// was a lie.
+    /// </para>
+    ///
+    /// <para>
+    /// <b>Only the onboarding sequence is a funnel.</b> Chat, document scan and
+    /// voice notes are parallel features — nobody does them in a fixed order — so
+    /// they are reported separately by <see cref="AdoptionAsync"/> rather than
+    /// stacked into a sequence that does not exist.
     /// </para>
     /// </summary>
     public async Task<IReadOnlyList<FunnelStepDto>> FunnelAsync(CancellationToken cancellationToken = default)
     {
-        var total = await _customers.TotalCustomersAsync(cancellationToken).ConfigureAwait(false);
-
         var users = _database.GetCollection<BsonDocument>(MongoCollections.Users);
         var tasks = _database.GetCollection<BsonDocument>(MongoCollections.Tasks);
-        var scans = _database.GetCollection<BsonDocument>(MongoCollections.ScannedDocuments);
-        var conversations = _database.GetCollection<BsonDocument>(MongoCollections.AiConversations);
-        var voice = _database.GetCollection<BsonDocument>(MongoCollections.VoiceNotes);
 
-        var verified = await users
-            .CountDocumentsAsync(
-                new BsonDocument("emailVerifiedAt", new BsonDocument("$ne", BsonNull.Value)),
-                options: null,
+        var signedUp = await IdsAsync(
+                users,
+                new BsonDocument(),
+                "_id",
                 cancellationToken)
             .ConfigureAwait(false);
 
-        var onboarded = await users
-            .CountDocumentsAsync(new BsonDocument("hasOnboarded", true), options: null, cancellationToken)
+        var verified = await IdsAsync(
+                users,
+                new BsonDocument("emailVerifiedAt", new BsonDocument("$ne", BsonNull.Value)),
+                "_id",
+                cancellationToken)
             .ConfigureAwait(false);
 
-        var withMatter = await DistinctUserCountAsync(tasks, cancellationToken).ConfigureAwait(false);
-        var withChat = await DistinctUserCountAsync(conversations, cancellationToken).ConfigureAwait(false);
-        var withScan = await DistinctUserCountAsync(scans, cancellationToken).ConfigureAwait(false);
-        var withVoice = await DistinctUserCountAsync(voice, cancellationToken).ConfigureAwait(false);
+        var onboarded = await IdsAsync(
+                users,
+                new BsonDocument("hasOnboarded", true),
+                "_id",
+                cancellationToken)
+            .ConfigureAwait(false);
 
-        var steps = new (string Step, long Users)[]
+        var withMatter = await DistinctUserIdsAsync(tasks, cancellationToken).ConfigureAwait(false);
+
+        // Each rung intersects the one before it. That is what makes the drops real.
+        var rungs = new List<(string Step, HashSet<BsonValue> Users)>
         {
-            ("Signed up", total),
-            ("Verified email", verified),
-            ("Onboarded", onboarded),
-            ("First matter", withMatter),
-            ("First AI turn", withChat),
-            ("First scan", withScan),
-            ("First voice note", withVoice),
+            ("Signed up", signedUp),
         };
 
-        return steps
-            .Select(s => new FunnelStepDto
+        foreach (var (label, set) in new[]
+                 {
+                     ("Verified email", verified),
+                     ("Onboarded", onboarded),
+                     ("Created a matter", withMatter),
+                 })
+        {
+            var previous = rungs[^1].Users;
+            rungs.Add((label, new HashSet<BsonValue>(set.Where(previous.Contains))));
+        }
+
+        var total = signedUp.Count;
+
+        return rungs
+            .Select(r => new FunnelStepDto
             {
-                Step = s.Step,
-                Users = (int)s.Users,
-                PercentOfCohort = total == 0 ? 0 : Math.Round(s.Users * 100.0 / total, 1),
+                Step = r.Step,
+                Users = r.Users.Count,
+                PercentOfCohort = total == 0 ? 0 : Math.Round(r.Users.Count * 100.0 / total, 1),
             })
             .ToList();
     }
 
     /// <summary>
-    /// How many distinct users appear in a collection.
+    /// Feature adoption — independent counts, presented as such.
     ///
     /// <para>
-    /// <c>$group</c> then <c>$count</c> rather than <c>Distinct</c>: the distinct
-    /// command materialises every id into one BSON document and hits the 16MB cap
-    /// somewhere north of half a million users, which is a failure that only shows
-    /// up once the product is working.
+    /// These are NOT funnel rungs. A customer may scan a document without ever
+    /// using chat, so ordering them into a sequence would invent a progression the
+    /// product does not have.
     /// </para>
     /// </summary>
-    private static async Task<long> DistinctUserCountAsync(
+    public async Task<IReadOnlyList<FunnelStepDto>> AdoptionAsync(CancellationToken cancellationToken = default)
+    {
+        var total = await _customers.TotalCustomersAsync(cancellationToken).ConfigureAwait(false);
+
+        var sources = new (string Label, string Collection)[]
+        {
+            ("Used AI chat", MongoCollections.AiConversations),
+            ("Scanned a document", MongoCollections.ScannedDocuments),
+            ("Recorded a voice note", MongoCollections.VoiceNotes),
+        };
+
+        var adoption = new List<FunnelStepDto>();
+
+        foreach (var (label, collection) in sources)
+        {
+            var ids = await DistinctUserIdsAsync(
+                    _database.GetCollection<BsonDocument>(collection),
+                    cancellationToken)
+                .ConfigureAwait(false);
+
+            adoption.Add(new FunnelStepDto
+            {
+                Step = label,
+                Users = ids.Count,
+                PercentOfCohort = total == 0 ? 0 : Math.Round(ids.Count * 100.0 / total, 1),
+            });
+        }
+
+        return adoption.OrderByDescending(a => a.Users).ToList();
+    }
+
+    /// <summary>
+    /// Distinct <c>userId</c>s in a collection, as a set.
+    ///
+    /// <para>
+    /// <c>$group</c> rather than the <c>distinct</c> command: distinct materialises
+    /// every id into ONE BSON document and hits the 16MB cap somewhere north of half
+    /// a million users — a failure that only appears once the product is working.
+    /// Bounded by <see cref="AdminCustomerService.MaxSegmentScan"/> for the same
+    /// reason a segment is.
+    /// </para>
+    /// </summary>
+    private static Task<HashSet<BsonValue>> DistinctUserIdsAsync(
         IMongoCollection<BsonDocument> collection,
+        CancellationToken cancellationToken) =>
+        IdsAsync(collection, new BsonDocument(), "$userId", cancellationToken);
+
+    private static async Task<HashSet<BsonValue>> IdsAsync(
+        IMongoCollection<BsonDocument> collection,
+        BsonDocument match,
+        string field,
         CancellationToken cancellationToken)
     {
         var pipeline = new[]
         {
-            new BsonDocument("$group", new BsonDocument("_id", "$userId")),
-            new BsonDocument("$count", "n"),
+            new BsonDocument("$match", match),
+            new BsonDocument("$group", new BsonDocument("_id", field.StartsWith('$') ? field : "$" + field)),
+            new BsonDocument("$limit", AdminCustomerService.MaxSegmentScan),
         };
 
-        var result = await collection
+        var rows = await collection
             .Aggregate<BsonDocument>(pipeline, cancellationToken: cancellationToken)
-            .FirstOrDefaultAsync(cancellationToken)
+            .ToListAsync(cancellationToken)
             .ConfigureAwait(false);
 
-        return result?.GetValue("n", 0).ToInt64() ?? 0;
+        return rows
+            .Select(r => r.GetValue("_id", BsonNull.Value))
+            .Where(v => !v.IsBsonNull)
+            .ToHashSet();
     }
 
     // ---- export ------------------------------------------------------------
