@@ -133,6 +133,46 @@ public static class HoldBinder
     public const int MaxSourceText = 2000;
 
     /// <summary>
+    /// Written FOR THE MODEL, not for a developer reading a log.
+    ///
+    /// <para>
+    /// The tool component hands <c>error.message</c> and <c>error.details</c> straight
+    /// back to the agent, so a validation failure is a turn the agent can still repair:
+    /// it re-calls with options and the user never learns anything went wrong. That only
+    /// works if the text says what to do next, which is why this is an instruction
+    /// rather than a description of what was wrong.
+    /// </para>
+    ///
+    /// <para>
+    /// <b>Why a date question must carry answers.</b> The whole point of asking is to get
+    /// a resolved instant back. Options are pre-resolved server-side, so a tapped chip
+    /// sets a real <c>dueAt</c> and promotes a withheld reminder; a chipless date question
+    /// falls back to a free-text box and a second round of date parsing on whatever the
+    /// user types. What is actually rejected is narrower than what this asks for — see
+    /// <see cref="MinDateOptions"/>.
+    /// </para>
+    /// </summary>
+    public const string DateNeedsOptions =
+        "A date question needs 2-4 options, each with a resolved dueAt. Re-call with options.";
+
+    /// <summary>
+    /// <c>secondary_question</c> repeated verbatim as the primary. Two identical
+    /// sentences are one gap asked twice: the user answers the first card and the second
+    /// stays open forever, which is the same "a question nothing can close" failure the
+    /// date-survives-truncation rule exists to prevent.
+    /// </summary>
+    public const string DuplicateQuestion =
+        "Two questions on this matter are the same sentence. Ask each gap once, with its own wording.";
+
+    /// <summary>
+    /// The message asks for two to four because that is the shape worth having. The RULE
+    /// stops at one: a single dated option is still a resolved instant the user accepts
+    /// in one tap, and holds in this codebase legitimately offer exactly one ("Is it the
+    /// 15th?"). Rejecting those would enforce a preference as an invariant.
+    /// </summary>
+    public const int MinDateOptions = 1;
+
+    /// <summary>
     /// <c>questions</c> is <c>.max(3)</c>. A matter with four independent gaps is not
     /// a matter the model understood, and the card stack has to stay answerable in
     /// one sitting — the open-queue cap
@@ -159,6 +199,8 @@ public static class HoldBinder
         var sourceText = f.PlainString(body.SourceText, "sourceText", max: MaxSourceText);
         var timezone = Timezone(f, body.Timezone);
 
+        Answerable(f, kind, dueAtGuess, options, questions);
+
         f.ThrowIfInvalid(Code, Message);
 
         return new HoldInput(
@@ -175,6 +217,78 @@ public static class HoldBinder
             sourceText,
             timezone,
             questions);
+    }
+
+    /// <summary>
+    /// Every question this hold will actually raise must be answerable.
+    ///
+    /// <para>
+    /// Checked against the EFFECTIVE questions — the same fallback
+    /// <c>ClarificationHoldService.BuildQuestions</c> applies — because that is what gets
+    /// written. A <c>questions</c> entry that omits <c>kind</c> inherits the top-level
+    /// one, so validating the raw payload would miss a date question that only becomes a
+    /// date question after the fallback resolves.
+    /// </para>
+    ///
+    /// <para>
+    /// Deliberately here rather than in the service: this is the shape of a request the
+    /// MODEL sends, and the value of rejecting it is that the model gets a 400 it can
+    /// repair inside the same turn. The voice lane writes clarifications through the DAL
+    /// and never passes this way, which is correct — a transcriber has no turn to repair
+    /// in.
+    /// </para>
+    /// </summary>
+    private static void Answerable(
+        BodyFields f,
+        string? kind,
+        string? dueAtGuess,
+        IReadOnlyList<HoldRawOption> options,
+        IReadOnlyList<HoldRawQuestion> questions)
+    {
+        var effective = questions.Count > 0
+            ? questions.Select(q => (Kind: q.Kind ?? kind, Options: q.Options ?? options)).ToList()
+            : new List<(string? Kind, IReadOnlyList<HoldRawOption> Options)> { (kind, options) };
+
+        var field = questions.Count > 0 ? "questions" : "options";
+
+        foreach (var (questionKind, questionOptions) in effective)
+        {
+            if (!string.Equals(questionKind, "date", StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            // An undated chip on a DATE question resolves to nothing when tapped, so a
+            // supplied option that lacks `dueAt` is worse than not offering it.
+            if (questionOptions.Any(o => o.DueAt is null))
+            {
+                f.AddIssue(field, DateNeedsOptions);
+                break;
+            }
+
+            // Nothing to tap AND no guess already applied: the card is a bare "when?"
+            // over a matter with no date on it. A guess is the other acceptable answer —
+            // it is shown in the card's facts block, so the user corrects something
+            // concrete instead of composing a date from scratch.
+            if (questionOptions.Count < MinDateOptions && string.IsNullOrEmpty(dueAtGuess))
+            {
+                f.AddIssue(field, DateNeedsOptions);
+                break;
+            }
+        }
+
+        // Compared on the resolved text, trimmed and case-insensitively: the duplicate
+        // this catches is `secondary_question` echoing `question`, and a model that
+        // re-capitalises one of them has still asked one thing twice.
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var question in questions)
+        {
+            if (!seen.Add(question.Question.Trim()))
+            {
+                f.AddIssue("questions", DuplicateQuestion);
+                break;
+            }
+        }
     }
 
     /// <summary>

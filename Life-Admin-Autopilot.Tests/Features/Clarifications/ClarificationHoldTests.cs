@@ -614,7 +614,14 @@ public sealed class ClarificationHoldTests : IClassFixture<ClarificationsWebAppl
           "question": "What time should I remind you?",
           "kind": "date",
           "questions": [
-            {"question": "What time should I remind you?", "kind": "date", "options": []},
+            {
+              "question": "What time should I remind you?",
+              "kind": "date",
+              "options": [
+                {"label": "9 am", "dueAt": "2026-08-17T09:00:00Z"},
+                {"label": "6 pm", "dueAt": "2026-08-17T18:00:00Z"}
+              ]
+            },
             {"question": "Which friend?", "kind": "detail", "options": []}
           ]
         }
@@ -695,7 +702,14 @@ public sealed class ClarificationHoldTests : IClassFixture<ClarificationsWebAppl
           "kind": "detail",
           "questions": [
             {"question": "Which office?", "kind": "detail", "options": []},
-            {"question": "Is it the 15th or the 18th?", "kind": "date", "options": []}
+            {
+              "question": "Is it the 15th or the 18th?",
+              "kind": "date",
+              "options": [
+                {"label": "The 15th", "dueAt": "2026-09-15T10:30:00Z"},
+                {"label": "The 18th", "dueAt": "2026-09-18T10:30:00Z"}
+              ]
+            }
           ]
         }
         """);
@@ -876,6 +890,85 @@ public sealed class ClarificationHoldTests : IClassFixture<ClarificationsWebAppl
     }
 
     [Fact]
+    public async Task a_date_question_with_nothing_to_tap_and_nothing_guessed_is_rejected()
+    {
+        // The card this would draw is a bare "when?" with no chips and no date on the
+        // matter behind it. The 400 is worth more than the row: the tool hands the
+        // message back to the agent, which re-calls with options inside the same turn.
+        var response = await PostAsync(ObjectId.GenerateNewId(), """
+        {
+          "title": "T", "domain": "home", "question": "When?", "kind": "date"
+        }
+        """);
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+
+        var fields = (await ReadJsonAsync(response)).GetProperty("error").GetProperty("details")
+            .GetProperty("fieldErrors");
+        Assert.Equal(HoldBinder.DateNeedsOptions, fields.GetProperty("options")[0].GetString());
+    }
+
+    [Fact]
+    public async Task a_date_question_with_a_guess_and_no_options_is_still_allowed()
+    {
+        // The guess IS the concrete thing to correct — it rides in the card's facts
+        // block. Only the case with neither is unanswerable.
+        var response = await PostAsync(ObjectId.GenerateNewId(), """
+        {
+          "title": "T", "domain": "home", "question": "When?", "kind": "date",
+          "dueAtGuess": "2026-09-15T10:30:00Z"
+        }
+        """);
+
+        Assert.Equal(HttpStatusCode.Created, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task a_date_option_that_resolves_to_no_instant_is_rejected()
+    {
+        // A chip with no dueAt sets nothing when tapped, so it is worse than not
+        // offering it — the user spends their one answer and the matter stays undated.
+        var response = await PostAsync(ObjectId.GenerateNewId(), """
+        {
+          "title": "T", "domain": "home", "question": "When?", "kind": "date",
+          "options": [{"label": "The 15th", "dueAt": "2026-09-15T10:30:00Z"}, {"label": "Soon"}]
+        }
+        """);
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+
+        var fields = (await ReadJsonAsync(response)).GetProperty("error").GetProperty("details")
+            .GetProperty("fieldErrors");
+        Assert.Equal(HoldBinder.DateNeedsOptions, fields.GetProperty("options")[0].GetString());
+    }
+
+    [Fact]
+    public async Task a_secondary_question_that_repeats_the_primary_is_rejected()
+    {
+        // One gap asked twice. The user answers the first card; the second can never be
+        // closed by anything, so it sits in the queue occupying a slot forever.
+        var response = await PostAsync(ObjectId.GenerateNewId(), """
+        {
+          "title": "T", "domain": "family", "question": "When should I remind you?", "kind": "date",
+          "questions": [
+            {
+              "question": "When should I remind you?",
+              "kind": "date",
+              "options": [{"label": "9 am", "dueAt": "2026-09-15T09:00:00Z"}]
+            },
+            {"question": "  when should i remind you?  ", "kind": "detail", "options": []}
+          ]
+        }
+        """);
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+
+        var fields = (await ReadJsonAsync(response)).GetProperty("error").GetProperty("details")
+            .GetProperty("fieldErrors");
+        Assert.Equal(HoldBinder.DuplicateQuestion, fields.GetProperty("questions")[0].GetString());
+    }
+
+    [Fact]
     public async Task a_fifth_option_is_rejected_as_an_array_not_a_string()
     {
         var response = await PostAsync(ObjectId.GenerateNewId(), """
@@ -975,7 +1068,7 @@ public sealed class ClarificationHoldTests : IClassFixture<ClarificationsWebAppl
         // keys are silently dropped. Only the me.tasks schemas reject them.
         var response = await PostAsync(userId, """
         {
-          "title": "T", "domain": "home", "question": "Q", "kind": "date",
+          "title": "T", "domain": "home", "question": "Q", "kind": "detail",
           "bogus": "ignore me"
         }
         """);
