@@ -96,7 +96,13 @@ public static class ClarificationEndpoints
         })
         .RequireAuthorization();
 
-        // POST /me/clarifications — file an uncertain item AND the question about it.
+        // POST /me/clarifications — file an uncertain item AND the questions about it.
+        //
+        // ONE task, one row per question. `questions` (max 3) is optional and
+        // additive: without it the top-level question/kind/options describe the one
+        // row, exactly as before. With it, each entry is a gap the user answers on
+        // its own — because a matter with two gaps folded into one sentence has one
+        // answer slot, and the second gap disappears the moment the first is tapped.
         //
         // NO NODE COUNTERPART. See the class summary and docs/DIVERGENCES.md §6.
         endpoints.MapPost("/me/clarifications", async (
@@ -120,6 +126,7 @@ public static class ClarificationEndpoints
             return Results.Created((string?)null, new ClarificationCreateResponse
             {
                 Clarification = outcome.Clarification?.ToDto(),
+                Clarifications = outcome.Rows.Select(row => row.ToDto()).ToList(),
                 Task = outcome.Task.ToDto(),
                 QueueFull = outcome.QueueFull,
             });

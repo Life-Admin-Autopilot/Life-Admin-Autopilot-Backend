@@ -55,6 +55,21 @@ public sealed class HoldBody
     [JsonPropertyName("options")]
     public JsonElement Options { get; init; }
 
+    /// <summary>
+    /// ADDITIVE, and the whole point of the multi-question hold: one matter whose
+    /// gaps are independently answerable.
+    ///
+    /// <para>
+    /// Absent or empty is exactly the legacy payload — one row built from
+    /// <see cref="Question"/>/<see cref="Kind"/>/<see cref="Options"/>. Present, it
+    /// is the complete list of questions to raise against the ONE task this call
+    /// creates, and each entry falls back to the top-level value for anything it
+    /// omits. See <see cref="HoldBinder.MaxQuestions"/> for why three.
+    /// </para>
+    /// </summary>
+    [JsonPropertyName("questions")]
+    public JsonElement Questions { get; init; }
+
     [JsonPropertyName("sourceText")]
     public JsonElement SourceText { get; init; }
 
@@ -117,6 +132,15 @@ public static class HoldBinder
     /// </summary>
     public const int MaxSourceText = 2000;
 
+    /// <summary>
+    /// <c>questions</c> is <c>.max(3)</c>. A matter with four independent gaps is not
+    /// a matter the model understood, and the card stack has to stay answerable in
+    /// one sitting — the open-queue cap
+    /// (<see cref="ClarificationHoldService.MaxOpenClarifications"/>) counts every
+    /// row, so a generous limit here spends the user's whole queue on one item.
+    /// </summary>
+    public const int MaxQuestions = 3;
+
     public static HoldInput Parse(HoldBody body)
     {
         var f = new BodyFields();
@@ -130,7 +154,8 @@ public static class HoldBinder
         var tags = TaskFieldReaders.Tags(f, body.Tags);
         var notes = f.PlainString(body.Notes, "notes", max: 2000);
         var dueAtGuess = Iso(f, body.DueAtGuess, "dueAtGuess");
-        var options = Options(f, body.Options);
+        var options = Options(f, body.Options, "options");
+        var questions = Questions(f, body.Questions);
         var sourceText = f.PlainString(body.SourceText, "sourceText", max: MaxSourceText);
         var timezone = Timezone(f, body.Timezone);
 
@@ -148,11 +173,77 @@ public static class HoldBinder
             costOfWrong,
             options,
             sourceText,
-            timezone);
+            timezone,
+            questions);
+    }
+
+    /// <summary>
+    /// <c>questions</c> — 0 to <see cref="MaxQuestions"/> independently-answerable
+    /// gaps in ONE matter.
+    ///
+    /// <para>
+    /// <b>Why this exists.</b> A hold used to carry a single question, so a matter
+    /// with two gaps had to fold both into one sentence — "What time should I remind
+    /// you, and which friend are you visiting?" — and one tapped option answered
+    /// exactly one of them while the other silently ceased to exist. N gaps need N
+    /// answer slots.
+    /// </para>
+    ///
+    /// <para>
+    /// Every member but <c>question</c> is optional and falls back to the TOP-LEVEL
+    /// value, so the array can carry only what differs. The fallback is keyed on the
+    /// KEY being absent, not on the value being empty: a secondary <c>detail</c>
+    /// question sends <c>"options": []</c> to say "no chips here", and that must not
+    /// inherit the primary's time chips.
+    /// </para>
+    /// </summary>
+    private static List<HoldRawQuestion> Questions(BodyFields f, JsonElement element)
+    {
+        var questions = new List<HoldRawQuestion>();
+
+        if (!BodyFields.HasValue(element))
+        {
+            return questions;
+        }
+
+        if (element.ValueKind != JsonValueKind.Array)
+        {
+            f.AddIssue("questions", ZodMessages.ExpectedType("array", KindName(element.ValueKind)));
+            return questions;
+        }
+
+        if (element.GetArrayLength() > MaxQuestions)
+        {
+            f.AddIssue("questions", ZodMessages.ArrayTooBig(MaxQuestions));
+            return questions;
+        }
+
+        foreach (var entry in element.EnumerateArray())
+        {
+            if (entry.ValueKind != JsonValueKind.Object)
+            {
+                f.AddIssue("questions", ZodMessages.ExpectedType("object", KindName(entry.ValueKind)));
+                continue;
+            }
+
+            var text = f.TrimmedString(Member(entry, "question"), "questions", min: 1, max: 300, required: true);
+            var kind = f.Enum(Member(entry, "kind"), "questions", Kinds, required: false);
+            var cost = f.Enum(Member(entry, "costOfWrong"), "questions", Costs, required: false);
+
+            var rawOptions = Member(entry, "options");
+            var options = BodyFields.HasValue(rawOptions) ? Options(f, rawOptions, "questions") : null;
+
+            if (text is not null)
+            {
+                questions.Add(new HoldRawQuestion(text, kind, cost, options));
+            }
+        }
+
+        return questions;
     }
 
     /// <summary><c>clarificationOptionArgs</c> — <c>z.array(...).max(4)</c>.</summary>
-    private static List<HoldRawOption> Options(BodyFields f, JsonElement element)
+    private static List<HoldRawOption> Options(BodyFields f, JsonElement element, string field)
     {
         var options = new List<HoldRawOption>();
 
@@ -163,13 +254,13 @@ public static class HoldBinder
 
         if (element.ValueKind != JsonValueKind.Array)
         {
-            f.AddIssue("options", ZodMessages.ExpectedType("array", KindName(element.ValueKind)));
+            f.AddIssue(field, ZodMessages.ExpectedType("array", KindName(element.ValueKind)));
             return options;
         }
 
         if (element.GetArrayLength() > MaxOptions)
         {
-            f.AddIssue("options", ZodMessages.ArrayTooBig(MaxOptions));
+            f.AddIssue(field, ZodMessages.ArrayTooBig(MaxOptions));
             return options;
         }
 
@@ -177,14 +268,14 @@ public static class HoldBinder
         {
             if (entry.ValueKind != JsonValueKind.Object)
             {
-                f.AddIssue("options", ZodMessages.ExpectedType("object", KindName(entry.ValueKind)));
+                f.AddIssue(field, ZodMessages.ExpectedType("object", KindName(entry.ValueKind)));
                 continue;
             }
 
-            var label = f.TrimmedString(Member(entry, "label"), "options", min: 1, max: 80, required: true);
-            var dueAt = Iso(f, Member(entry, "dueAt"), "options");
-            var optionTitle = f.TrimmedString(Member(entry, "title"), "options", min: 1, max: 240, required: false);
-            var optionNotes = f.PlainString(Member(entry, "notes"), "options", max: 2000);
+            var label = f.TrimmedString(Member(entry, "label"), field, min: 1, max: 80, required: true);
+            var dueAt = Iso(f, Member(entry, "dueAt"), field);
+            var optionTitle = f.TrimmedString(Member(entry, "title"), field, min: 1, max: 240, required: false);
+            var optionNotes = f.PlainString(Member(entry, "notes"), field, max: 2000);
 
             if (label is not null)
             {

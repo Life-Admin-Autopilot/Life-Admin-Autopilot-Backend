@@ -29,23 +29,45 @@ public sealed class ClarificationListResponse
 }
 
 /// <summary>
-/// <c>POST /me/clarifications</c> — <c>{clarification, task, queueFull}</c>.
+/// <c>POST /me/clarifications</c> — <c>{clarification, clarifications, task, queueFull}</c>.
 ///
 /// <para>
 /// The task is ALWAYS present: a held item is a real matter with a question attached,
 /// never a withheld one.
 /// </para>
+///
+/// <para>
+/// One matter can carry SEVERAL independently-answerable questions, so the row count
+/// is <c>clarifications.Length</c> and <c>clarification</c> is the first of them —
+/// kept so a caller written against the single-question response keeps working
+/// unchanged.
+/// </para>
 /// </summary>
 public sealed class ClarificationCreateResponse
 {
     /// <summary>
-    /// Explicitly <c>null</c> — never omitted — when the open-question queue was
-    /// already full. The caller has to be able to tell "no question was filed" from
-    /// "the key is missing because the server is an older build".
+    /// The FIRST row, or explicitly <c>null</c> — never omitted — when the
+    /// open-question queue was already full. The caller has to be able to tell "no
+    /// question was filed" from "the key is missing because the server is an older
+    /// build".
     /// </summary>
     [JsonPropertyName("clarification")]
     [JsonIgnore(Condition = JsonIgnoreCondition.Never)]
     public ClarificationDto? Clarification { get; init; }
+
+    /// <summary>
+    /// EVERY row created, in the order the questions were asked, all sharing the one
+    /// <c>task.id</c>. Always present; empty exactly when <see cref="Clarification"/>
+    /// is null.
+    ///
+    /// <para>
+    /// Additive. A legacy single-question payload answers with one entry here and the
+    /// same object under <c>clarification</c>, so nothing that reads only the old key
+    /// changes shape.
+    /// </para>
+    /// </summary>
+    [JsonPropertyName("clarifications")]
+    public IReadOnlyList<ClarificationDto> Clarifications { get; init; } = Array.Empty<ClarificationDto>();
 
     [JsonPropertyName("task")]
     public TaskDto Task { get; init; } = new();

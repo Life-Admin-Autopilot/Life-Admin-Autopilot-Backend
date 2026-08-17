@@ -321,7 +321,353 @@ public sealed class ClarificationHoldTests : IClassFixture<ClarificationsWebAppl
         Assert.EndsWith("…", quote, StringComparison.Ordinal);
     }
 
+    // ---- Several gaps, one matter ------------------------------------------
+    //
+    // The named failure, 2026-08-16: "remind me today to go to the friend" was held
+    // ONCE, as "What time should I remind you — and which friend are you visiting?",
+    // carrying time chips. The user tapped "9 am"; the row resolved, the task became
+    // a 9am reminder, and the which-friend gap silently ceased to exist. A tapped
+    // option can only ever answer ONE question, so N gaps need N rows.
+
+    [Fact]
+    public async Task two_gaps_become_two_questions_against_the_one_task()
+    {
+        var db = TryGetDatabase();
+        if (db is null)
+        {
+            return;
+        }
+
+        var userId = await ResetAsync(db);
+
+        var json = await PostCreatedAsync(userId, """
+        {
+          "title": "Go visit my friend",
+          "domain": "family",
+          "question": "What time should I remind you?",
+          "kind": "date",
+          "sourceText": "remind me today to go to the friend",
+          "timezone": "Africa/Cairo",
+          "questions": [
+            {
+              "question": "What time should I remind you?",
+              "kind": "date",
+              "options": [
+                {"label": "9 am", "dueAt": "2026-08-17T09:00:00+03:00"},
+                {"label": "6 pm", "dueAt": "2026-08-17T18:00:00+03:00"}
+              ]
+            },
+            {
+              "question": "Which friend are you visiting?",
+              "kind": "detail",
+              "options": []
+            }
+          ]
+        }
+        """);
+
+        // ONE task. holdForClarification has no task_id, so a second hold call would
+        // have filed a duplicate — which is exactly why the two gaps got folded into
+        // one sentence in the first place.
+        var task = json.GetProperty("task");
+        Assert.Equal("Go visit my friend", task.GetProperty("title").GetString());
+        Assert.Equal(
+            1,
+            await Tasks(db).CountDocumentsAsync(Builders<BsonDocument>.Filter.Eq("userId", userId)));
+
+        // TWO rows, both pointing at it.
+        var rows = json.GetProperty("clarifications");
+        Assert.Equal(2, rows.GetArrayLength());
+        foreach (var row in rows.EnumerateArray())
+        {
+            Assert.Equal(task.GetProperty("id").GetString(), row.GetProperty("taskId").GetString());
+            Assert.Equal("open", row.GetProperty("status").GetString());
+
+            // Every row describes the same matter and quotes the same words.
+            Assert.Equal("Go visit my friend", row.GetProperty("draft").GetProperty("title").GetString());
+            Assert.Equal(
+                "remind me today to go to the friend",
+                row.GetProperty("sourceText").GetString());
+        }
+
+        // Each gap keeps its OWN answer slot: the date question has the time chips,
+        // the detail question has none because the user types that one.
+        Assert.Equal("date", rows[0].GetProperty("kind").GetString());
+        Assert.Equal(2, rows[0].GetProperty("options").GetArrayLength());
+        Assert.Equal("Which friend are you visiting?", rows[1].GetProperty("question").GetString());
+        Assert.Equal("detail", rows[1].GetProperty("kind").GetString());
+        Assert.Empty(rows[1].GetProperty("options").EnumerateArray());
+
+        // `clarification` stays the FIRST row, so a caller written against the
+        // single-question response is unaffected.
+        Assert.Equal(
+            rows[0].GetProperty("id").GetString(),
+            json.GetProperty("clarification").GetProperty("id").GetString());
+
+        // Both are on the surface the home banner and the card stack read.
+        var listed = (await GetJsonAsync(userId, "/me/clarifications")).GetProperty("clarifications");
+        Assert.Equal(2, listed.GetArrayLength());
+    }
+
+    [Fact]
+    public async Task answering_the_date_promotes_the_task_and_leaves_the_sibling_open()
+    {
+        var db = TryGetDatabase();
+        if (db is null)
+        {
+            return;
+        }
+
+        var userId = await ResetAsync(db);
+
+        var json = await PostCreatedAsync(userId, """
+        {
+          "title": "Go visit my friend",
+          "domain": "family",
+          "question": "What time should I remind you?",
+          "kind": "date",
+          "timezone": "Africa/Cairo",
+          "questions": [
+            {
+              "question": "What time should I remind you?",
+              "kind": "date",
+              "options": [{"label": "9 am", "dueAt": "2026-08-17T09:00:00+03:00"}]
+            },
+            {"question": "Which friend are you visiting?", "kind": "detail", "options": []}
+          ]
+        }
+        """);
+
+        var rows = json.GetProperty("clarifications");
+        var dateId = rows[0].GetProperty("id").GetString();
+        var siblingId = rows[1].GetProperty("id").GetString();
+
+        // Withheld until the date is confirmed: costOfWrong defaults to 'high'.
+        Assert.Equal("list", json.GetProperty("task").GetProperty("kind").GetString());
+
+        var resolved = await ResolveAsync(userId, dateId!, index: 0);
+
+        // Promotion is per the DATE answer, exactly as it was for a single question.
+        // An open non-date sibling does not hold the reminder back — the guard exists
+        // to stop a GUESSED date firing, and this date is no longer a guess.
+        var patched = resolved.GetProperty("task");
+        Assert.Equal("reminder", patched.GetProperty("kind").GetString());
+        Assert.Equal("2026-08-17T06:00:00.000Z", patched.GetProperty("dueAt").GetString());
+        Assert.NotEmpty(patched.GetProperty("reminders").EnumerateArray());
+        Assert.Equal("resolved", resolved.GetProperty("clarification").GetProperty("status").GetString());
+
+        // And the sibling is untouched. Nothing cascades between rows: they are
+        // independent documents, and only a DELETED task closes them all out.
+        var listed = (await GetJsonAsync(userId, "/me/clarifications")).GetProperty("clarifications");
+        Assert.Equal(1, listed.GetArrayLength());
+        Assert.Equal(siblingId, listed[0].GetProperty("id").GetString());
+        Assert.Equal("open", listed[0].GetProperty("status").GetString());
+        Assert.Equal("Which friend are you visiting?", listed[0].GetProperty("question").GetString());
+    }
+
+    [Fact]
+    public async Task an_entry_inherits_what_it_omits_but_an_explicit_empty_is_not_omitted()
+    {
+        var db = TryGetDatabase();
+        if (db is null)
+        {
+            return;
+        }
+
+        var userId = await ResetAsync(db);
+
+        var json = await PostCreatedAsync(userId, """
+        {
+          "title": "Renew the passport",
+          "domain": "home",
+          "question": "Is it the 15th or the 18th?",
+          "kind": "date",
+          "costOfWrong": "high",
+          "options": [
+            {"label": "The 15th", "dueAt": "2026-09-15T10:30:00Z"},
+            {"label": "The 18th", "dueAt": "2026-09-18T10:30:00Z"}
+          ],
+          "questions": [
+            {"question": "Is it the 15th or the 18th?"},
+            {"question": "Which office?", "kind": "detail", "costOfWrong": "low", "options": []}
+          ]
+        }
+        """);
+
+        var rows = json.GetProperty("clarifications");
+
+        // Entry one supplied nothing but its text, so kind, costOfWrong AND the
+        // option chips all come from the top level.
+        Assert.Equal("date", rows[0].GetProperty("kind").GetString());
+        Assert.Equal("high", rows[0].GetProperty("costOfWrong").GetString());
+        Assert.Equal(2, rows[0].GetProperty("options").GetArrayLength());
+
+        // Entry two overrode all three. `"options": []` is SUPPLIED-and-empty, not
+        // omitted: inheriting the date chips onto a "which office?" question would
+        // put two time buttons under a question about a building.
+        Assert.Equal("detail", rows[1].GetProperty("kind").GetString());
+        Assert.Equal("low", rows[1].GetProperty("costOfWrong").GetString());
+        Assert.Empty(rows[1].GetProperty("options").EnumerateArray());
+
+        // The guess still comes off the top-level options, and it is still withheld.
+        Assert.Equal("2026-09-15T10:30:00.000Z", json.GetProperty("task").GetProperty("dueAt").GetString());
+        Assert.Equal("list", json.GetProperty("task").GetProperty("kind").GetString());
+    }
+
+    [Fact]
+    public async Task one_expensive_gap_withholds_the_reminder_for_the_whole_matter()
+    {
+        var db = TryGetDatabase();
+        if (db is null)
+        {
+            return;
+        }
+
+        var userId = await ResetAsync(db);
+
+        var json = await PostCreatedAsync(userId, """
+        {
+          "title": "Pay the rent",
+          "domain": "finance",
+          "question": "Which day is it due?",
+          "kind": "date",
+          "costOfWrong": "low",
+          "dueAtGuess": "2026-09-01T09:00:00+03:00",
+          "questions": [
+            {"question": "Which day is it due?", "costOfWrong": "high"},
+            {"question": "Morning or evening nudge?", "kind": "choice", "costOfWrong": "low", "options": []}
+          ]
+        }
+        """);
+
+        // A matter is only as safe as its riskiest open gap. A 'low' sibling cannot
+        // license a guessed date to fire at the user.
+        Assert.Equal("list", json.GetProperty("task").GetProperty("kind").GetString());
+        Assert.Empty(json.GetProperty("task").GetProperty("reminders").EnumerateArray());
+        Assert.Equal("high", json.GetProperty("clarifications")[0].GetProperty("costOfWrong").GetString());
+        Assert.Equal("low", json.GetProperty("clarifications")[1].GetProperty("costOfWrong").GetString());
+    }
+
+    [Fact]
+    public async Task a_legacy_single_question_payload_answers_exactly_as_it_used_to()
+    {
+        var db = TryGetDatabase();
+        if (db is null)
+        {
+            return;
+        }
+
+        var userId = await ResetAsync(db);
+
+        // The wire format the tool has always sent. `questions` is additive: absent,
+        // nothing about this response may move.
+        var json = await PostCreatedAsync(userId, """
+        {
+          "title": "Math lecture",
+          "domain": "home",
+          "question": "What time is your math lecture tomorrow?",
+          "kind": "date",
+          "dueAtGuess": "2026-08-12T09:00:00+03:00",
+          "sourceText": "Remind me that I have math lec tomorrow",
+          "timezone": "Africa/Cairo"
+        }
+        """);
+
+        var clarification = json.GetProperty("clarification");
+        Assert.Equal("list", json.GetProperty("task").GetProperty("kind").GetString());
+        Assert.Equal("high", clarification.GetProperty("costOfWrong").GetString());
+        Assert.False(json.GetProperty("queueFull").GetBoolean());
+        Assert.Equal("2026-08-12T06:00:00.000Z", json.GetProperty("task").GetProperty("dueAt").GetString());
+
+        // The one added key is `clarifications`, and it holds the SAME row —
+        // byte-identical, not a re-serialisation that quietly drops or renames a
+        // field. A reader of either key sees the same object.
+        var rows = json.GetProperty("clarifications");
+        Assert.Equal(1, rows.GetArrayLength());
+        Assert.Equal(clarification.GetRawText(), rows[0].GetRawText());
+    }
+
     // ---- The queue cap -----------------------------------------------------
+
+    [Fact]
+    public async Task the_cap_counts_rows_so_a_two_question_hold_spends_two_slots()
+    {
+        var db = TryGetDatabase();
+        if (db is null)
+        {
+            return;
+        }
+
+        var userId = await ResetAsync(db);
+
+        // One slot left. A hold asking two things gets to ask ONE of them —
+        // `queueFull` still means "no question was filed at all", so it stays false
+        // while any row was written and the caller compares lengths to see the rest.
+        await Clarifications(db).InsertManyAsync(
+            Enumerable.Range(0, ClarificationHoldService.MaxOpenClarifications - 1)
+                .Select(i => Existing(userId, i, deferred: false)));
+
+        var json = await PostCreatedAsync(userId, """
+        {
+          "title": "Go visit my friend",
+          "domain": "family",
+          "question": "What time should I remind you?",
+          "kind": "date",
+          "questions": [
+            {"question": "What time should I remind you?", "kind": "date", "options": []},
+            {"question": "Which friend?", "kind": "detail", "options": []}
+          ]
+        }
+        """);
+
+        Assert.False(json.GetProperty("queueFull").GetBoolean());
+        Assert.Equal(1, json.GetProperty("clarifications").GetArrayLength());
+        Assert.Equal(
+            "What time should I remind you?",
+            json.GetProperty("clarification").GetProperty("question").GetString());
+
+        Assert.Equal(
+            (long)ClarificationHoldService.MaxOpenClarifications,
+            await Clarifications(db).CountDocumentsAsync(Builders<BsonDocument>.Filter.Eq("userId", userId)));
+    }
+
+    [Fact]
+    public async Task past_the_cap_a_multi_question_hold_files_the_task_and_no_rows()
+    {
+        var db = TryGetDatabase();
+        if (db is null)
+        {
+            return;
+        }
+
+        var userId = await ResetAsync(db);
+
+        await Clarifications(db).InsertManyAsync(
+            Enumerable.Range(0, ClarificationHoldService.MaxOpenClarifications)
+                .Select(i => Existing(userId, i, deferred: false)));
+
+        var json = await PostCreatedAsync(userId, """
+        {
+          "title": "One too many",
+          "domain": "home",
+          "question": "Will this be asked?",
+          "kind": "detail",
+          "questions": [
+            {"question": "Will this be asked?", "kind": "detail"},
+            {"question": "Or this one?", "kind": "detail"}
+          ]
+        }
+        """);
+
+        Assert.True(json.GetProperty("queueFull").GetBoolean());
+        Assert.Equal(JsonValueKind.Null, json.GetProperty("clarification").ValueKind);
+        Assert.Empty(json.GetProperty("clarifications").EnumerateArray());
+        Assert.Equal("One too many", json.GetProperty("task").GetProperty("title").GetString());
+
+        Assert.Equal(
+            (long)ClarificationHoldService.MaxOpenClarifications,
+            await Clarifications(db).CountDocumentsAsync(Builders<BsonDocument>.Filter.Eq("userId", userId)));
+    }
 
     [Fact]
     public async Task past_the_cap_the_task_is_still_filed_and_the_question_is_not()
@@ -417,6 +763,52 @@ public sealed class ClarificationHoldTests : IClassFixture<ClarificationsWebAppl
         var fields = (await ReadJsonAsync(response)).GetProperty("error").GetProperty("details")
             .GetProperty("fieldErrors");
         Assert.Equal("Array must contain at most 4 element(s)", fields.GetProperty("options")[0].GetString());
+    }
+
+    [Fact]
+    public async Task a_fourth_question_is_rejected()
+    {
+        var response = await PostAsync(ObjectId.GenerateNewId(), """
+        {
+          "title": "T", "domain": "home", "question": "Q", "kind": "date",
+          "questions": [{"question":"a"},{"question":"b"},{"question":"c"},{"question":"d"}]
+        }
+        """);
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+
+        // Three is the ceiling because the open-queue cap counts every row: a
+        // generous limit spends a user's whole question queue on one matter.
+        var fields = (await ReadJsonAsync(response)).GetProperty("error").GetProperty("details")
+            .GetProperty("fieldErrors");
+        Assert.Equal(
+            $"Array must contain at most {HoldBinder.MaxQuestions} element(s)",
+            fields.GetProperty("questions")[0].GetString());
+    }
+
+    [Fact]
+    public async Task a_questions_entry_reports_its_issues_under_the_top_level_name()
+    {
+        var response = await PostAsync(ObjectId.GenerateNewId(), """
+        {
+          "title": "T", "domain": "home", "question": "Q", "kind": "date",
+          "questions": [{"kind": "colour"}]
+        }
+        """);
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+
+        // zod's flatten() buckets by issue.path[0], so a nested problem is filed at
+        // "questions" — never "questions.0.kind".
+        var fields = (await ReadJsonAsync(response)).GetProperty("error").GetProperty("details")
+            .GetProperty("fieldErrors")
+            .GetProperty("questions")
+            .EnumerateArray()
+            .Select(m => m.GetString())
+            .ToArray();
+
+        Assert.Contains("Required", fields);
+        Assert.Contains(fields, m => m!.Contains("colour", StringComparison.Ordinal));
     }
 
     [Fact]
@@ -518,6 +910,17 @@ public sealed class ClarificationHoldTests : IClassFixture<ClarificationsWebAppl
     {
         var response = await PostAsync(userId, body);
         Assert.Equal(HttpStatusCode.Created, response.StatusCode);
+        return await ReadJsonAsync(response);
+    }
+
+    /// <summary>Tap the option at <paramref name="index"/> on one held question.</summary>
+    private async Task<JsonElement> ResolveAsync(ObjectId userId, string clarificationId, int index)
+    {
+        var response = await AuthedClient(userId).PostAsync(
+            $"/me/clarifications/{clarificationId}/resolve",
+            JsonBody($$$"""{"answer":{"type":"option","index":{{{index}}}}}"""));
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         return await ReadJsonAsync(response);
     }
 

@@ -14,6 +14,11 @@ public readonly record struct HoldOption(string Label, DateTime? DueAt, string? 
 /// caller sent — normalisation needs the timezone and happens inside the service, so
 /// the guess and every option go through one code path rather than two.
 /// </summary>
+/// <param name="Questions">
+/// The multi-question form. EMPTY is the legacy single-question payload, and the one
+/// row is built from <paramref name="Question"/>/<paramref name="Kind"/>/
+/// <paramref name="Options"/> exactly as before. Non-empty, it is the complete list.
+/// </param>
 public sealed record HoldInput(
     string Title,
     string Domain,
@@ -26,16 +31,52 @@ public sealed record HoldInput(
     string? CostOfWrong,
     IReadOnlyList<HoldRawOption> Options,
     string? SourceText,
-    string? Timezone);
+    string? Timezone,
+    IReadOnlyList<HoldRawQuestion>? Questions = null);
 
 /// <summary>An option as it came off the wire — <c>dueAt</c> not yet an instant.</summary>
 public readonly record struct HoldRawOption(string Label, string? DueAt, string? Title, string? Notes);
 
 /// <summary>
-/// What the hold produced. <see cref="Clarification"/> is null ONLY when the queue
-/// was full, in which case the task alone is the answer.
+/// One independently-answerable gap in a held matter.
+///
+/// <para>
+/// A <c>null</c> member means the caller did not supply one and the top-level value
+/// stands in. <see cref="Options"/> distinguishes "not supplied" (null → inherit the
+/// top-level chips) from "supplied empty" (an empty list → this question has no
+/// chips, the user types the answer), which is exactly the difference between a date
+/// question and the <c>detail</c> gap riding alongside it.
+/// </para>
 /// </summary>
-public sealed record HoldOutcome(TaskDocument Task, ClarificationDocument? Clarification, bool QueueFull);
+public readonly record struct HoldRawQuestion(
+    string Question,
+    string? Kind,
+    string? CostOfWrong,
+    IReadOnlyList<HoldRawOption>? Options);
+
+/// <summary>
+/// What the hold produced — ONE task, and one row per question asked about it.
+/// </summary>
+/// <param name="Clarification">
+/// The FIRST row, or null when the queue was full and no question was filed at all.
+/// Kept beside <paramref name="Clarifications"/> so a caller written against the
+/// single-question response keeps working unchanged.
+/// </param>
+/// <param name="Clarifications">
+/// Every row created, in the order the questions were asked. Empty exactly when
+/// <paramref name="Clarification"/> is null.
+/// </param>
+public sealed record HoldOutcome(
+    TaskDocument Task,
+    ClarificationDocument? Clarification,
+    bool QueueFull,
+    IReadOnlyList<ClarificationDocument>? Clarifications = null)
+{
+    public IReadOnlyList<ClarificationDocument> Rows =>
+        Clarifications ?? (Clarification is null
+            ? Array.Empty<ClarificationDocument>()
+            : new[] { Clarification });
+}
 
 /// <summary>
 /// Port of <c>runHoldForClarification</c> in
@@ -58,6 +99,16 @@ public sealed record HoldOutcome(TaskDocument Task, ClarificationDocument? Clari
 /// date is expensive: a <c>high</c>-cost item lands as <c>kind:'list'</c> and cannot
 /// fire, while a <c>low</c>-cost one may nudge on the guess because being wrong there
 /// just means rescheduling.
+/// </para>
+///
+/// <para>
+/// <b>ONE task, N questions.</b> A matter can have several gaps that are answered
+/// independently, and until <c>questions</c> existed they had to be folded into one
+/// sentence with one answer slot. On 2026-08-16 "remind me today to go to the friend"
+/// was held once as "What time should I remind you — and which friend are you
+/// visiting?" with time chips; the user tapped "9 am", the row resolved, the task
+/// became a 9am reminder, and the which-friend gap ceased to exist. N gaps get N
+/// rows now — all carrying the same <c>taskId</c>, each closing on its own.
 /// </para>
 /// </summary>
 public sealed class ClarificationHoldService
@@ -91,13 +142,7 @@ public sealed class ClarificationHoldService
     {
         var now = at ?? DateTime.UtcNow;
 
-        var options = input.Options
-            .Select(o => new HoldOption(
-                o.Label,
-                o.DueAt is null ? null : HoldTimeNormalizer.Normalize(o.DueAt, input.Timezone),
-                o.Title,
-                o.Notes))
-            .ToList();
+        var options = Normalize(input.Options, input.Timezone);
 
         // The best guess we have, in priority order: an explicit one, else the
         // model's most-likely option — it orders them.
@@ -112,7 +157,19 @@ public sealed class ClarificationHoldService
         var priority = input.Priority ?? "normal";
         var tags = input.Tags ?? Array.Empty<string>();
 
-        var kind = dueAt.HasValue && costOfWrong == ClarificationVocabulary.CostLow ? "reminder" : "list";
+        // One question per gap, each answerable on its own. An empty `questions` is
+        // the legacy payload and yields exactly the one row the top-level fields
+        // describe, so the two forms are the same code path from here down.
+        var questions = BuildQuestions(input, options, costOfWrong);
+
+        // The reminder is withheld if ANY question is expensive to get wrong. The
+        // guard exists to stop a GUESSED date firing, and a matter is only as safe
+        // as its riskiest open gap — a 'low' sibling cannot license the guess.
+        var effectiveCost = questions.Any(q => q.CostOfWrong == ClarificationVocabulary.CostHigh)
+            ? ClarificationVocabulary.CostHigh
+            : ClarificationVocabulary.CostLow;
+
+        var kind = dueAt.HasValue && effectiveCost == ClarificationVocabulary.CostLow ? "reminder" : "list";
 
         var task = await _tasks
             .CreateAsync(
@@ -140,56 +197,115 @@ public sealed class ClarificationHoldService
             await _reminders.SetRulesRemindersAsync(task, now, cancellationToken).ConfigureAwait(false);
         }
 
-        // Queue full → the task above is the whole answer. Skip the question rather
-        // than growing a pile the user never reaches.
-        if (await IsAtCapAsync(userId, cancellationToken).ConfigureAwait(false))
+        // Queue full → the task above is the whole answer. Skip the questions rather
+        // than growing a pile the user never reaches. The cap counts ROWS, so a
+        // three-question hold spends three slots and a user one slot from the cap
+        // gets the first question only.
+        var capacity = await CapacityAsync(userId, cancellationToken).ConfigureAwait(false);
+        if (capacity <= 0)
         {
-            return new HoldOutcome(task, null, QueueFull: true);
+            return new HoldOutcome(task, null, QueueFull: true, Array.Empty<ClarificationDocument>());
         }
 
-        var clarification = new ClarificationDocument
+        // A FRESH draft per row rather than one shared instance: the documents are
+        // mutable and independent from here on, and an alias between two of them is
+        // the kind of thing that only shows up as a bug much later.
+        ClarificationDraftDocument NewDraft() => new()
         {
-            Id = ObjectId.GenerateNewId(),
-            UserId = userId,
-            TaskId = task.Id,
-            Status = ClarificationVocabulary.Open,
-            Draft = new ClarificationDraftDocument
-            {
-                Title = input.Title,
-                Domain = input.Domain,
-                Priority = priority,
-                Notes = input.Notes,
-                Tags = tags.ToList(),
-                DueAt = dueAt,
-            },
-            Question = input.Question,
-            Kind = input.Kind,
-            CostOfWrong = costOfWrong,
-            Options = options
-                .Select(o => new ClarificationOptionDocument
-                {
-                    Label = o.Label,
-                    DueAt = o.DueAt,
-                    Title = o.Title,
-                    Notes = o.Notes,
-                })
-                .ToList(),
-            SourceText = SourceQuote.Clamp(input.SourceText),
-
-            // No sourceKey. That is the VOICE lane's note-scoped idempotency key, and
-            // the partial unique index is keyed on its presence; a chat-born hold is a
-            // fresh create every time, which is what the open cap above exists to bound.
-            CreatedAt = now,
-            UpdatedAt = now,
+            Title = input.Title,
+            Domain = input.Domain,
+            Priority = priority,
+            Notes = input.Notes,
+            Tags = tags.ToList(),
+            DueAt = dueAt,
         };
 
-        await _clarifications.InsertAsync(clarification, cancellationToken).ConfigureAwait(false);
+        var sourceText = SourceQuote.Clamp(input.SourceText);
+        var rows = new List<ClarificationDocument>();
 
-        return new HoldOutcome(task, clarification, QueueFull: false);
+        foreach (var question in questions.Take(capacity))
+        {
+            var clarification = new ClarificationDocument
+            {
+                Id = ObjectId.GenerateNewId(),
+                UserId = userId,
+                TaskId = task.Id,
+                Status = ClarificationVocabulary.Open,
+
+                // Every row describes the SAME matter, so they share one draft. What
+                // differs between them is the question and the answers it offers.
+                Draft = NewDraft(),
+                Question = question.Question,
+                Kind = question.Kind,
+                CostOfWrong = question.CostOfWrong,
+                Options = question.Options
+                    .Select(o => new ClarificationOptionDocument
+                    {
+                        Label = o.Label,
+                        DueAt = o.DueAt,
+                        Title = o.Title,
+                        Notes = o.Notes,
+                    })
+                    .ToList(),
+                SourceText = sourceText,
+
+                // No sourceKey. That is the VOICE lane's note-scoped idempotency key, and
+                // the partial unique index is keyed on its presence; a chat-born hold is a
+                // fresh create every time, which is what the open cap above exists to bound.
+                CreatedAt = now,
+                UpdatedAt = now,
+            };
+
+            await _clarifications.InsertAsync(clarification, cancellationToken).ConfigureAwait(false);
+            rows.Add(clarification);
+        }
+
+        return new HoldOutcome(task, rows[0], QueueFull: false, rows);
     }
 
     /// <summary>
-    /// <c>isAtOpenClarificationCap</c> — a bare <c>{userId, status:'open'}</c> count.
+    /// The questions to raise, resolved against the top-level defaults.
+    ///
+    /// <para>
+    /// An empty <c>questions</c> array is the legacy payload: one row, straight off
+    /// the top-level fields. Anything else is the list, and each entry inherits
+    /// whatever it left out — <c>options</c> included, but only when the KEY was
+    /// absent. A <c>detail</c> gap riding alongside a date question sends an explicit
+    /// empty array so the user types the answer rather than tapping a time chip.
+    /// </para>
+    /// </summary>
+    private static List<HoldQuestion> BuildQuestions(
+        HoldInput input,
+        IReadOnlyList<HoldOption> options,
+        string costOfWrong)
+    {
+        if (input.Questions is not { Count: > 0 } supplied)
+        {
+            return new List<HoldQuestion> { new(input.Question, input.Kind, costOfWrong, options) };
+        }
+
+        return supplied
+            .Select(q => new HoldQuestion(
+                q.Question,
+                q.Kind ?? input.Kind,
+                q.CostOfWrong ?? costOfWrong,
+                q.Options is null ? options : Normalize(q.Options, input.Timezone)))
+            .ToList();
+    }
+
+    private static List<HoldOption> Normalize(IReadOnlyList<HoldRawOption> options, string? timezone) =>
+        options
+            .Select(o => new HoldOption(
+                o.Label,
+                o.DueAt is null ? null : HoldTimeNormalizer.Normalize(o.DueAt, timezone),
+                o.Title,
+                o.Notes))
+            .ToList();
+
+    /// <summary>
+    /// How many more open questions this user may be given —
+    /// <c>isAtOpenClarificationCap</c> as a REMAINDER, because a hold can now file
+    /// more than one row and each occupies a slot.
     ///
     /// <para>
     /// <b>Deliberately not <c>VisibleOpen()</c>.</b> Every surface that LISTS or COUNTS
@@ -199,7 +315,17 @@ public sealed class ClarificationHoldService
     /// twelve deferred questions accumulate twelve more.
     /// </para>
     /// </summary>
-    private async Task<bool> IsAtCapAsync(ObjectId userId, CancellationToken cancellationToken) =>
-        await _clarifications.CountOpenAsync(userId, cancellationToken).ConfigureAwait(false)
-        >= MaxOpenClarifications;
+    private async Task<int> CapacityAsync(ObjectId userId, CancellationToken cancellationToken)
+    {
+        var open = await _clarifications.CountOpenAsync(userId, cancellationToken).ConfigureAwait(false);
+        var remaining = MaxOpenClarifications - open;
+        return remaining <= 0 ? 0 : (int)remaining;
+    }
 }
+
+/// <summary>One question, every default already resolved.</summary>
+internal readonly record struct HoldQuestion(
+    string Question,
+    string Kind,
+    string CostOfWrong,
+    IReadOnlyList<HoldOption> Options);
