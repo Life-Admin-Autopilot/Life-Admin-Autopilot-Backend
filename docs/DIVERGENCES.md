@@ -795,3 +795,16 @@ Every figure is computed from indexed Mongo reads and summed in memory. The
 summary is a per-render endpoint on a page the user navigates back to, and
 anything per-render that calls a model is a cost bug waiting to happen. The only
 AI in the feature is the extraction pass that was already running.
+
+## Typed clarification answers (`{type:'custom'}` on resolve)
+
+Ported 2026-08-17 (`CustomAnswerInterpreter`), faithful to
+`server/src/modules/ai/resolveClarificationAnswer.ts` with two deliberate
+divergences: the call walks `PlanningOptions.ModelChain` with a per-attempt
+timeout (Node had one hard-coded model and no timeout), and the model identity
+comes from `PlanningOptions`, so Node's `gemini-2.5`-only `thinkingBudget: 0`
+clause has nothing to apply to. The availability gate is
+`PlanningOptions.IsConfigured`, NOT `AiAvailability` (`GEMINI_API_KEY`) — the
+seam this feature rides is the Gemini-direct planning one, and satisfying the
+old gate by setting `GEMINI_API_KEY` would push six honest 503s elsewhere into
+`NotWiredHere` 500s.

@@ -19,9 +19,13 @@ public readonly record struct ClarificationTaskPatch(
     string? Title = null,
     string? Notes = null,
     DateTime? DueAt = null,
-    string? Kind = null)
+    string? Kind = null,
+    string? Domain = null,
+    string? Priority = null)
 {
-    public bool IsEmpty => Title is null && Notes is null && DueAt is null && Kind is null;
+    public bool IsEmpty =>
+        Title is null && Notes is null && DueAt is null && Kind is null
+        && Domain is null && Priority is null;
 }
 
 /// <summary>
@@ -42,8 +46,7 @@ public readonly record struct ClarificationTaskPatch(
 /// <b>Deliberately narrow.</b> <c>runUpdate</c> also handles domain, priority, tags,
 /// status/completedAt and the guarded estimate write. None of those is reachable
 /// from this route: the option branch produces only title/notes/dueAt, and the
-/// branch that could produce the rest is AI-backed and answers 503 while
-/// <c>GEMINI_API_KEY</c> is empty. The full tool runner belongs to the AI slice;
+/// custom branch (CustomAnswerInterpreter) adds domain/priority — both land here. The full tool runner belongs to the AI slice;
 /// speculating the other fields here would ship untested code and a second copy for
 /// that slice to reconcile.
 /// </para>
@@ -93,6 +96,16 @@ public sealed class ClarificationTaskUpdater
             // into this route; the branch that could produce one is the AI branch,
             // which 503s here.
             set["dueAt"] = validated.DueAt.Value;
+        }
+
+        if (validated.Domain is not null)
+        {
+            set["domain"] = validated.Domain;
+        }
+
+        if (validated.Priority is not null)
+        {
+            set["priority"] = validated.Priority;
         }
 
         if (validated.Notes is not null)

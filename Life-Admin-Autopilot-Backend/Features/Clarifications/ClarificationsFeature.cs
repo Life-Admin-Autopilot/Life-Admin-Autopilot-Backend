@@ -32,6 +32,12 @@ public static class ClarificationsFeature
         services.TryAddScoped<ClarificationRepository>();
         services.TryAddScoped<ClarificationTaskUpdater>();
 
+        // The typed-answer interpreter rides the Gemini-direct planning seam; the
+        // options TryAdd cannot clobber PlanningFeature's own registration.
+        services.TryAddSingleton(
+            Life_Admin_Autopilot.BLL.Features.Planning.PlanningOptions.FromConfiguration(configuration));
+        services.AddHttpClient<CustomAnswerInterpreter>();
+
         // The create route's whole behaviour. It composes the Matters slice's
         // TaskWriteService rather than owning a second create, because a held item's
         // task must be indistinguishable from any other — the entire point of
