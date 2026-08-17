@@ -471,6 +471,34 @@ public sealed class NotificationEndpointTests : IClassFixture<NotificationsWebAp
         return row;
     }
 
+    [Fact]
+    public async Task carries_exactly_the_ported_keys_plus_the_one_documented_addition()
+    {
+        // The shape of this entry is a contract with the device. `urgencyScore` is the
+        // only field Node does not send — see docs/DIVERGENCES.md — and pinning the
+        // whole key set here is what stops a second one appearing unnoticed.
+        var tasks = TryGetTasks();
+        if (tasks is null)
+        {
+            return;
+        }
+
+        var userId = ObjectId.GenerateNewId();
+        var now = DateTime.UtcNow;
+
+        await tasks.InsertOneAsync(Task(userId, "Alpha", now.AddDays(5), new[] { Entry(now.AddDays(1)) }));
+
+        var json = await GetJsonAsync(userId, "/me/reminders/upcoming");
+        var reminder = json.GetProperty("reminders").EnumerateArray().Single();
+
+        Assert.Equal(
+            new[] { "id", "taskId", "title", "at", "kind", "dueAt", "urgencyScore" }.OrderBy(k => k),
+            reminder.EnumerateObject().Select(p => p.Name).OrderBy(k => k));
+
+        // 'normal' rank 1, plus 4 of the 'home' domain's 5-day window still to run.
+        Assert.Equal(1.2, reminder.GetProperty("urgencyScore").GetDouble());
+    }
+
     private static BsonDocument Task(
         ObjectId userId,
         string title,

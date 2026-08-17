@@ -795,3 +795,98 @@ Every figure is computed from indexed Mongo reads and summed in memory. The
 summary is a per-render endpoint on a page the user navigates back to, and
 anything per-render that calls a model is a cost bug waiting to happen. The only
 AI in the feature is the extraction pass that was already running.
+
+---
+
+## 11. `GET /me/reminders/upcoming` carries an `urgencyScore` Node does not send
+
+**Decided:** Phase 1 of `Steward/docs/smart-reminder-conflict-spec.md` — "priority
+becomes load-bearing". Scope was deliberately held to ordering and ranking; nothing
+in this change can move, add, drop or delay a reminder.
+**Status:** implemented. Adds no parity row and changes no status code. Full .NET
+suite **1783 passed / 0 failed**, three consecutive runs, up from 1692 at baseline.
+
+### What Node does
+
+`server/src/routes/me.reminders.ts` builds each entry in plain JavaScript with six
+keys — `id`, `taskId`, `title`, `at`, `kind`, `dueAt` — and sorts the flattened list
+by `at`. Priority is read nowhere in the reminder path: not in `leadTime.ts`, not in
+`planReminders.ts`, not in `reminderWorker.ts`.
+
+`reminderWorker.ts` iterates `Task.find(...)` with **no sort clause at all**, so when
+several reminders come due in the same 30-second tick, the order the user meets them
+in is whatever order Mongo returned the documents in.
+
+### What .NET does
+
+Adds `ReminderUrgency` (`BLL/Kernel/Reminders/`), a pure scoring function, and uses
+it in two places:
+
+- **`ReminderTick` ranks a batch before writing it.** Entries are flattened across
+  tasks, scored, and written least-urgent-first — reversed, because both the in-app
+  feed (`{createdAt: -1}`) and the OS tray show newest first, so the last row written
+  is the one on top.
+- **`UpcomingReminderDto` gains `urgencyScore`**, a double in `[0, 4]`. Advisory
+  only: the array is still ordered by `at` and still capped at the soonest 60.
+
+The score is `priorityRank + deadlinePressure`, where pressure is how far the
+reminder has travelled through the warning window `ReminderLeadTime` already assigns
+that kind of matter — 0 at the heads-up, 1 at the deadline, clamped when overdue.
+Normalising against that table is how the spec's `task_domain` term enters without
+inventing a ranking of domains against each other.
+
+### Why
+
+The spec's case, restated: a due-date-only system cannot tell "renew the car
+insurance sometime" from "renew it or the policy lapses", and firing both as
+equal-weight pings is how notification fatigue is manufactured. Priority is already
+inferred from the user's own words at every capture point and already surfaced as
+`priorityRank` on the task DTO — it was simply never read once a reminder existed.
+
+Ordering was chosen as the whole of Phase 1 because it is the only part with no
+downside: no reminder can be lost, delayed or suppressed by a scoring bug. The two
+tempting extensions were both rejected for this phase — re-ranking the 60-entry cap
+can silently evict a near-term reminder on a busy account, and on iOS without push
+that list is the *only* delivery path; and letting priority modulate lead time makes
+the deterministic floor depend on a field a language model infers.
+
+### A real defect this surfaced
+
+The ranking was initially thrown away under load. `createdAt` is stamped per row from
+`DateTime.UtcNow`, BSON stores milliseconds, and the feed sorts on `{createdAt: -1}`
+with no tie-break — so two rows written inside the same millisecond come back in
+arbitrary order. Against a local Mongo that happens routinely, and it happens most in
+exactly the dense batches where ordering is the point.
+
+Found by a flaky test, not by review. The stamp is now strictly increasing across a
+batch: truthful whenever the clock has moved on, nudged a millisecond when it has
+not, never backwards and never into the past. Pinned by
+`ReminderWorkerTests.gives_every_row_in_a_batch_its_own_millisecond`, which asserts
+distinctness rather than order so the failure reads as its true cause.
+
+### What it costs
+
+- **One key on one ported response.** The harness row `reminders-upcoming`
+  (`tools/parity/scenarios/60-clarifications-digest.yaml`) runs against an account
+  whose only task — `Pay council tax` — carries no `dueAt`, so no reminder is ever
+  planned and both servers answer `{"reminders":[]}`. **That is luck, not design:**
+  give that scenario a dated task and the row diverges on this key. The key set is
+  pinned instead by
+  `NotificationEndpointTests.carries_exactly_the_ported_keys_plus_the_one_documented_addition`.
+- **Parity was not re-measured end to end.** The Node reference tree
+  (`Steward/server`) is currently deleted from that repo's working tree, so `:4100`
+  cannot be booted without restoring it. The claim above is read off the scenario
+  file and the two implementations, not off a harness run.
+- **Notification `createdAt` values within one tick are now synthetic to the
+  millisecond.** Nothing reads them as a measurement; the feed and the relative-time
+  label both only need ordering.
+- **No client reads the new field yet.** `Steward/lib/notifications/syncReminders.ts`
+  ignores it, as TypeScript does with any unmodelled key.
+
+### How to revert
+
+Delete `ReminderUrgency.cs` and its two test files, drop `UrgencyScore` from
+`UpcomingReminderDto` and the projection, and restore `ReminderTick`'s nested
+`foreach (var task in due)` loop with `writtenAt = DateTime.UtcNow`. Doing so
+reinstates the arbitrary ordering above — including for the users whose batches are
+dense enough for it to matter.

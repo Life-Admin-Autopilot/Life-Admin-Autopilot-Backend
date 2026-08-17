@@ -123,6 +123,49 @@ public sealed class UpcomingReminderProjectionTests
         Assert.Equal("ai", Assert.Single(Project(task)).Kind);
     }
 
+    [Fact]
+    public void carries_an_urgency_score_scored_at_the_reminders_own_instant()
+    {
+        // Not at `now`: every entry here fires in the FUTURE, and what a client needs
+        // is how pressing each one will be when it lands. A 'home' matter is given a
+        // 5-day window, so a heads-up 4 days ahead of the deadline is one fifth of
+        // the way through it — 0.2 — on top of 'normal' rank 1.
+        var task = Task(ObjectId.GenerateNewId(), "Tidy the loft", Now.AddDays(5), Entry(Now.AddDays(1)));
+
+        Assert.Equal(1.2, Assert.Single(Project(task)).UrgencyScore);
+    }
+
+    [Fact]
+    public void scores_a_higher_priority_matter_above_an_identical_lower_priority_one()
+    {
+        var urgent = Task(ObjectId.GenerateNewId(), "Tidy the loft", Now.AddDays(5), Entry(Now.AddDays(1)));
+        urgent.Priority = "urgent";
+        var calm = Task(ObjectId.GenerateNewId(), "Tidy the loft", Now.AddDays(5), Entry(Now.AddDays(1)));
+        calm.Priority = "low";
+
+        var projected = UpcomingReminderProjection.Project(new[] { urgent, calm }, Now, Horizon);
+
+        Assert.True(projected[0].UrgencyScore > projected[1].UrgencyScore);
+    }
+
+    [Fact]
+    public void still_orders_and_caps_by_time_rather_than_by_urgency()
+    {
+        // Phase 1 deliberately does NOT let urgency decide the device's schedule. The
+        // phone schedules against a clock, and on a busy account re-ranking the cap
+        // would silently drop a near-term reminder for a louder distant one — on iOS
+        // this list is the ONLY delivery path when push is unavailable.
+        var soonAndCalm = Task(ObjectId.GenerateNewId(), "Tidy the loft", Now.AddDays(5), Entry(Now.AddDays(1)));
+        soonAndCalm.Priority = "low";
+        var laterAndLoud = Task(ObjectId.GenerateNewId(), "Tidy the loft", Now.AddDays(9), Entry(Now.AddDays(8)));
+        laterAndLoud.Priority = "urgent";
+
+        var projected = UpcomingReminderProjection.Project(new[] { laterAndLoud, soonAndCalm }, Now, Horizon);
+
+        Assert.Equal(Now.AddDays(1), projected[0].At);
+        Assert.True(projected[0].UrgencyScore < projected[1].UrgencyScore);
+    }
+
     // ---- helpers -----------------------------------------------------------
 
     private static IReadOnlyList<UpcomingReminderDto> Project(TaskDocument task) =>
@@ -138,6 +181,8 @@ public sealed class UpcomingReminderProjectionTests
             Id = id,
             UserId = ObjectId.GenerateNewId(),
             Title = title,
+            Domain = "home",
+            Kind = "reminder",
             DueAt = dueAt,
             Reminders = reminders.ToList(),
         };

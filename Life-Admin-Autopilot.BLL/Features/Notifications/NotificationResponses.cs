@@ -63,6 +63,26 @@ public sealed class UpcomingReminderDto
     [JsonPropertyName("dueAt")]
     [JsonIgnore(Condition = JsonIgnoreCondition.Never)]
     public DateTime? DueAt { get; init; }
+
+    /// <summary>
+    /// How pressing this reminder is relative to the others in the same payload —
+    /// <c>0</c> to <c>4</c>, see <see cref="Life_Admin_Autopilot.BLL.Kernel.Reminders.ReminderUrgency"/>.
+    ///
+    /// <para>
+    /// <b>Node does not send this field.</b> It is the one addition to a ported
+    /// response shape in this slice; the reasoning and its measured parity cost are
+    /// recorded in <c>docs/DIVERGENCES.md</c>.
+    /// </para>
+    ///
+    /// <para>
+    /// Advisory. The array is still ordered by <c>at</c> and still capped at the
+    /// soonest 60, because the device schedules against a clock and an out-of-order
+    /// schedule would help nobody. This is here so a client can decide what to make
+    /// PROMINENT among reminders it holds at once.
+    /// </para>
+    /// </summary>
+    [JsonPropertyName("urgencyScore")]
+    public double UrgencyScore { get; init; }
 }
 
 /// <summary><c>GET /me/reminders/upcoming</c> — <c>{reminders}</c>.</summary>
