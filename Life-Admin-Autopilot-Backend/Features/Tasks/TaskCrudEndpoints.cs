@@ -272,14 +272,26 @@ internal static class TaskFieldReaders
     }
 
     /// <summary>
-    /// A hand-entered amount: <c>{ amountMinor, currency, direction? }</c>.
+    /// An amount, in either of the two shapes the domain already has gates for:
+    /// <c>{ amountMinor, currency, direction? }</c> — what a PERSON typed, counted
+    /// in minor units by the app — or <c>{ amountMajor, currency, direction? }</c>
+    /// — a figure an EXTRACTOR heard or read, as printed or spoken.
     ///
     /// <para>
-    /// <b><c>source</c> is not readable from the body</b> and is stamped
-    /// <c>'user'</c> here. It is the flag that says a person stood behind this
-    /// figure — it decides whether the UI owes a provenance chip, and it is what
-    /// makes the value authoritative against any later AI pass. A client able to
-    /// set it could launder a guess into a fact.
+    /// <b><c>source</c> is not readable from the body</b> and is never taken from
+    /// it. It is the flag that says a person stood behind this figure — it decides
+    /// whether the UI owes a provenance chip, and it is what makes the value
+    /// authoritative against any later AI pass. A client able to set it could
+    /// launder a guess into a fact.
+    /// </para>
+    ///
+    /// <para>
+    /// So the SHAPE decides it, and the shapes cannot be confused for each other.
+    /// The app has always sent minor units — it computes them with the same ISO
+    /// exponent table this server uses — and only a model ever says "500 EGP",
+    /// because a model has no exponent table and must not be asked to guess one.
+    /// A body carrying BOTH keys is rejected rather than resolved by precedence:
+    /// it can only be a caller that does not know which of the two it is.
     /// </para>
     ///
     /// <para>
@@ -311,7 +323,7 @@ internal static class TaskFieldReaders
             .Select(p => p.Name)
             // `source` is listed as unknown on purpose: a client that sends it gets
             // a clear rejection rather than having it quietly ignored.
-            .Where(name => name is not ("amountMinor" or "currency" or "direction"))
+            .Where(name => name is not ("amountMinor" or "amountMajor" or "currency" or "direction"))
             .ToList();
 
         if (unknown.Count > 0)
@@ -320,27 +332,67 @@ internal static class TaskFieldReaders
             return null;
         }
 
+        var minorElement = Member(element, "amountMinor");
+        var majorElement = Member(element, "amountMajor");
+        var hasMinor = BodyFields.HasValue(minorElement);
+        var hasMajor = BodyFields.HasValue(majorElement);
+
+        if (hasMinor && hasMajor)
+        {
+            f.AddIssue("amount", "send either amountMinor or amountMajor, never both");
+            return null;
+        }
+
+        if (!hasMinor && !hasMajor)
+        {
+            f.AddIssue("amount", "amount requires amountMinor (from the app) or amountMajor (from an extractor)");
+            return null;
+        }
+
+        var currencyRaw = f.TrimmedString(Member(element, "currency"), "amount", min: 3, max: 3, required: true);
+        var direction = f.Enum(Member(element, "direction"), "amount", MoneyVocabulary.Directions, required: false);
+        var currency = currencyRaw is null ? null : MoneyVocabulary.NormalizeCurrency(currencyRaw);
+
+        if (currencyRaw is not null && currency is null)
+        {
+            f.AddIssue("amount", "currency must be a three-letter ISO 4217 code");
+            return null;
+        }
+
+        if (hasMajor)
+        {
+            // Bounded before it reaches the gate for the same reason the gate bounds
+            // it again: a figure past the ceiling is a misread separator, and
+            // `decimal` throws rather than saturating if it is scaled first.
+            var major = f.Decimal(
+                majorElement,
+                "amount",
+                min: 0m,
+                max: MoneyVocabulary.MaxMajorUnits,
+                required: true);
+
+            if (major is null || currency is null) return null;
+
+            var heard = MoneyVocabulary.Normalize(major, currency, "ai", direction);
+            if (heard is null)
+            {
+                f.AddIssue("amount", "amountMajor is out of range");
+            }
+
+            return heard;
+        }
+
         // The ceiling is the money gate's own, expressed in minor units, so this
         // and MoneyVocabulary.FromMinor cannot disagree about what is too large.
         var minor = f.Long(
-            Member(element, "amountMinor"),
+            minorElement,
             "amount",
             min: 0,
             max: (long)MoneyVocabulary.MaxMajorUnits * 1000,
             required: true);
 
-        var currencyRaw = f.TrimmedString(Member(element, "currency"), "amount", min: 3, max: 3, required: true);
-        var direction = f.Enum(Member(element, "direction"), "amount", MoneyVocabulary.Directions, required: false);
-
-        if (minor is null || currencyRaw is null)
+        if (minor is null || currency is null)
         {
-            return null;
-        }
-
-        var currency = MoneyVocabulary.NormalizeCurrency(currencyRaw);
-        if (currency is null)
-        {
-            f.AddIssue("amount", "currency must be a three-letter ISO 4217 code");
             return null;
         }
 

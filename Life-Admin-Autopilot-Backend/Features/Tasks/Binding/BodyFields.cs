@@ -280,6 +280,51 @@ public sealed class BodyFields
         return value;
     }
 
+    /// <summary>
+    /// A figure in MAJOR units — "500", "49.99" — as an extractor reports one.
+    ///
+    /// <para>
+    /// <c>decimal</c>, never <c>double</c>: this is the only reader that carries a
+    /// fractional amount of money, and binary floating point cannot hold 142.37.
+    /// It is read straight out of the JSON number rather than through a double,
+    /// so the value that reaches <c>MoneyVocabulary.Normalize</c> is the one that
+    /// was written. Everything downstream counts minor units; this is where the
+    /// last decimal point in the system is turned into one.
+    /// </para>
+    /// </summary>
+    public decimal? Decimal(JsonElement element, string field, decimal min, decimal max, bool required)
+    {
+        if (IsAbsent(element))
+        {
+            if (required)
+            {
+                AddIssue(field, ZodMessages.Required);
+            }
+
+            return null;
+        }
+
+        if (element.ValueKind != JsonValueKind.Number || !element.TryGetDecimal(out var value))
+        {
+            AddIssue(field, ZodMessages.ExpectedType("number", KindName(element)));
+            return null;
+        }
+
+        if (value < min)
+        {
+            AddIssue(field, ZodMessages.NumberTooSmall((long)min));
+            return null;
+        }
+
+        if (value > max)
+        {
+            AddIssue(field, ZodMessages.NumberTooBig((long)max));
+            return null;
+        }
+
+        return value;
+    }
+
     public bool? Bool(JsonElement element, string field)
     {
         if (!HasValue(element))

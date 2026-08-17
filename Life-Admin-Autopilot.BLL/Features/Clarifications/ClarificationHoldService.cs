@@ -32,7 +32,9 @@ public sealed record HoldInput(
     IReadOnlyList<HoldRawOption> Options,
     string? SourceText,
     string? Timezone,
-    IReadOnlyList<HoldRawQuestion>? Questions = null);
+    IReadOnlyList<HoldRawQuestion>? Questions = null,
+    /// <summary>Already through the money gate — minor units and a checked code, or null.</summary>
+    MoneyDocument? Amount = null);
 
 /// <summary>An option as it came off the wire — <c>dueAt</c> not yet an instant.</summary>
 public readonly record struct HoldRawOption(string Label, string? DueAt, string? Title, string? Notes);
@@ -190,12 +192,18 @@ public sealed class ClarificationHoldService
                     dueAt,
                     input.Notes,
                     Estimate: null,
-                    // A held matter carries no figure. The hold exists because
-                    // something about the matter was UNCLEAR, so inventing an
-                    // amount here is the one thing this path must not do — it
-                    // would enter the user's spending as a fact while the matter
-                    // itself is still a question.
-                    Amount: null,
+                    // The figure the model was TOLD, never one it invented.
+                    //
+                    // This used to be hardcoded null, reasoning that an uncertain
+                    // matter must not enter a spending total. That conflated two
+                    // different fields: "send 500 EGP to Louisa" is held because
+                    // the TIME is missing, and the money was the plainest fact in
+                    // the sentence. Dropping it filed a finance matter that /money
+                    // could not see, and the user had to retype a number they had
+                    // already said. The gate upstream is what keeps an invented
+                    // figure out — it takes only a stated amount with a resolvable
+                    // currency, and yields null for everything else.
+                    Amount: input.Amount,
                     SourceVoiceNoteId: null),
                 now,
                 cancellationToken)
