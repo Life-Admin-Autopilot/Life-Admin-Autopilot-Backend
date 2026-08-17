@@ -47,7 +47,6 @@ namespace Life_Admin_Autopilot.BLL.Features.Ai.Langflow;
 ///     <c>PlanningInput-v4</c>. Unset ⇒ plain <c>input_value</c>.</description>
 ///   </item>
 ///   <item><term><c>Ai:Langflow:Fields:Transcript</c></term><description><c>transcript</c></description></item>
-///   <item><term><c>Ai:Langflow:Fields:AccessToken</c></term><description><c>accessToken</c></description></item>
 ///   <item><term><c>Ai:Langflow:Fields:CurrentDate</c></term><description><c>currentDate</c></description></item>
 ///   <item><term><c>Ai:Langflow:Fields:Mode</c></term><description><c>mode</c></description></item>
 ///   <item><term><c>Ai:Langflow:Fields:DateReference</c></term><description><c>dateReference</c></description></item>
@@ -93,7 +92,6 @@ namespace Life_Admin_Autopilot.BLL.Features.Ai.Langflow;
 public sealed class LangflowInputBinding
 {
     public const string DefaultTranscriptField = "transcript";
-    public const string DefaultAccessTokenField = "accessToken";
     public const string DefaultCurrentDateField = "currentDate";
     public const string DefaultModeField = "mode";
     public const string DefaultDateReferenceField = "dateReference";
@@ -106,12 +104,59 @@ public sealed class LangflowInputBinding
     /// </summary>
     public const string ChatMode = "chat";
 
+    /// <summary>
+    /// The field every TOOL component reads its bearer from.
+    ///
+    /// <para>
+    /// Snake_case, unlike the input node's fields, because it is not a prompt slot: it
+    /// is the name of an input on the eleven tool components, fixed by their own source.
+    /// Not configurable for the same reason — renaming it here could not rename it there.
+    /// </para>
+    /// </summary>
+    public const string ToolAccessTokenField = "access_token";
+
+    /// <summary>
+    /// The eleven tool components of <c>planning-agent.v4</c>, which each need the
+    /// caller's bearer to call this API back as that user.
+    ///
+    /// <para>
+    /// <b>Why the backend sends this and the agent no longer does.</b> Each of these
+    /// fields used to be <c>tool_mode: true</c>, so the token was published into the
+    /// model's context and copied back out as a tool argument on every call. A model
+    /// that forgets to copy it gets <c>"access_token is empty"</c> and has to repair by
+    /// re-issuing the whole batch — which happened in 4 separate turns and, on
+    /// 2026-08-17, left a failed <c>holdForClarification</c> beside its successful
+    /// retry and rendered as a phantom question card in the chat. Tweaking the field
+    /// directly removes the failure mode rather than asking the model to stop having it,
+    /// and keeps a live JWT out of the model's context entirely.
+    /// </para>
+    ///
+    /// <para>
+    /// Node ids are a contract with the flow. A tweak naming a node the flow does not
+    /// have is ignored by Langflow, so a deployment pointed at a different flow degrades
+    /// to "tools get no token from us" rather than erroring — which is why
+    /// <c>PLANNING-AGENT.md</c> §6 lists these ids beside the tweak table.
+    /// </para>
+    /// </summary>
+    public static readonly IReadOnlyList<string> ToolNodes = new[]
+    {
+        "CreateTaskTool-v4",
+        "UpdateTaskTool-v4",
+        "CompleteTaskTool-v4",
+        "DeleteTaskTool-v4",
+        "DeleteAllTasksTool-v4",
+        "SnoozeTaskTool-v4",
+        "QueryTasksTool-v4",
+        "AddSubtaskTool-v4",
+        "ToggleSubtaskTool-v4",
+        "RemoveSubtaskTool-v4",
+        "HoldForClarificationTool-v4",
+    };
+
     /// <summary>Unset means "this flow has a ChatInput" — the whole binding is skipped.</summary>
     public string? InputNode { get; init; }
 
     public string TranscriptField { get; init; } = DefaultTranscriptField;
-
-    public string AccessTokenField { get; init; } = DefaultAccessTokenField;
 
     public string CurrentDateField { get; init; } = DefaultCurrentDateField;
 
@@ -140,8 +185,6 @@ public sealed class LangflowInputBinding
         InputNode = Read(configuration, "LANGFLOW_INPUT_NODE", "Ai:Langflow:InputNode"),
         TranscriptField = Read(configuration, "LANGFLOW_FIELD_TRANSCRIPT", "Ai:Langflow:Fields:Transcript")
                           ?? DefaultTranscriptField,
-        AccessTokenField = Read(configuration, "LANGFLOW_FIELD_ACCESS_TOKEN", "Ai:Langflow:Fields:AccessToken")
-                           ?? DefaultAccessTokenField,
         CurrentDateField = Read(configuration, "LANGFLOW_FIELD_CURRENT_DATE", "Ai:Langflow:Fields:CurrentDate")
                            ?? DefaultCurrentDateField,
         ModeField = Read(configuration, "LANGFLOW_FIELD_MODE", "Ai:Langflow:Fields:Mode")
@@ -219,9 +262,16 @@ public sealed class LangflowInputBinding
             // empty string, which reads as a missing block rather than an empty one.
             target[MyTasksField] = myTasks ?? TaskGrounding.NoTasks;
 
+            // The token goes to the TOOLS, not into the prompt. See ToolNodes: the
+            // agent used to carry it and could drop it, and a dropped token is a failed
+            // tool call the user sees. Sent on every turn and in every mode, because
+            // every mode can call tools.
             if (!string.IsNullOrEmpty(accessToken))
             {
-                target[AccessTokenField] = accessToken;
+                foreach (var node in ToolNodes)
+                {
+                    Target(tweaks, node)[ToolAccessTokenField] = accessToken;
+                }
             }
 
             // Mode is per-turn, but an explicit static tweak still wins: it is the

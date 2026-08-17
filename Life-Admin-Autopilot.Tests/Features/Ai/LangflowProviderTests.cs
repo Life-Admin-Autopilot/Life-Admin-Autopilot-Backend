@@ -106,8 +106,11 @@ public sealed class LangflowProviderTests
         // request, streams a healthy-looking turn, and hands the agent an empty
         // prompt with no error anywhere.
         Assert.Equal("What is due?", tweaks.GetProperty("transcript").GetString());
-        Assert.Equal("jwt-abc", tweaks.GetProperty("accessToken").GetString());
         Assert.Equal("plan", tweaks.GetProperty("mode").GetString());
+
+        // The bearer is NOT here. It goes to the tool components instead — see
+        // sends_the_bearer_to_every_tool_node_and_never_to_the_prompt.
+        Assert.False(tweaks.TryGetProperty("accessToken", out _));
 
         // Offset-bearing, always — see sends_current_date_with_the_callers_utc_offset
         // for why a bare date is a silent three-hour error rather than a format nit.
@@ -124,6 +127,73 @@ public sealed class LangflowProviderTests
             DateGrounding.ReferenceHeader,
             tweaks.GetProperty("dateReference").GetString()!);
         Assert.Equal(TaskGrounding.NoTasks, tweaks.GetProperty("myTasks").GetString());
+    }
+
+    [Fact]
+    public async Task sends_the_bearer_to_every_tool_node_and_never_to_the_prompt()
+    {
+        if (Database is null)
+        {
+            return;
+        }
+
+        var handler = Handler(Ndjson("""{"event":"end","data":{}}"""));
+
+        var provider = Provider(handler, new Dictionary<string, string?>
+        {
+            ["Ai:Langflow:InputNode"] = "PlanningInput-v4",
+        });
+
+        await DrainAsync(provider, accessToken: "jwt-abc");
+
+        var tweaks = JsonDocument.Parse(handler.LastRequestBody!).RootElement.GetProperty("tweaks");
+
+        // Every tool component gets the token DIRECTLY. It used to be `tool_mode: true`
+        // on all eleven, so the agent carried it and could drop it — and on 2026-08-17 a
+        // dropped token produced a failed holdForClarification beside its successful
+        // retry, which the chat drew as a phantom question card. A field the model never
+        // sees is a field it cannot omit.
+        foreach (var node in LangflowInputBinding.ToolNodes)
+        {
+            Assert.True(tweaks.TryGetProperty(node, out var tool), $"no tweak for {node}");
+            Assert.Equal(
+                "jwt-abc",
+                tool.GetProperty(LangflowInputBinding.ToolAccessTokenField).GetString());
+        }
+
+        // …and the prompt node carries no credential at all, so a live JWT never enters
+        // the model's context and never comes back out in a tool argument.
+        var input = tweaks.GetProperty("PlanningInput-v4");
+        Assert.False(input.TryGetProperty("accessToken", out _));
+        Assert.DoesNotContain("jwt-abc", input.GetProperty("transcript").GetString()!, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task sends_no_tool_tweaks_when_the_caller_has_no_token()
+    {
+        if (Database is null)
+        {
+            return;
+        }
+
+        var handler = Handler(Ndjson("""{"event":"end","data":{}}"""));
+
+        var provider = Provider(handler, new Dictionary<string, string?>
+        {
+            ["Ai:Langflow:InputNode"] = "PlanningInput-v4",
+        });
+
+        // An absent token stays absent rather than being sent as "": the tool reports
+        // "access_token is empty" either way, and an empty tweak would also overwrite a
+        // value an operator had pinned on the node.
+        await DrainAsync(provider, accessToken: null);
+
+        var tweaks = JsonDocument.Parse(handler.LastRequestBody!).RootElement.GetProperty("tweaks");
+
+        foreach (var node in LangflowInputBinding.ToolNodes)
+        {
+            Assert.False(tweaks.TryGetProperty(node, out _), $"unexpected tweak for {node}");
+        }
     }
 
     [Theory]
