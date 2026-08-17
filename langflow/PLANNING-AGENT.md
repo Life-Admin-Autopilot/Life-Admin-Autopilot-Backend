@@ -517,16 +517,23 @@ Verified by executing the flow's own code, in `scratchpad/`:
   and `clarificationId` stay the FIRST row; and a response with no `clarifications` array
   still reports the single row.
 
-**Not verified — Langflow is not running here and cannot be:**
+**Since verified against the live stack** (Langflow on `:7860`, .NET on `:5080`):
 
-- That Langflow imports this JSON without complaint. The node/template structure mirrors the
-  v3 baseline field-for-field, but "structurally identical to a file that imported" is not
-  the same as "imported".
-- Any model behaviour whatsoever. Whether the agent actually answers "what's due next week?"
-  instead of filing it, whether it holds the right items, whether it emits the envelope
-  without a code fence, whether it copies clarifications verbatim — all of it is authored
-  intent, not observed fact. The chat/question distinction in particular is the highest-risk
-  claim in this document and the first thing to test.
+- Langflow imports this JSON, keeping the flow id — re-read after upload, 15 nodes and
+  14 edges, `secondary_question` and `secondary_kind` present as `tool_mode` args and in
+  `tools_metadata`.
+- The model reaches for the multi-question form unprompted: *"Remind me today to go visit
+  my friend."* produced ONE `holdForClarification` carrying `secondary_question`, one task,
+  and two clarification rows — and tapping the date option promoted the task to a reminder
+  while the which-friend row stayed open. That is `tools/ai-eval/cases/13-two-gaps-two-questions.json`,
+  which is now the permanent gate for it.
+
+**Not verified:**
+
+- Most model behaviour. Whether the agent answers "what's due next week?" instead of filing
+  it, whether it holds the right items, whether it emits the envelope without a code fence,
+  whether it copies clarifications verbatim — each is authored intent until a case in
+  `tools/ai-eval/` pins it. The suite covers thirteen of them today; the rest are claims.
 - That `load_from_db: true` resolves these particular global variable names in your Langflow
   instance. The mechanism is standard; the variable names must be created by hand.
 - Whether `tools_metadata` regenerates cleanly on first open in the Langflow UI. It is

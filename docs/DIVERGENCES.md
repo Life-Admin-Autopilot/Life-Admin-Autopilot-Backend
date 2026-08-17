@@ -303,7 +303,19 @@ creates the Task, then the Clarification, linked by `taskId`. It is a port of
 `runHoldForClarification` — same argument schema (`holdForClarificationArgs`), same
 guess precedence (explicit `dueAtGuess`, else the first option's date), same
 `costOfWrong` default of `high`, same `MAX_OPEN_CLARIFICATIONS` degradation, same
-`sourceQuote` clamp. Responds `201 {clarification, task, queueFull}`.
+`sourceQuote` clamp. Responds `201 {clarification, clarifications, task, queueFull}`.
+
+It has since grown one thing `runHoldForClarification` has no equivalent of: an
+optional `questions` array (max 3) that files **one task and one clarification row per
+question**, all linked by that `taskId`. Node cannot need it — its agent is in-process
+and can call the module twice with a task id in hand — but ours cannot, because
+`holdForClarification` has no `task_id` argument and a second call files a duplicate
+task. Without the array a matter with two gaps had to fold both into one question, and
+one question has one answer slot: on 2026-08-16 *"remind me today to go to the friend"*
+was held as *"What time should I remind you — and which friend are you visiting?"*, the
+user tapped "9 am", and the which-friend gap ceased to exist. Absent the array, request
+and response are byte-identical to the single-question form; `clarification` is always
+the first row. The queue cap counts rows.
 
 ### Why
 
