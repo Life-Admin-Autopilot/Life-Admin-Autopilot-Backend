@@ -171,6 +171,13 @@ public static class DocumentScanWriteEndpoints
                     Estimate = candidate.Estimate,
                     SourcePage = candidate.SourcePage,
 
+                    // Carried for the same reason, and one more: the amount is
+                    // the value the trust contract cares most about, so it stays
+                    // tied to the pass that actually read the page. Correcting a
+                    // misread figure is a later edit on the matter, where it is
+                    // stamped source:'user' and no AI pass may overwrite it.
+                    Amount = candidate.Amount,
+
                     DueAt = accept.DueAt ?? candidate.DueAt,
                     Notes = accept.Notes ?? candidate.Notes,
                 });

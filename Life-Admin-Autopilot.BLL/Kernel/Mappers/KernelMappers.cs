@@ -28,6 +28,26 @@ public static class KernelMappers
     /// <summary>ObjectId to its 24-hex string, matching <c>String(ret._id)</c>.</summary>
     public static string ToId(this ObjectId id) => id.ToString();
 
+    /// <summary>
+    /// A stored figure to its wire shape, null-in null-out.
+    ///
+    /// <para>
+    /// Shared rather than per-slice because money now hangs off three documents
+    /// (a scan, a candidate, a matter) and a summary that added them up would be
+    /// wrong the moment one of the three serialised differently.
+    /// </para>
+    /// </summary>
+    public static MoneyDto? ToDto(this MoneyDocument? money) =>
+        money is null
+            ? null
+            : new MoneyDto
+            {
+                AmountMinor = money.AmountMinor,
+                Currency = money.Currency,
+                Source = money.Source,
+                Direction = money.Direction,
+            };
+
     public static string? ToIdOrNull(this ObjectId? id) => id?.ToString();
 
     // ---- Task -------------------------------------------------------------
@@ -61,6 +81,7 @@ public static class KernelMappers
                 MaxMinutes = doc.Estimate.MaxMinutes,
                 Source = doc.Estimate.Source,
             },
+        Amount = doc.Amount.ToDto(),
         CompletedAt = doc.CompletedAt,
         SnoozedUntil = doc.SnoozedUntil,
         Reminders = doc.Reminders

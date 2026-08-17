@@ -154,6 +154,20 @@ public sealed class DocumentScanReviewService : IDocumentScanReviewService
             };
         }
 
+        // The figure follows the action onto the matter, which is what lets the
+        // summary answer "what do I still owe" from Status/DueAt rather than
+        // having to re-open the document it came from.
+        if (item.Amount is not null)
+        {
+            seed["amount"] = new BsonDocument
+            {
+                ["amountMinor"] = item.Amount.AmountMinor,
+                ["currency"] = item.Amount.Currency,
+                ["source"] = item.Amount.Source,
+                ["direction"] = item.Amount.Direction,
+            };
+        }
+
         if (item.DueAt is not null)
         {
             seed["dueAt"] = item.DueAt.Value;

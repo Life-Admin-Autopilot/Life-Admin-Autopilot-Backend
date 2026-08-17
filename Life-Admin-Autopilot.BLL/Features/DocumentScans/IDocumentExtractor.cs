@@ -1,3 +1,4 @@
+using Life_Admin_Autopilot.DAL.Kernel.Documents;
 using Life_Admin_Autopilot.DAL.Kernel.Errors;
 
 namespace Life_Admin_Autopilot.BLL.Features.DocumentScans;
@@ -12,7 +13,13 @@ public sealed record DraftCandidate(
     string? Notes = null,
     int? SourcePage = null,
     int? EstimateMinMinutes = null,
-    int? EstimateMaxMinutes = null);
+    int? EstimateMaxMinutes = null,
+    /// <summary>
+    /// Already through <see cref="MoneyVocabulary.Normalize"/> — the extractor
+    /// hardens before it hands anything back, so nothing downstream has to
+    /// re-decide whether a figure is trustworthy.
+    /// </summary>
+    MoneyDocument? Amount = null);
 
 /// <summary>Everything one extraction pass produces.</summary>
 public sealed record DocumentExtraction(
@@ -21,7 +28,11 @@ public sealed record DocumentExtraction(
     string? DocumentType = null,
     string? DocumentTitle = null,
     string? DocumentSubtitle = null,
-    string? Issuer = null);
+    string? Issuer = null,
+    /// <summary>The document's headline total, if the page states one.</summary>
+    MoneyDocument? Amount = null,
+    /// <summary>When that total falls due or was paid, as printed.</summary>
+    DateTime? AmountDueAt = null);
 
 public sealed record DocumentExtractionRequest(
     byte[] Bytes,
