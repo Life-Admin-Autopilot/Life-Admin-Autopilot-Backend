@@ -890,3 +890,105 @@ Delete `ReminderUrgency.cs` and its two test files, drop `UrgencyScore` from
 `foreach (var task in due)` loop with `writtenAt = DateTime.UtcNow`. Doing so
 reinstates the arbitrary ordering above — including for the users whose batches are
 dense enough for it to matter.
+
+---
+
+## 12. A reminder's final nudge fires a working duration BEFORE the deadline
+
+**Decided:** Phase 2 of `Steward/docs/smart-reminder-conflict-spec.md` — "auto-detected
+windows". Scope held to the reminder schedule; the estimate stored on a matter is not
+touched, and neither is the daily digest.
+**Status:** implemented. Full .NET suite **1821 passed / 0 failed**, four consecutive
+runs, up from 1783 after Phase 1. Verified end to end against a live server: five
+matters sharing one deadline, each final nudge landing its own resolved duration
+early.
+
+### What Node does
+
+`leadTime.ts` schedules the second entry at exactly `dueAt`:
+
+```js
+out.push({ at: due, kind: 'due' })
+```
+
+Node has the estimate data — `ESTIMATE_BUCKETS`, `snapToEstimateBucket`,
+`TaskEstimate {minMinutes, maxMinutes, source}` — and reads it in exactly one place,
+the daily digest total. Nothing in the reminder path consults it, and there is no
+fallback for a matter that has none.
+
+### What .NET does
+
+Adds `ReminderDuration` (`BLL/Kernel/Reminders/`), which resolves the minutes a
+matter needs: its own `estimate.maxMinutes` when it has one, else a keyword default,
+else a domain default, else 30. `ComputeRules` now takes that duration and places the
+final entry at `dueAt - duration`. `RefineWithAiAsync` clamps its suggestions to the
+same instant, so both scheduling paths agree on where the last useful nudge is.
+
+The keyword rows are the SAME eight patterns the lead-time table uses, matched once
+through `ReminderLeadTime.MatchKeyword` rather than restated — the two tables answer
+different questions about the same shapes of matter, and duplicated regexes would
+drift the first time either was edited.
+
+`durationMinutes` is a required parameter, not a defaulted one: a caller that has not
+thought about the window should have to say so.
+
+### Why
+
+The final nudge used to arrive at the one moment it could no longer be acted on.
+Telling someone at 17:00 that a two-hour tax return was due at 17:00 is an
+accusation, not a reminder — and "renew the insurance sometime this month" versus
+"renew it in the next twenty minutes or the policy lapses" is the exact failure the
+spec opens with.
+
+**The default is derived on read and never stored.** Persisting one would put an
+`estimate` object on every task response where Node sends none, and add a third value
+to a `source` enum Node defines as `['ai','user']` — a divergence across
+`30-tasks-core.yaml` and `40-tasks-bulk.yaml`, the two most heavily covered scenario
+files. Deriving it keeps `GET /me/tasks` byte-identical and confines the change to
+the reminder schedule, which is inference all the way down already.
+
+**Why a default is needed at all**: almost no matter carries an estimate. Neither the
+Langflow planning agent (`PLANNING-AGENT.md` has no such field) nor the voice
+extractor (`PlanningVoiceExtractor` never sets it) produces one, so only a hand-typed
+estimate or a Gemini document scan ever populates it. Without a fallback, window-aware
+scheduling would apply to a rounding-error fraction of real matters.
+
+### What was deliberately NOT changed
+
+`DailyDigestComputer.ReadEstimate` still contributes ZERO for an unestimated matter,
+so `estimatedMinutesToday` continues to under-report a day of unestimated work. That
+is not an oversight — it is an argued decision carried over from Node and stated in
+that method's own summary: *"a fabricated number in a digest whose whole premise is
+that it has none is worse than a low total."* A guess is acceptable where the system
+already guesses (the entire lead-time table) and not where a headline number is read
+as fact. Revisit it deliberately or not at all.
+
+### What it costs
+
+- **`GET /me/reminders/upcoming` reports different `at` values than Node** for any
+  dated reminder — earlier by the resolved duration. The harness row
+  `reminders-upcoming` still matches because its account's only task carries no
+  `dueAt` and both servers answer `{"reminders":[]}`, the same clipped corner Phase 1
+  relies on. Any scenario that gains a dated task diverges on both this and
+  `urgencyScore`.
+- **Phase 1's urgency scores moved.** A final nudge is no longer AT the deadline, so
+  its deadline pressure is now marginally below 1 — a `low` matter reads `0.994`
+  rather than `1.0`. This is a strict improvement: the pressure term was previously
+  degenerate, taking only the values 0 and 1, because the rules floor placed entries
+  only at the two ends of the window. It is now continuous, which is what §3.1
+  described.
+- **Notifications for long matters arrive earlier in wall-clock terms.** A 4-hour
+  matter now nudges 4 hours before its deadline. No EXTRA notification is created —
+  the count per matter is unchanged at two, which the anti-nag position in
+  `reminderWorker`'s clarification-settling comment requires.
+- **Snooze is untouched.** `SetSnoozeReminderAsync` fires exactly at the moment the
+  user named; subtracting an estimate from a time a person chose would move the one
+  instant the system must not second-guess. Pinned by
+  `ReminderPlannerTests.fires_a_snooze_once_at_the_snooze_moment_with_no_window_applied`.
+
+### How to revert
+
+Delete `ReminderDuration.cs` and its tests, drop the `durationMinutes` parameter from
+`ComputeRules` so the final entry returns to `due`, revert `RefineWithAiAsync`'s clamp
+to `d <= due`, and drop `MatchKeyword`/`MatterKeyword` from `ReminderLeadTime`. Doing
+so restores a schedule whose last nudge always arrives too late to act on.
