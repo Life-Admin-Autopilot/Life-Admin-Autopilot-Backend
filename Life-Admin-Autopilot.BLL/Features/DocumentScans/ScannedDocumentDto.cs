@@ -28,6 +28,11 @@ public sealed class ExtractedTaskCandidateDto
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public TaskEstimateDto? Estimate { get; init; }
 
+    /// <summary>What this one action costs. Absent whenever the page carried no figure for it.</summary>
+    [JsonPropertyName("amount")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public MoneyDto? Amount { get; init; }
+
     [JsonPropertyName("dueAt")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public DateTime? DueAt { get; init; }
@@ -143,6 +148,18 @@ public sealed class ScannedDocumentDto
     [JsonPropertyName("issuer")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? Issuer { get; init; }
+
+    /// <summary>
+    /// The document's headline total. Written by the worker alongside the other
+    /// row-copy fields, so it emits in this position for the same reason they do.
+    /// </summary>
+    [JsonPropertyName("amount")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public MoneyDto? Amount { get; init; }
+
+    [JsonPropertyName("amountDueAt")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public DateTime? AmountDueAt { get; init; }
 
     [JsonPropertyName("reviewedAt")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]

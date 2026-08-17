@@ -105,6 +105,12 @@ internal sealed class DocumentScanWorker : KernelPollingWorker
                 document.DocumentTitle = extraction.DocumentTitle;
                 document.DocumentSubtitle = extraction.DocumentSubtitle;
                 document.Issuer = extraction.Issuer;
+
+                // The document's own figure, which the financial summary reads
+                // directly — a receipt records a spend without ever implying a
+                // matter, so waiting for an accepted candidate would lose it.
+                document.Amount = extraction.Amount;
+                document.AmountDueAt = extraction.AmountDueAt;
             }
 
             document.Status = "ready_for_review";
@@ -233,6 +239,7 @@ internal sealed class DocumentScanWorker : KernelPollingWorker
             Estimate = draft is { EstimateMinMinutes: { } min, EstimateMaxMinutes: { } max }
                 ? new TaskEstimateDocument { MinMinutes = min, MaxMinutes = max, Source = "ai" }
                 : null,
+            Amount = draft.Amount,
             DueAt = draft.DueAt,
             Notes = draft.Notes,
             SourcePage = draft.SourcePage,

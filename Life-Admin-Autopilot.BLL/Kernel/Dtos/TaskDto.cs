@@ -155,6 +155,14 @@ public sealed class TaskDto
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public TaskEstimateDto? Estimate { get; init; }
 
+    /// <summary>
+    /// What this matter costs. Absent on most matters — an amount is the
+    /// exception, not the rule — so every surface renders without it.
+    /// </summary>
+    [JsonPropertyName("amount")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public MoneyDto? Amount { get; init; }
+
     [JsonPropertyName("completedAt")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public DateTime? CompletedAt { get; init; }

@@ -2,6 +2,7 @@ using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using Life_Admin_Autopilot.DAL.Kernel.Documents;
 using Life_Admin_Autopilot.DAL.Kernel.Errors;
 using Microsoft.Extensions.Logging;
 
@@ -126,13 +127,22 @@ public sealed class GeminiDocumentExtractor : IDocumentExtractor
             + " \"documentSubtitle\": account number, period or reference, or null,\n"
             + " \"issuer\": the organisation that produced it, or null,\n"
             + " \"documentSummary\": one or two sentences on what it says,\n"
+            + " \"totalAmount\": the headline sum printed on the page as a plain number "
+            + "(1234.56, no separators, no symbol), or null,\n"
+            + " \"currency\": ISO 4217 code for that sum, e.g. USD, EGP, EUR, JPY, or null,\n"
+            + " \"direction\": \"out\" if the owner pays it, \"in\" if they receive it "
+            + "(a refund, rebate or credit), or null,\n"
+            + " \"amountDueAt\": ISO-8601 date the sum falls due, or the date it was paid "
+            + "on a receipt, or null,\n"
             + " \"candidates\": [ {\"title\":string, "
             + "\"domain\":one of health|home|car|finance|family|pets, "
             + "\"priority\":one of low|normal|high|urgent, "
             + "\"confidence\":one of high|medium|low, "
             + "\"dueAt\":ISO-8601 with offset or null, \"notes\":string|null, "
             + "\"sourcePage\":1-based page the item came from or null, "
-            + "\"estimateMinMinutes\":number|null, \"estimateMaxMinutes\":number|null} ] }\n"
+            + "\"estimateMinMinutes\":number|null, \"estimateMaxMinutes\":number|null, "
+            + "\"amount\":the sum THIS action costs as a plain number or null, "
+            + "\"currency\":ISO 4217 code for it or null} ] }\n"
             // The same failure the planning prompt had to be tightened against: a
             // title translated out of the document's own words is a matter the user
             // cannot find by searching for what they read on the page.
@@ -142,7 +152,20 @@ public sealed class GeminiDocumentExtractor : IDocumentExtractor
             + "due, a renewal, an appointment to book, a form to return. A document that "
             + "obliges nothing gets an EMPTY candidates array; do not invent an action to "
             + "fill it. Only set dueAt from a date PRINTED on the document, never a guess. "
-            + "confidence is how certain you are the document really asks for that action.";
+            + "confidence is how certain you are the document really asks for that action.\n"
+            // Money is the highest-consequence thing on the page: a wrong figure is
+            // read as a fact about the user's own account, and it is arithmetic they
+            // will trust rather than re-check. Every rule here buys a null over a
+            // guess.
+            + "Rules for money: copy figures EXACTLY as printed — never convert between "
+            + "currencies, never add tax, never sum several lines into a total the page "
+            + "does not itself state. totalAmount is the one headline figure a person "
+            + "would read off the document (amount due, total, balance); if the page "
+            + "shows several and none is the headline, return null. A candidate's amount "
+            + "is what that single action costs, and it is null unless the page ties a "
+            + "figure to that action — do not reuse totalAmount for it. If you cannot "
+            + "tell which currency a figure is in, return null for BOTH the figure and "
+            + "the currency: an amount with the wrong currency is worse than no amount.";
     }
 
     // ---- Transport --------------------------------------------------------
@@ -291,7 +314,14 @@ public sealed class GeminiDocumentExtractor : IDocumentExtractor
                     Str(element, "notes"),
                     Int(element, "sourcePage"),
                     Int(element, "estimateMinMinutes"),
-                    Int(element, "estimateMaxMinutes")));
+                    Int(element, "estimateMaxMinutes"),
+                    // A candidate inherits the document's direction: a refund
+                    // letter's one action is receiving the refund.
+                    MoneyVocabulary.Normalize(
+                        Decimal(element, "amount"),
+                        Str(element, "currency"),
+                        "ai",
+                        Str(root, "direction"))));
             }
         }
 
@@ -301,7 +331,13 @@ public sealed class GeminiDocumentExtractor : IDocumentExtractor
             DocumentType: OneOf(Str(root, "documentType"), DocumentTypes, "other"),
             DocumentTitle: Str(root, "documentTitle"),
             DocumentSubtitle: Str(root, "documentSubtitle"),
-            Issuer: Str(root, "issuer"));
+            Issuer: Str(root, "issuer"),
+            Amount: MoneyVocabulary.Normalize(
+                Decimal(root, "totalAmount"),
+                Str(root, "currency"),
+                "ai",
+                Str(root, "direction")),
+            AmountDueAt: Date(root, "amountDueAt"));
     }
 
     /// <summary>
@@ -317,6 +353,34 @@ public sealed class GeminiDocumentExtractor : IDocumentExtractor
         e.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.String && v.GetString() is { Length: > 0 } s
             ? s
             : null;
+
+    /// <summary>
+    /// A money figure as the model returned it.
+    ///
+    /// <para>
+    /// A string is accepted as well as a number because models routinely quote
+    /// numerics they consider precise — and money is exactly the case they treat
+    /// that way. Parsed INVARIANT so "1234.56" is one thousand and not one and a
+    /// bit; the prompt asks for no separators, and a comma-grouped string that
+    /// slips through fails to parse and becomes a null rather than a 100x error.
+    /// </para>
+    /// </summary>
+    private static decimal? Decimal(JsonElement e, string name)
+    {
+        if (!e.TryGetProperty(name, out var v)) return null;
+
+        return v.ValueKind switch
+        {
+            JsonValueKind.Number when v.TryGetDecimal(out var parsed) => parsed,
+            JsonValueKind.String when decimal.TryParse(
+                v.GetString(),
+                System.Globalization.NumberStyles.AllowDecimalPoint
+                    | System.Globalization.NumberStyles.AllowLeadingSign,
+                System.Globalization.CultureInfo.InvariantCulture,
+                out var text) => text,
+            _ => null,
+        };
+    }
 
     private static int? Int(JsonElement e, string name) =>
         e.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.Number && v.TryGetInt32(out var parsed)
