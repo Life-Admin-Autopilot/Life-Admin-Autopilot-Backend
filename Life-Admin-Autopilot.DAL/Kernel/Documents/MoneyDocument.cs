@@ -91,6 +91,42 @@ public static class MoneyVocabulary
     /// exists to prevent.
     /// </para>
     /// </summary>
+    /// <summary>
+    /// The same gate for a figure that ALREADY counts minor units.
+    ///
+    /// <para>
+    /// This is the client's entry point: a matter's amount arrives from the app in
+    /// the exact shape the app was handed one, so a figure never makes a lossy
+    /// round trip through a decimal on its way back to the server. The client can
+    /// do this safely because <c>Intl.NumberFormat</c> gives it the same ISO
+    /// exponent table <see cref="ExponentFor"/> uses.
+    /// </para>
+    ///
+    /// <para>
+    /// The ceiling is the one difference worth noting: it is applied to the MINOR
+    /// count directly, so it is the major-unit cap times the widest minor unit
+    /// (three places). Same intent — reject a figure no personal document states.
+    /// </para>
+    /// </summary>
+    public static MoneyDocument? FromMinor(long? amountMinor, string? currency, string source, string? direction = null)
+    {
+        if (amountMinor is not { } minor) return null;
+
+        var code = NormalizeCurrency(currency);
+        if (code is null) return null;
+
+        var magnitude = Math.Abs(minor);
+        if (magnitude > (long)MaxMajorUnits * 1000) return null;
+
+        return new MoneyDocument
+        {
+            AmountMinor = magnitude,
+            Currency = code,
+            Source = Sources.Contains(source) ? source : "ai",
+            Direction = direction is not null && Directions.Contains(direction) ? direction : "out",
+        };
+    }
+
     /// <param name="amount">The figure as printed, in MAJOR units (142.37).</param>
     public static MoneyDocument? Normalize(decimal? amount, string? currency, string source, string? direction = null)
     {

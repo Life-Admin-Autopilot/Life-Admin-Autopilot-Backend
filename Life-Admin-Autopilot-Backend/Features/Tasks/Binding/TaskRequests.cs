@@ -31,6 +31,12 @@ public sealed class CreateTaskBody
 
     public JsonElement Estimate { get; set; }
 
+    /// <summary>
+    /// What the matter costs. Minor units and an ISO 4217 code — the same shape
+    /// the client was handed, so a figure never round-trips through a decimal.
+    /// </summary>
+    public JsonElement Amount { get; set; }
+
     public JsonElement SourceVoiceNoteId { get; set; }
 }
 
@@ -59,6 +65,13 @@ public sealed class UpdateTaskBody
     /// truer one than a number the user does not stand behind.
     /// </summary>
     public JsonElement Estimate { get; set; }
+
+    /// <summary>
+    /// Null clears the amount. That matters more here than for most fields: a
+    /// matter wrongly carrying a figure is counted in the user's spending, so
+    /// "this was never about money" has to be sayable.
+    /// </summary>
+    public JsonElement Amount { get; set; }
 
     public JsonElement SnoozedUntil { get; set; }
 }

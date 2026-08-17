@@ -190,6 +190,12 @@ public sealed class ClarificationHoldService
                     dueAt,
                     input.Notes,
                     Estimate: null,
+                    // A held matter carries no figure. The hold exists because
+                    // something about the matter was UNCLEAR, so inventing an
+                    // amount here is the one thing this path must not do — it
+                    // would enter the user's spending as a fact while the matter
+                    // itself is still a question.
+                    Amount: null,
                     SourceVoiceNoteId: null),
                 now,
                 cancellationToken)
