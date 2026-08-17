@@ -1,0 +1,40 @@
+{
+  "name": "no-phantom-questions",
+  "source": "incident-2026-08-17-phantom-questions",
+  "description": "One matter is filed once and asked about at most once, and every question card the chat can draw is backed by a row on disk. The user said 'Remind me on Monday to go to the mom friend'; exactly one task was created and no clarification row existed, yet the chat drew a '2 QUESTIONS' card asking 'When should I remind you?' twice — one group title-only, the other wearing the real task's facts pills. The turn held TWO holdForClarification calls and no createTask: the first failed because the model omitted access_token (a tool argument it had to copy on every call), and the retry that repaired it hit the 12-open-question cap, so the server filed the matter with its guess and deliberately asked nothing. Both calls persisted as receipts and both were rendered as answerable questions.",
+  "timezone": "Africa/Cairo",
+  "samples": 3,
+  "budgets": { "ttfb_ms": 2000, "total_ms": 45000 },
+
+  "steps": [
+    {
+      "say": "Remind me on Monday to go to the mom friend",
+      "trajectory": {
+        "tools_allowed": ["createTask", "holdForClarification", "queryTasks"],
+
+        "tool_call_counts": {
+          "createTask": { "max": 1 },
+          "holdForClarification": { "max": 1 }
+        },
+
+        "task_delta": { "min": 1, "max": 1 },
+
+        "all_tool_calls_resolved": true,
+
+        "no_failed_tool_calls": true,
+
+        "no_orphan_clarifications": true
+      },
+      "outcome": {
+        "reply_non_empty": true,
+        "no_question_in_prose": { "max_with_hold": 1, "lead_in_max_chars": 90 }
+      }
+    }
+  ],
+
+  "final": {
+    "tools_denied": ["deleteTask", "deleteAllTasks"],
+    "task_count": 1,
+    "tasks_matching": [{ "pattern": "friend|mom", "min": 1, "max": 1 }]
+  }
+}

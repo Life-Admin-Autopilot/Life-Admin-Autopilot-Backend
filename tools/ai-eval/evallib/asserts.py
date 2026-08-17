@@ -264,6 +264,12 @@ def check_trajectory(spec: Mapping[str, Any], turn: Turn) -> list[Check]:
     if "clarification_options" in spec:
         checks.extend(_check_clarification_options(spec["clarification_options"], turn))
 
+    if spec.get("no_failed_tool_calls"):
+        checks.append(_check_no_failed_calls(turn))
+
+    if spec.get("no_orphan_clarifications"):
+        checks.append(_check_no_orphan_clarifications(turn))
+
     for rule in spec.get("tasks_matching") or []:
         checks.append(
             _check_matching(
@@ -283,6 +289,73 @@ def check_trajectory(spec: Mapping[str, Any], turn: Turn) -> list[Check]:
         )
 
     return checks
+
+
+def _check_no_failed_calls(turn: Turn) -> Check:
+    """No tool call in this turn came back an error.
+
+    A failed call is not just a wasted round trip: it PERSISTS as a receipt, so
+    the chat renders it forever afterwards. The 2026-08-17 phantom-questions
+    incident was a failed `holdForClarification` sitting beside the successful
+    retry that repaired it, drawn as two answerable question cards for one
+    matter. The specific cause was `access_token` being a tool argument the
+    model had to copy on every call; this assertion is what keeps it gone.
+    """
+    failed = []
+    for call in turn.tool_calls:
+        result = call.result
+        error = call.error or (
+            result.get("error") if isinstance(result, Mapping) and result.get("ok") is False else None
+        )
+        if error:
+            failed.append(f"{call.name}:{error}")
+    return Check(
+        TRAJECTORY,
+        "no_failed_tool_calls",
+        not failed,
+        f"failed calls: {failed}" if failed else f"{len(turn.tool_calls)} call(s), none failed",
+    )
+
+
+def _check_no_orphan_clarifications(turn: Turn) -> Check:
+    """The rows on disk and the receipts in the transcript are the same set.
+
+    Both directions matter, and each is a real bug shape:
+
+    A row with no receipt is a question the chat cannot render or resolve — it
+    only ever appears in the queue, detached from the turn that raised it.
+
+    A receipt with no row is the phantom: the chat draws an answerable question
+    card for something that was never persisted, so answering it cannot resolve
+    anything. That is exactly what a queue-full hold produces — it returns a
+    filed task and `clarification: null` — and it is why the card must key off
+    receipts rather than off the mere presence of a hold call.
+    """
+    on_disk = {str(c.get("id") or c.get("_id")) for c in turn.new_clarifications()}
+    on_disk.discard("None")
+
+    receipts: set[str] = set()
+    for call in turn.tool_calls:
+        result = call.result
+        if not isinstance(result, Mapping):
+            continue
+        rows = result.get("clarifications")
+        if not isinstance(rows, list):
+            single = result.get("clarification")
+            rows = [single] if isinstance(single, Mapping) else []
+        for row in rows:
+            if isinstance(row, Mapping) and row.get("id"):
+                receipts.add(str(row["id"]))
+
+    orphan_rows = sorted(on_disk - receipts)
+    orphan_receipts = sorted(receipts - on_disk)
+    ok = not orphan_rows and not orphan_receipts
+    detail = f"{len(on_disk)} row(s), {len(receipts)} receipt(s) — matched"
+    if not ok:
+        detail = (
+            f"rows with no receipt: {orphan_rows}; receipts with no row: {orphan_receipts}"
+        )
+    return Check(TRAJECTORY, "no_orphan_clarifications", ok, detail)
 
 
 def _looks_executed(result: Any) -> bool:

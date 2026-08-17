@@ -43,7 +43,7 @@ TRAJECTORY_KEYS = {
     "expected_tool_calls_mode", "needs_confirmation", "no_unconfirmed_execution",
     "no_confirmations_pending", "all_tool_calls_resolved", "task_delta",
     "clarification_delta", "clarification_options", "tasks_matching",
-    "clarifications_matching",
+    "clarifications_matching", "no_failed_tool_calls", "no_orphan_clarifications",
 }
 OUTCOME_KEYS = {"reply_non_empty", "must_match", "must_not_match",
                 "no_question_in_prose", "has_arabic"}
@@ -174,6 +174,77 @@ class TrajectoryTests(unittest.TestCase):
         turn = make_turn()
         spec = {"clarification_options": {"min": 2, "max": 4}}
         self.assertFalse(verdict(asserts.check_trajectory(spec, turn), "clarification_options"))
+
+    def test_no_failed_tool_calls_reads_both_shapes(self):
+        # An SSE-level error and an ok:false body are the same event to the
+        # transcript: either way the receipt persists and the chat draws it.
+        clean = call("createTask")
+        clean.result = {"ok": True, "task": {"id": "t1"}}
+        self.assertTrue(
+            verdict(asserts.check_trajectory({"no_failed_tool_calls": True}, make_turn(
+                tool_calls=[clean])), "no_failed_tool_calls"))
+
+        framed = make_turn(tool_calls=[call("createTask", error="boom")])
+        self.assertFalse(
+            verdict(asserts.check_trajectory({"no_failed_tool_calls": True}, framed),
+                    "no_failed_tool_calls"))
+
+        # The incident's own shape: the model omitted access_token, so the tool
+        # answered ok:false and the model repaired with a second call.
+        misconfigured = call("holdForClarification", call_id="r1~0")
+        misconfigured.result = {
+            "ok": False,
+            "error": "misconfigured",
+            "message": "access_token is empty.",
+        }
+        repaired = call("holdForClarification", call_id="r1~1")
+        repaired.result = {"ok": True, "task": {"id": "t1"}, "clarifications": []}
+        self.assertFalse(
+            verdict(asserts.check_trajectory({"no_failed_tool_calls": True}, make_turn(
+                tool_calls=[misconfigured, repaired])), "no_failed_tool_calls"))
+
+    def test_no_orphan_clarifications_both_directions(self):
+        held = call("holdForClarification")
+        held.result = {"ok": True, "clarifications": [{"id": "c1"}, {"id": "c2"}]}
+        matched = make_turn(
+            tool_calls=[held],
+            clarifications_after=[{"id": "c1"}, {"id": "c2"}],
+        )
+        self.assertTrue(
+            verdict(asserts.check_trajectory({"no_orphan_clarifications": True}, matched),
+                    "no_orphan_clarifications"))
+
+        # A receipt with no row is the phantom card: the chat offers a question
+        # that answering cannot resolve, because nothing was persisted.
+        phantom = call("holdForClarification")
+        phantom.result = {"ok": True, "clarifications": [{"id": "c1"}]}
+        self.assertFalse(
+            verdict(asserts.check_trajectory({"no_orphan_clarifications": True}, make_turn(
+                tool_calls=[phantom])), "no_orphan_clarifications"))
+
+        # A row with no receipt is the mirror bug: a question only reachable
+        # from the queue, detached from the turn that raised it.
+        detached = make_turn(clarifications_after=[{"id": "c9"}])
+        self.assertFalse(
+            verdict(asserts.check_trajectory({"no_orphan_clarifications": True}, detached),
+                    "no_orphan_clarifications"))
+
+    def test_a_queue_full_hold_has_no_receipt_and_no_row(self):
+        # The second half of the incident. The cap was reached, so the server
+        # filed the task and asked nothing: clarification null, no row. That is
+        # CONSISTENT — the failure was the chat drawing a question anyway.
+        full = call("holdForClarification")
+        full.result = {
+            "ok": True,
+            "task": {"id": "t1"},
+            "clarification": None,
+            "queueFull": True,
+        }
+        turn = make_turn(tool_calls=[full])
+        checks = asserts.check_trajectory(
+            {"no_orphan_clarifications": True, "no_failed_tool_calls": True}, turn)
+        self.assertTrue(verdict(checks, "no_orphan_clarifications"))
+        self.assertTrue(verdict(checks, "no_failed_tool_calls"))
 
     def test_needs_confirmation(self):
         gated = make_turn(tool_calls=[call("deleteAllTasks", needs_confirmation=True)])
