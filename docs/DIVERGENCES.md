@@ -731,3 +731,67 @@ in whether a tool call backed the claim:
 
 `AiFabricatedActionTests` pins both directions plus the silent cases; seven of its
 eighteen tests were confirmed to fail with the guard disabled.
+
+---
+
+## 10. Money exists here and not in Node
+
+**Decided:** the user, when asked where the financial page should get its data —
+"full stack: extract + store", knowing it departs from the Node reference.
+**Status:** implemented. `GET /me/finance/summary`, plus an `amount` on tasks,
+scanned documents and scan candidates.
+
+### What Node does
+
+Nothing. There is no monetary field anywhere in `server/src/models` — not on
+`Task`, not on `ScannedDocument`. The only `amountCents` in the reference is on
+the subscription `Invoice`, and `GET /me/billing/invoices` is a deliberate stub
+returning `[]`.
+
+A bill's total does reach the Node database, but only as prose inside
+`documentSubtitle` — the row-copy string the AI writes most-important-token-first
+(`"Due July 30 · $142.37"`). That is a caption, not a quantity: it cannot be
+summed, compared or converted, and it is absent whenever the model chose to spend
+those 120 characters on an account number instead.
+
+### What .NET does
+
+Stores money as a value: whole minor units plus an ISO 4217 code, with a source
+(`ai` | `user`) and a direction (`out` | `in`).
+
+| Field | On |
+| --- | --- |
+| `amount` | `TaskDocument`, `ScannedDocumentDocument`, `ExtractedTaskCandidateDocument` |
+| `amountDueAt` | `ScannedDocumentDocument` |
+
+The document vision pass reports `totalAmount` / `currency` / `direction` /
+`amountDueAt` alongside the fields it already returned — the same single call, so
+the extra data costs nothing. `GET /me/finance/summary` aggregates the result.
+
+### Why this is not a parity bug
+
+**It is additive and nullable everywhere.** No existing row gains a field, no
+existing response changes shape, and `amount` is absent from every document the
+reader found no figure in — which is most of them. A parity differ comparing the
+two servers on any pre-existing document sees identical bytes. The new key can
+only appear on a document extracted by a build that has this code, and Node has
+no such document to disagree about.
+
+**The endpoint is new, not changed.** Node answers `GET /me/finance/summary` with
+its 404 HTML (`Cannot GET /me/finance/summary`). A harness row for this operation
+would be asserting that a feature does not exist.
+
+### The thing to be careful about
+
+The frontend's `/money` page reads this endpoint. **Pointing the app back at the
+Node server on `:4000` gives that page a 404**, and the dashboard's money card
+disappears with it. That is the honest failure — an empty page would claim the
+user has no money — but it is a real constraint on switching backends, and it is
+the first user-visible feature that cannot fall back to the reference.
+
+### Why the aggregation is C# and not the agent
+
+Every figure is computed from indexed Mongo reads and summed in memory. The
+summary is a per-render endpoint on a page the user navigates back to, and
+anything per-render that calls a model is a cost bug waiting to happen. The only
+AI in the feature is the extraction pass that was already running.
