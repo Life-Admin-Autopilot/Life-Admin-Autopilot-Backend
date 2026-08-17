@@ -1,0 +1,54 @@
+{
+  "name": "two-gaps-two-questions",
+  "source": "incident-2026-08-16-friend-gap",
+  "description": "A matter with two gaps gets two answerable questions, not one folded sentence. The user said 'remind me today to go to the friend'; the agent held ONCE asking 'What time should I remind you — and which friend are you visiting?' with time chips. Tapping '9 am' resolved the row, promoted the task to a 9am reminder, and destroyed the which-friend gap — a tapped option can only answer one question.",
+  "timezone": "Africa/Cairo",
+  "samples": 2,
+  "budgets": { "ttfb_ms": 2000, "total_ms": 45000 },
+
+  "steps": [
+    {
+      "say": "Remind me today to go visit my friend.",
+      "trajectory": {
+        "tools_allowed": ["holdForClarification"],
+        "tool_call_counts": { "holdForClarification": { "min": 1, "max": 1 } },
+        "task_delta": 1,
+        "clarification_delta": { "min": 2, "max": 3 },
+        "all_tool_calls_resolved": true,
+        "expected_tool_calls": [
+          {
+            "name": "holdForClarification",
+            "args_subset": {
+              "question_kind": "date",
+              "options": { "$present": true },
+              "secondary_question": { "$present": true }
+            }
+          }
+        ],
+        "expected_tool_calls_mode": "exact"
+      },
+      "outcome": {
+        "reply_non_empty": true,
+        "no_question_in_prose": { "max_with_hold": 1, "lead_in_max_chars": 90 }
+      }
+    },
+
+    {
+      "after": {
+        "resolve": { "where": { "kind": "date" }, "option": 0 },
+        "expect": {
+          "resolved_status": "resolved",
+          "resolved_task": { "kind": "reminder", "due_at_present": true },
+          "open_clarifications": { "min": 1 },
+          "open_matching": [{ "pattern": "friend|who", "min": 1 }]
+        }
+      }
+    }
+  ],
+
+  "final": {
+    "tools_denied": ["deleteTask", "deleteAllTasks"],
+    "task_count": 1,
+    "tasks_matching": [{ "pattern": "friend", "min": 1, "max": 1 }]
+  }
+}

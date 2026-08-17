@@ -142,11 +142,26 @@ class ApiClient:
         payload = self.get("/me/notifications", token=token) or {}
         return list(payload.get("notifications") or [])
 
-    def resolve_clarification(self, token: str, clarification_id: str, option: int) -> Any:
+    def resolve_clarification(
+        self,
+        token: str,
+        clarification_id: str,
+        option: int,
+        timezone: str | None = None,
+    ) -> Any:
+        """Tap an answer chip.
+
+        The answer is NESTED under `answer` — `ResolveBodySchema` is
+        `z.object({answer: z.discriminatedUnion('type', …), timezone})`. This used
+        to post the union bare, which is a 400 every time; the caller swallowed it,
+        so every `resolve_clarifications` step in every case was a silent no-op and
+        the state it was there to build never existed.
+        """
+        body: dict[str, Any] = {"answer": {"type": "option", "index": option}}
+        if timezone:
+            body["timezone"] = timezone
         return self.post(
-            f"/me/clarifications/{clarification_id}/resolve",
-            {"type": "option", "index": option},
-            token=token,
+            f"/me/clarifications/{clarification_id}/resolve", body, token=token
         )
 
     def health(self) -> bool:

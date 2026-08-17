@@ -133,7 +133,7 @@ Drop a JSON file in `cases/`. The file name orders the run; the `name` field is 
 }
 ```
 
-Three kinds of step:
+Four kinds of step:
 
 - **`say`** — a user message. Graded against its `trajectory` and `outcome` blocks.
 - **`say` + `seed: true`** — setup. Runs for real and builds the state the graded turn
@@ -144,6 +144,33 @@ Three kinds of step:
 - **`resolve_clarifications`** — answers every open question through
   `POST /me/clarifications/{id}/resolve` with the given option index. The deterministic
   way to seed a *timed* task, since the agent will not guess an hour it was not given.
+
+- **`after`** — answers **one** question and grades what survives. Where
+  `resolve_clarifications` is setup that asserts nothing, this is a graded step:
+
+  ```jsonc
+  {
+    "after": {
+      "resolve": { "where": { "kind": "date" }, "option": 0 },
+      "expect": {
+        "resolved_status": "resolved",
+        "resolved_task": { "kind": "reminder", "due_at_present": true },
+        "open_clarifications": { "min": 1 },
+        "open_matching": [{ "pattern": "friend|who", "min": 1 }]
+      }
+    }
+  }
+  ```
+
+  `where` selects the row: `kind` matches exactly, `question` is a case-insensitive
+  regex. No match is a failure, not a skip. `expect` grades the resolve's own response
+  (`resolved_status`, `resolved_task`) and a fresh `GET /me/clarifications`
+  (`open_clarifications`, `open_matching` — both over rows still `open`).
+
+  It exists because a **multi-question hold** cannot be proved any other way. Answering
+  the date must promote the task *and* leave the matter's other gaps answerable, and a
+  hold that folded two gaps into one sentence passes the first half identically — it is
+  only the surviving sibling that tells the two apart.
 
 `samples: k` runs the case k times on k fresh users and takes the **majority** verdict.
 A single run of a nondeterministic model is not evidence. The default is 1 for cost;

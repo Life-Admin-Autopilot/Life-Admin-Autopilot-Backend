@@ -558,6 +558,103 @@ def _ms(value: float | None) -> str:
 
 
 # ---------------------------------------------------------------------------
+# after — answering ONE held question, then grading what survives
+# ---------------------------------------------------------------------------
+
+
+def first_matching(
+    clarifications: Iterable[Mapping[str, Any]],
+    where: Mapping[str, Any],
+) -> dict[str, Any] | None:
+    """The first row matching every clause of ``where``.
+
+    ``kind`` compares exactly; ``question`` is a case-insensitive regex, because a
+    case should not have to reproduce the model's wording to point at a row.
+    """
+    for clarification in clarifications:
+        if "kind" in where and clarification.get("kind") != where["kind"]:
+            continue
+        if "question" in where and not re.search(
+            str(where["question"]), str(clarification.get("question") or ""), re.I
+        ):
+            continue
+        return dict(clarification)
+    return None
+
+
+def check_after(
+    spec: Mapping[str, Any],
+    resolved: Mapping[str, Any] | None,
+    clarifications: list[dict[str, Any]],
+) -> list[Check]:
+    """Grade the state one resolve left behind.
+
+    This is where a multi-question hold either holds up or does not: answering the
+    date must promote the task AND leave its siblings open. A hold that folded two
+    gaps into one question passes the first half and fails the second, because
+    there is no sibling left to find.
+    """
+    checks: list[Check] = []
+    payload = resolved or {}
+    still_open = [c for c in clarifications if c.get("status") in (None, "open")]
+
+    if "open_clarifications" in spec:
+        ok, detail = _in_bounds(len(still_open), spec["open_clarifications"])
+        checks.append(
+            Check(
+                TRAJECTORY,
+                "after.open_clarifications",
+                ok,
+                f"{detail}; still open: {[(c.get('kind'), (c.get('question') or '')[:48]) for c in still_open]}",
+            )
+        )
+
+    for rule in spec.get("open_matching") or []:
+        checks.append(
+            _check_matching(
+                "after.open_matching",
+                rule,
+                [_clarification_text(c) for c in still_open],
+            )
+        )
+
+    task_spec = spec.get("resolved_task") or {}
+    if task_spec:
+        task = payload.get("task") or {}
+        if "kind" in task_spec:
+            checks.append(
+                Check(
+                    TRAJECTORY,
+                    "after.resolved_task.kind",
+                    task.get("kind") == task_spec["kind"],
+                    f"task kind {task.get('kind')!r}, wanted {task_spec['kind']!r}",
+                )
+            )
+        if task_spec.get("due_at_present"):
+            checks.append(
+                Check(
+                    TRAJECTORY,
+                    "after.resolved_task.dueAt",
+                    bool(task.get("dueAt")),
+                    f"dueAt {task.get('dueAt')!r}",
+                )
+            )
+
+    if "resolved_status" in spec:
+        status = (payload.get("clarification") or {}).get("status")
+        checks.append(
+            Check(
+                TRAJECTORY,
+                "after.resolved_status",
+                status == spec["resolved_status"],
+                f"answered row is {status!r}, wanted {spec['resolved_status']!r}",
+            )
+        )
+
+    return checks
+
+
+# ---------------------------------------------------------------------------
 # case-level
 # ---------------------------------------------------------------------------
 

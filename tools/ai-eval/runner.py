@@ -27,6 +27,7 @@ sys.path.insert(0, str(HERE))
 from evallib import asserts, report, sse  # noqa: E402
 from evallib.http import (  # noqa: E402
     ApiClient,
+    ApiError,
     DEFAULT_BASE_URL,
     DEFAULT_MAX_RATE_LIMIT_WAIT_S,
 )
@@ -93,7 +94,13 @@ def run_sample(
 
     for step in case["steps"]:
         if "resolve_clarifications" in step:
-            _resolve_open_clarifications(client, token, step["resolve_clarifications"])
+            _resolve_open_clarifications(
+                client, token, step["resolve_clarifications"], timezone
+            )
+            continue
+
+        if "after" in step:
+            checks.extend(_run_after(client, token, step["after"], timezone))
             continue
 
         tasks_before = client.tasks(token)
@@ -152,17 +159,73 @@ def run_sample(
     }
 
 
-def _resolve_open_clarifications(client: ApiClient, token: str, spec: Mapping[str, Any]) -> None:
+def _resolve_open_clarifications(
+    client: ApiClient,
+    token: str,
+    spec: Mapping[str, Any],
+    timezone: str,
+) -> None:
     """Answer held questions the deterministic way, so a case can seed real state."""
     option = int(spec.get("option", 0))
     for clarification in client.clarifications(token):
         if clarification.get("status") not in (None, "open"):
             continue
         try:
-            client.resolve_clarification(token, clarification["id"], option)
-        except Exception:
+            client.resolve_clarification(token, clarification["id"], option, timezone)
+        except ApiError as exc:
             # A question whose task is gone closes itself out; not a case failure.
-            pass
+            # Anything else IS one — a 400 here used to be swallowed in silence,
+            # which is how a broken request body went unnoticed for the life of
+            # the suite while every seeded resolve quietly did nothing.
+            if exc.status != 404:
+                raise
+
+
+def _run_after(
+    client: ApiClient,
+    token: str,
+    spec: Mapping[str, Any],
+    timezone: str,
+) -> list[asserts.Check]:
+    """An `after` step: answer ONE held question, then assert on what survives.
+
+    `resolve_clarifications` answers everything at once, which cannot express the
+    thing multi-question holds have to prove — that answering one gap of a matter
+    leaves its siblings open. This picks a single row by `where`, resolves it, and
+    grades the state it left behind.
+    """
+    resolve = spec.get("resolve") or {}
+    where = resolve.get("where") or {}
+    option = int(resolve.get("option", 0))
+
+    open_rows = [c for c in client.clarifications(token) if c.get("status") in (None, "open")]
+    target = asserts.first_matching(open_rows, where)
+
+    if target is None:
+        return [
+            asserts.Check(
+                asserts.TRAJECTORY,
+                "after.resolve",
+                False,
+                f"no open clarification matched {dict(where)}; "
+                f"open: {[(c.get('kind'), c.get('question')) for c in open_rows]}",
+            )
+        ]
+
+    resolved = client.resolve_clarification(token, target["id"], option, timezone)
+    checks = [
+        asserts.Check(
+            asserts.TRAJECTORY,
+            "after.resolve",
+            True,
+            f"answered {target.get('kind')!r} question "
+            f"{(target.get('question') or '')[:60]!r} with option {option}",
+        )
+    ]
+    checks.extend(
+        asserts.check_after(spec.get("expect") or {}, resolved, client.clarifications(token))
+    )
+    return checks
 
 
 def _turn_record(turn: sse.Turn, seed: bool) -> dict[str, Any]:

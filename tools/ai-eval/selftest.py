@@ -32,7 +32,11 @@ KNOWN_TOOLS = {
 }
 
 STEP_KEYS = {"say", "mode", "seed", "timezone", "budgets", "trajectory", "outcome",
-             "resolve_clarifications"}
+             "resolve_clarifications", "after"}
+AFTER_KEYS = {"resolve", "expect"}
+AFTER_RESOLVE_KEYS = {"where", "option"}
+AFTER_EXPECT_KEYS = {"open_clarifications", "open_matching", "resolved_task",
+                     "resolved_status"}
 TRAJECTORY_KEYS = {
     "tools_allowed", "tools_denied", "max_tool_calls", "min_tool_calls",
     "max_tool_rounds", "tool_call_counts", "expected_tool_calls",
@@ -324,6 +328,105 @@ class FinalTests(unittest.TestCase):
         self.assertTrue(verdict(checks, "final.task_count"))
 
 
+class AfterStepTests(unittest.TestCase):
+    """Answering ONE gap of a matter must leave its siblings answerable.
+
+    This is the whole point of the multi-question hold, and it is the half a
+    folded question silently fails: it promotes the task exactly the same way,
+    and there is simply no sibling left to find afterwards.
+    """
+
+    DATE = {"id": "c1", "kind": "date", "question": "What time should I remind you?",
+            "status": "open", "options": [{"label": "9 am"}]}
+    DETAIL = {"id": "c2", "kind": "detail", "question": "Which friend are you visiting?",
+              "status": "open", "options": []}
+    RESOLVED = {
+        "clarification": {**DATE, "status": "resolved", "answer": "9 am"},
+        "task": {"id": "t1", "kind": "reminder", "dueAt": "2026-08-17T06:00:00.000Z"},
+    }
+
+    EXPECT = {
+        "resolved_status": "resolved",
+        "resolved_task": {"kind": "reminder", "due_at_present": True},
+        "open_clarifications": {"min": 1},
+        "open_matching": [{"pattern": "friend", "min": 1}],
+    }
+
+    def test_first_matching_picks_by_kind_and_by_question(self):
+        rows = [self.DATE, self.DETAIL]
+        self.assertEqual(asserts.first_matching(rows, {"kind": "detail"})["id"], "c2")
+        self.assertEqual(asserts.first_matching(rows, {"question": "what time"})["id"], "c1")
+        self.assertIsNone(asserts.first_matching(rows, {"kind": "choice"}))
+        # Every clause must hold, not just one.
+        self.assertIsNone(asserts.first_matching(rows, {"kind": "date", "question": "friend"}))
+
+    def test_the_sibling_surviving_is_a_pass(self):
+        checks = asserts.check_after(
+            self.EXPECT, self.RESOLVED, [self.RESOLVED["clarification"], self.DETAIL]
+        )
+        for name in ("after.resolved_status", "after.resolved_task.kind",
+                     "after.resolved_task.dueAt", "after.open_clarifications",
+                     "after.open_matching"):
+            self.assertTrue(verdict(checks, name), name)
+
+    def test_the_folded_question_fails_on_the_sibling_not_the_promotion(self):
+        """One row, resolved: the task is promoted and the second gap is gone."""
+        checks = asserts.check_after(
+            self.EXPECT, self.RESOLVED, [self.RESOLVED["clarification"]]
+        )
+        self.assertTrue(verdict(checks, "after.resolved_task.kind"))
+        self.assertFalse(verdict(checks, "after.open_clarifications"))
+        self.assertFalse(verdict(checks, "after.open_matching"))
+
+    def test_a_task_left_passive_fails(self):
+        payload = {**self.RESOLVED, "task": {"id": "t1", "kind": "list"}}
+        checks = asserts.check_after(self.EXPECT, payload, [self.DETAIL])
+        self.assertFalse(verdict(checks, "after.resolved_task.kind"))
+        self.assertFalse(verdict(checks, "after.resolved_task.dueAt"))
+        # ...and the sibling half still passes, so the report names the real half.
+        self.assertTrue(verdict(checks, "after.open_clarifications"))
+
+    def test_a_closed_sibling_does_not_count_as_open(self):
+        closed = {**self.DETAIL, "status": "dropped"}
+        checks = asserts.check_after(self.EXPECT, self.RESOLVED, [closed])
+        self.assertFalse(verdict(checks, "after.open_clarifications"))
+
+    def test_an_empty_expect_grades_nothing_rather_than_crashing(self):
+        self.assertEqual(asserts.check_after({}, self.RESOLVED, [self.DETAIL]), [])
+
+
+class ResolveBodyTests(unittest.TestCase):
+    """The answer is nested under `answer`. Posting the union bare is a 400."""
+
+    def test_the_answer_is_wrapped_and_the_timezone_rides_along(self):
+        from evallib.http import ApiClient
+
+        sent = {}
+
+        class Recorder(ApiClient):
+            def post(self, path, body, *, token=None):
+                sent["path"], sent["body"] = path, body
+                return {}
+
+        Recorder().resolve_clarification("tok", "c1", 2, "Africa/Cairo")
+        self.assertEqual(sent["path"], "/me/clarifications/c1/resolve")
+        self.assertEqual(sent["body"], {"answer": {"type": "option", "index": 2},
+                                        "timezone": "Africa/Cairo"})
+
+    def test_no_timezone_means_no_timezone_key(self):
+        from evallib.http import ApiClient
+
+        sent = {}
+
+        class Recorder(ApiClient):
+            def post(self, path, body, *, token=None):
+                sent["body"] = body
+                return {}
+
+        Recorder().resolve_clarification("tok", "c1", 0)
+        self.assertEqual(sent["body"], {"answer": {"type": "option", "index": 0}})
+
+
 class RedactionTests(unittest.TestCase):
     def test_bearer_token_never_survives(self):
         payload = {
@@ -380,9 +483,24 @@ class CaseFileTests(unittest.TestCase):
                 unknown = set(step) - STEP_KEYS
                 self.assertFalse(unknown, f"{case['name']}: unknown step keys {unknown}")
                 self.assertTrue(
-                    "say" in step or "resolve_clarifications" in step,
+                    "say" in step or "resolve_clarifications" in step or "after" in step,
                     f"{case['name']}: a step must either say something or resolve something",
                 )
+                if "after" in step:
+                    after = step["after"]
+                    self.assertFalse(set(after) - AFTER_KEYS, f"{case['name']}: after keys")
+                    self.assertFalse(
+                        set(after.get("resolve") or {}) - AFTER_RESOLVE_KEYS,
+                        f"{case['name']}: after.resolve keys",
+                    )
+                    self.assertFalse(
+                        set(after.get("expect") or {}) - AFTER_EXPECT_KEYS,
+                        f"{case['name']}: after.expect keys",
+                    )
+                    self.assertTrue(
+                        after.get("expect"),
+                        f"{case['name']}: an after step with no expectations is dead weight",
+                    )
                 unknown = set(step.get("trajectory") or {}) - TRAJECTORY_KEYS
                 self.assertFalse(unknown, f"{case['name']}: unknown trajectory keys {unknown}")
                 unknown = set(step.get("outcome") or {}) - OUTCOME_KEYS
@@ -418,7 +536,7 @@ class CaseFileTests(unittest.TestCase):
     def test_graded_steps_assert_something(self):
         for case in self.cases:
             for step in case["steps"]:
-                if step.get("seed") or "resolve_clarifications" in step:
+                if step.get("seed") or "resolve_clarifications" in step or "after" in step:
                     continue
                 self.assertTrue(
                     step.get("trajectory") or step.get("outcome"),
