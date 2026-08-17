@@ -186,6 +186,20 @@ public sealed class TaskDocument
 
     public TaskEstimateDocument? Estimate { get; set; }
 
+    /// <summary>
+    /// What this matter costs — the figure carried over when a document
+    /// candidate was accepted, or one the user typed by hand.
+    ///
+    /// <para>
+    /// This is the field the financial summary sums. Pairing the amount with the
+    /// matter rather than only with the document is what lets the summary answer
+    /// "what do I still owe" as well as "what did I pay": a matter already
+    /// carries the two facts that question needs, <see cref="Status"/> and
+    /// <see cref="DueAt"/>.
+    /// </para>
+    /// </summary>
+    public MoneyDocument? Amount { get; set; }
+
     public DateTime? CompletedAt { get; set; }
 
     public DateTime? SnoozedUntil { get; set; }

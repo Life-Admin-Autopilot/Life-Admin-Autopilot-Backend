@@ -59,6 +59,20 @@ public sealed class ExtractedTaskCandidateDocument
 
     public Kernel.Documents.TaskEstimateDocument? Estimate { get; set; }
 
+    /// <summary>
+    /// What this particular action costs. Carried across the review hold so an
+    /// accepted candidate lands on its Task with the figure already attached —
+    /// re-reading the page at accept time would mean a second vision call for an
+    /// answer we already have.
+    ///
+    /// <para>
+    /// Distinct from the document's own <c>Amount</c>: a statement listing four
+    /// charges has one document total and four candidate amounts, and summing
+    /// both would double-count.
+    /// </para>
+    /// </summary>
+    public Kernel.Documents.MoneyDocument? Amount { get; set; }
+
     public DateTime? DueAt { get; set; }
 
     public string? Notes { get; set; }
@@ -135,6 +149,22 @@ public sealed class ScannedDocumentDocument
     public string? DocumentSubtitle { get; set; }
 
     public string? Issuer { get; set; }
+
+    /// <summary>
+    /// The document's headline total — the "amount due" or "total paid" a person
+    /// would read off the page. Null on everything that has no such figure: a
+    /// letter, a form, an ID, and every document scanned before this field
+    /// existed.
+    /// </summary>
+    public Kernel.Documents.MoneyDocument? Amount { get; set; }
+
+    /// <summary>
+    /// When the money moved or falls due, as printed. Kept separate from a
+    /// candidate's <c>DueAt</c> because a receipt records a date with no action
+    /// attached — there is no matter to hang it on, but the summary still needs
+    /// to know which month the spend belongs to.
+    /// </summary>
+    public DateTime? AmountDueAt { get; set; }
 
     public List<ExtractedTaskCandidateDocument> Candidates { get; set; } = new();
 
