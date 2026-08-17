@@ -3,6 +3,7 @@ using Life_Admin_Autopilot.BLL.Features.Knowledge;
 using Life_Admin_Autopilot.BLL.Features.Planning;
 using Life_Admin_Autopilot.BLL.Features.Tasks;
 using Life_Admin_Autopilot.BLL.Kernel.Mappers;
+using Life_Admin_Autopilot.DAL.Kernel.Documents;
 using Life_Admin_Autopilot.DAL.Kernel.Errors;
 using Life_Admin_Autopilot_Backend.Kernel.Auth;
 using Life_Admin_Autopilot_Backend.Kernel.Binding;
@@ -70,6 +71,17 @@ public static class PlanningEndpoints
                     // "the day is theirs, the clock time is ours" — the app asks for
                     // the real one rather than presenting the placeholder as chosen.
                     timeAssumed = d.TimeAssumed,
+                    // Minor units and a code, the same shape a saved matter's amount
+                    // has, so the confirm sheet can render and edit it with the field
+                    // it already uses and commit can send it straight back.
+                    amount = d.Amount is null
+                        ? null
+                        : new
+                        {
+                            amountMinor = d.Amount.AmountMinor,
+                            currency = d.Amount.Currency,
+                            direction = d.Amount.Direction,
+                        },
                     conflicts = d.Conflicts.Select(c => new
                     {
                         taskId = c.TaskId.ToString(),
@@ -156,11 +168,19 @@ public static class PlanningEndpoints
                         body.DueDate,
                         body.Notes,
                         Estimate: null,
-                        // Null until the agent's createTask tool learns to report a
-                        // figure — the draft body has no amount to pass on yet, so
-                        // there is nothing here to forward. Wiring the tool schema
-                        // is the other half; this line is what it changes.
-                        Amount: null,
+                        // The figure the extractor heard, confirmed by the user.
+                        //
+                        // Stamped `ai` regardless of what the client sends: this whole
+                        // body is a draft the model produced, and a client able to
+                        // choose `user` could pass a machine guess off as something a
+                        // person typed — the one claim the source field exists to make.
+                        // A figure typed by hand reaches `user` through POST /me/tasks
+                        // or PATCH, which is what those paths are for.
+                        Amount: MoneyVocabulary.FromMinor(
+                            body.Amount?.AmountMinor,
+                            body.Amount?.Currency,
+                            source: "ai",
+                            body.Amount?.Direction),
                         SourceVoiceNoteId: null),
                     cancellationToken: cancellationToken)
                 .ConfigureAwait(false);
@@ -345,4 +365,32 @@ public class CommitBody
 
     [JsonPropertyName("tags")]
     public List<string>? Tags { get; set; }
+
+    /// <summary>
+    /// What the matter costs, as the draft carried it — minor units, never a
+    /// decimal, so the figure makes no lossy round trip on its way back.
+    /// </summary>
+    [JsonPropertyName("amount")]
+    public CommitAmount? Amount { get; set; }
+}
+
+/// <summary>
+/// A confirmed draft's figure.
+///
+/// <para>
+/// No <c>source</c> field, deliberately — the endpoint stamps it. See the
+/// comment at the call site: a client that could set it could claim a model's
+/// guess was typed by a person.
+/// </para>
+/// </summary>
+public sealed class CommitAmount
+{
+    [JsonPropertyName("amountMinor")]
+    public long? AmountMinor { get; set; }
+
+    [JsonPropertyName("currency")]
+    public string? Currency { get; set; }
+
+    [JsonPropertyName("direction")]
+    public string? Direction { get; set; }
 }
