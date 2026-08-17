@@ -308,6 +308,71 @@ public sealed class LangflowEventTranslatorTests
             LangflowToolActivity.Fingerprint("createTask", Args("""{"title":"buy bread"}""")));
     }
 
+    // ---- the two-question hold, from a second live capture ------------------
+
+    [Fact]
+    public void a_hold_carrying_a_secondary_question_is_still_one_call_with_one_result()
+    {
+        // The shape H3 suspected of breaking the pairing. `secondary_question` and
+        // `secondary_kind` arrived with multi-question holds, and the fear was that
+        // chain_start and the add_message block would serialize the new keys
+        // differently — divergent fingerprints, aliased calls, a result attached to the
+        // wrong pill. That is the mechanism that would have explained the incident's
+        // misattributed facts, and this capture is the evidence it does not happen.
+        var events = Translate(PhantomHoldTurn.Frames);
+
+        var call = Assert.Single(events.Where(e => e.Kind == AiStreamEvents.ToolCallKind));
+        Assert.Equal("holdForClarification", call.Payload["name"]);
+
+        var result = Assert.Single(events.Where(e => e.Kind == AiStreamEvents.ToolResultKind));
+        Assert.Equal(call.Payload["callId"], result.Payload["callId"]);
+    }
+
+    [Fact]
+    public void the_new_hold_arguments_survive_the_translation()
+    {
+        var events = Translate(PhantomHoldTurn.Frames);
+        var call = Assert.Single(events.Where(e => e.Kind == AiStreamEvents.ToolCallKind));
+        var args = Assert.IsType<JsonElement>(call.Payload["args"]);
+
+        Assert.Equal("Which friend is it?", LangflowWireContract.ReadString(args, "secondary_question"));
+        Assert.Equal("detail", LangflowWireContract.ReadString(args, "secondary_kind"));
+        Assert.Equal("date", LangflowWireContract.ReadString(args, "question_kind"));
+    }
+
+    [Fact]
+    public void the_bearer_never_appears_in_a_tool_call_the_client_is_shown()
+    {
+        // Not a redaction test — nothing was stripped from this capture. The token is
+        // absent because `access_token` stopped being an argument the model supplies,
+        // which is the change that ended the failed-call-plus-retry pattern behind the
+        // phantom cards. If it ever comes back as a tool argument, it lands in the
+        // client's transcript and in every eval report, and this fails.
+        var events = Translate(PhantomHoldTurn.Frames);
+        var call = Assert.Single(events.Where(e => e.Kind == AiStreamEvents.ToolCallKind));
+        var args = Assert.IsType<JsonElement>(call.Payload["args"]);
+
+        Assert.False(args.TryGetProperty("access_token", out _));
+        Assert.False(args.TryGetProperty("accessToken", out _));
+    }
+
+    [Fact]
+    public void the_hold_pairs_from_the_log_frame_alone_because_the_block_has_no_id()
+    {
+        // The add_message tool_use block carries no id of ANY kind — verified in the
+        // capture — so the log frame's tool_call id is the only identity on the wire.
+        // Reading the block alone must therefore still yield exactly one call, not a
+        // second pill for the same invocation.
+        var logsOnly = Translate(PhantomHoldTurn.Frames.Where(f => f.EventName == "log"))
+            .Count(e => e.Kind == AiStreamEvents.ToolCallKind);
+
+        var both = Translate(PhantomHoldTurn.Frames)
+            .Count(e => e.Kind == AiStreamEvents.ToolCallKind);
+
+        Assert.Equal(1, logsOnly);
+        Assert.Equal(logsOnly, both);
+    }
+
     // ---- helpers -------------------------------------------------------------
 
     private static List<AiStreamEvent> Translate(
