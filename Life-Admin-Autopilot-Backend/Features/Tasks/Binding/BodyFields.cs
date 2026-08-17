@@ -236,6 +236,50 @@ public sealed class BodyFields
         return value;
     }
 
+    /// <summary>
+    /// <see cref="Int"/> widened to 64 bits, for money.
+    ///
+    /// <para>
+    /// An amount is a count of minor units, so int32 would cap a matter at about
+    /// 21 million major units — fine for a household bill and wrong for a currency
+    /// with a small unit (a sum in IDR or VND reaches that range on an ordinary
+    /// purchase). The ceiling belongs to the money gate, not to the width of the
+    /// integer that carried it here.
+    /// </para>
+    /// </summary>
+    public long? Long(JsonElement element, string field, long min, long max, bool required)
+    {
+        if (IsAbsent(element))
+        {
+            if (required)
+            {
+                AddIssue(field, ZodMessages.Required);
+            }
+
+            return null;
+        }
+
+        if (element.ValueKind != JsonValueKind.Number || !element.TryGetInt64(out var value))
+        {
+            AddIssue(field, ZodMessages.ExpectedType("number", KindName(element)));
+            return null;
+        }
+
+        if (value < min)
+        {
+            AddIssue(field, ZodMessages.NumberTooSmall(min));
+            return null;
+        }
+
+        if (value > max)
+        {
+            AddIssue(field, ZodMessages.NumberTooBig(max));
+            return null;
+        }
+
+        return value;
+    }
+
     public bool? Bool(JsonElement element, string field)
     {
         if (!HasValue(element))

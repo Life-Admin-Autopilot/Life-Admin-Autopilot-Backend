@@ -156,6 +156,11 @@ public static class PlanningEndpoints
                         body.DueDate,
                         body.Notes,
                         Estimate: null,
+                        // Null until the agent's createTask tool learns to report a
+                        // figure — the draft body has no amount to pass on yet, so
+                        // there is nothing here to forward. Wiring the tool schema
+                        // is the other half; this line is what it changes.
+                        Amount: null,
                         SourceVoiceNoteId: null),
                     cancellationToken: cancellationToken)
                 .ConfigureAwait(false);

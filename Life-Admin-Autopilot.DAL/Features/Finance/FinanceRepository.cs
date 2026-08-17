@@ -119,28 +119,32 @@ public sealed class FinanceIndexes : IMongoIndexProvider
 {
     public string Name => "finance";
 
-    public async Task EnsureAsync(IMongoDatabase database, CancellationToken cancellationToken = default)
+    public Task EnsureAsync(IMongoDatabase database, CancellationToken cancellationToken = default)
     {
-        var matters = database.GetCollection<BsonDocument>(MongoCollections.Tasks);
-        await matters.Indexes.CreateOneAsync(
-                new CreateIndexModel<BsonDocument>(
-                    new BsonDocument { ["userId"] = 1, ["completedAt"] = -1 },
-                    new CreateIndexOptions<BsonDocument>
-                    {
-                        PartialFilterExpression = new BsonDocument("amount", new BsonDocument("$exists", true)),
-                    }),
-                cancellationToken: cancellationToken)
-            .ConfigureAwait(false);
-
-        var scans = database.GetCollection<BsonDocument>(MongoCollections.ScannedDocuments);
-        await scans.Indexes.CreateOneAsync(
-                new CreateIndexModel<BsonDocument>(
-                    new BsonDocument { ["userId"] = 1, ["createdAt"] = -1 },
-                    new CreateIndexOptions<BsonDocument>
-                    {
-                        PartialFilterExpression = new BsonDocument("amount", new BsonDocument("$exists", true)),
-                    }),
-                cancellationToken: cancellationToken)
-            .ConfigureAwait(false);
+        // NOTHING. Deliberately, and this is the interesting part of the file.
+        //
+        // The summary reads matters by `{userId, completedAt}` and scans by
+        // `{userId, createdAt}`, and it would like both narrowed by a partial
+        // filter on `amount` existing — priced rows are a small minority, so a
+        // partial index would be a fraction of the size.
+        //
+        // It cannot have them. Plain indexes on BOTH key patterns already exist,
+        // created by the matters and document-scan slices, and Mongo refuses a
+        // second index over the same keys whichever name it is given:
+        //
+        //   unnamed  -> "An existing index has the same name as the requested index"
+        //   named    -> "Index already exists with a different name"
+        //
+        // Either way it THROWS, and the throw propagates out of
+        // MongoIndexInitializer.EnsureAllAsync and fails the request that
+        // triggered it. It cannot show up on a fresh database — which is exactly
+        // why it survived a full green test run and a live browser walkthrough,
+        // and would have appeared the first time this ran against a real one.
+        //
+        // The existing plain indexes serve both queries. The partial filter would
+        // have been an optimisation on top, and it is not available, so this
+        // provider stays registered (the slice may need an index later) and does
+        // nothing today.
+        return Task.CompletedTask;
     }
 }

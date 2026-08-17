@@ -37,6 +37,7 @@ internal static class TaskCrudEndpoints
             var dueAt = f.IsoDate(body.DueAt, "dueAt");
             var notes = f.PlainString(body.Notes, "notes", max: 2000);
             var estimate = TaskFieldReaders.Estimate(f, body.Estimate);
+            var amount = TaskFieldReaders.Amount(f, body.Amount);
             var sourceVoiceNoteId = TaskFieldReaders.ObjectIdString(f, body.SourceVoiceNoteId, "sourceVoiceNoteId");
 
             f.ThrowIfInvalid("invalid_body", "Invalid task payload.");
@@ -53,6 +54,7 @@ internal static class TaskCrudEndpoints
                         dueAt,
                         notes,
                         estimate,
+                        amount,
                         sourceVoiceNoteId),
                     cancellationToken: ct)
                 .ConfigureAwait(false);
@@ -129,6 +131,20 @@ internal static class TaskCrudEndpoints
                         ["minMinutes"] = v.MinMinutes,
                         ["maxMinutes"] = v.MaxMinutes,
                         ["source"] = v.Source,
+                    }
+                    : BsonNull.Value);
+
+            // `source` is written here, never read from the body — a patched amount
+            // is a person's figure by definition, and stamping it 'user' is what
+            // stops a later AI pass overwriting what they typed.
+            TaskFieldReaders.SetNullable(patch, "amount", body.Amount, f, (el, fields) =>
+                TaskFieldReaders.Amount(fields, el) is { } v
+                    ? new BsonDocument
+                    {
+                        ["amountMinor"] = v.AmountMinor,
+                        ["currency"] = v.Currency,
+                        ["source"] = v.Source,
+                        ["direction"] = v.Direction,
                     }
                     : BsonNull.Value);
 
@@ -253,6 +269,88 @@ internal static class TaskFieldReaders
         }
 
         return EstimateNormalizer.Normalize(min, max, "user");
+    }
+
+    /// <summary>
+    /// A hand-entered amount: <c>{ amountMinor, currency, direction? }</c>.
+    ///
+    /// <para>
+    /// <b><c>source</c> is not readable from the body</b> and is stamped
+    /// <c>'user'</c> here. It is the flag that says a person stood behind this
+    /// figure — it decides whether the UI owes a provenance chip, and it is what
+    /// makes the value authoritative against any later AI pass. A client able to
+    /// set it could launder a guess into a fact.
+    /// </para>
+    ///
+    /// <para>
+    /// A bad currency <b>rejects the request</b> rather than silently dropping the
+    /// amount the way the extractor does. The asymmetry is deliberate: the
+    /// extractor is guessing and a dropped guess costs nothing, but a person who
+    /// typed 480.00 and got a matter with no amount would have to notice the
+    /// silence to know it failed.
+    /// </para>
+    ///
+    /// <para>Issues are keyed under <c>"amount"</c> — zod's <c>flatten()</c>
+    /// buckets by <c>issue.path[0]</c>, same as the estimate above.</para>
+    /// </summary>
+    public static MoneyDocument? Amount(BodyFields f, JsonElement element)
+    {
+        if (!BodyFields.HasValue(element))
+        {
+            return null;
+        }
+
+        if (element.ValueKind != JsonValueKind.Object)
+        {
+            f.AddIssue("amount", ZodMessages.ExpectedType("object", element.ValueKind.ToString().ToLowerInvariant()));
+            return null;
+        }
+
+        var unknown = element
+            .EnumerateObject()
+            .Select(p => p.Name)
+            // `source` is listed as unknown on purpose: a client that sends it gets
+            // a clear rejection rather than having it quietly ignored.
+            .Where(name => name is not ("amountMinor" or "currency" or "direction"))
+            .ToList();
+
+        if (unknown.Count > 0)
+        {
+            f.AddIssue("amount", ZodMessages.UnrecognizedKeys(unknown));
+            return null;
+        }
+
+        // The ceiling is the money gate's own, expressed in minor units, so this
+        // and MoneyVocabulary.FromMinor cannot disagree about what is too large.
+        var minor = f.Long(
+            Member(element, "amountMinor"),
+            "amount",
+            min: 0,
+            max: (long)MoneyVocabulary.MaxMajorUnits * 1000,
+            required: true);
+
+        var currencyRaw = f.TrimmedString(Member(element, "currency"), "amount", min: 3, max: 3, required: true);
+        var direction = f.Enum(Member(element, "direction"), "amount", MoneyVocabulary.Directions, required: false);
+
+        if (minor is null || currencyRaw is null)
+        {
+            return null;
+        }
+
+        var currency = MoneyVocabulary.NormalizeCurrency(currencyRaw);
+        if (currency is null)
+        {
+            f.AddIssue("amount", "currency must be a three-letter ISO 4217 code");
+            return null;
+        }
+
+        var money = MoneyVocabulary.FromMinor(minor, currency, "user", direction);
+        if (money is null)
+        {
+            f.AddIssue("amount", "amountMinor is out of range");
+        }
+
+        return money;
     }
 
     /// <summary><c>z.string().refine(ObjectId.isValid, 'invalid_object_id')</c>.</summary>

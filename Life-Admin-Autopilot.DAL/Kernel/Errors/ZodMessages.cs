@@ -38,10 +38,10 @@ public static class ZodMessages
     public static string ArrayTooSmall(int min) => $"Array must contain at least {min} element(s)";
 
     /// <summary><c>z.number().min(n)</c> on an integer.</summary>
-    public static string NumberTooSmall(int min) => $"Number must be greater than or equal to {min}";
+    public static string NumberTooSmall(long min) => $"Number must be greater than or equal to {min}";
 
     /// <summary><c>z.number().max(n)</c> on an integer.</summary>
-    public static string NumberTooBig(int max) => $"Number must be less than or equal to {max}";
+    public static string NumberTooBig(long max) => $"Number must be less than or equal to {max}";
 
     /// <summary><c>z.enum([...])</c>. Values are single-quoted and joined with <c>" | "</c>.</summary>
     public static string InvalidEnum(IEnumerable<string> allowed, string? received) =>

@@ -36,6 +36,7 @@ public sealed record TaskCreateInput(
     DateTime? DueAt,
     string? Notes,
     TaskEstimateDocument? Estimate,
+    MoneyDocument? Amount,
     ObjectId? SourceVoiceNoteId);
 
 /// <summary>
@@ -105,6 +106,7 @@ public sealed class TaskWriteService
             DueAt = input.DueAt,
             Notes = input.Notes,
             Estimate = input.Estimate,
+            Amount = input.Amount,
             SourceVoiceNoteId = input.SourceVoiceNoteId,
             Reminders = new List<ReminderEntryDocument>(),
             RescheduleCount = 0,
