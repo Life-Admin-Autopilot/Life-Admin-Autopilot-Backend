@@ -75,6 +75,32 @@ when no explicit guess was given. For `kind: 'detail'`, `options` is empty — t
 the answer. `sourceText` is omitted in document mode, because there is no user utterance
 behind a scanned page.
 
+### One matter, several questions
+
+A held matter can carry **more than one question**, and each is answered on its own. One
+`holdForClarification` call creates ONE task and one clarification row per question, all
+sharing that `taskId`.
+
+The tool takes two: `question` / `question_kind` for the deadline-defining gap (with the
+dated options), and `secondary_question` / `secondary_kind` for a who/what/where gap
+riding alongside it. The API behind them (`POST /me/clarifications`) accepts up to **three**
+via its `questions` array, so the ceiling is the model's discipline rather than the route's.
+
+**Why it exists.** 2026-08-16, live: *"remind me today to go to the friend"* was held once,
+asking *"What time should I remind you — and which friend are you visiting?"* with
+time-chip options. The user tapped **9 am**; the row resolved, the task became a 9am
+reminder, and the which-friend gap silently ceased to exist. A tapped option can only ever
+answer one question, so folding N gaps into one sentence gives N gaps one answer slot and
+loses N−1 of them. The prompt used to *instruct* that fold (§6, "fold the secondary gap into
+the same question text") because a second hold call would have filed a duplicate task —
+`holdForClarification` has no `task_id`. `secondary_question` is the way out: one call, one
+task, two independently-answerable cards.
+
+The reminder stays withheld while **any** question is `costOfWrong: 'high'` — a matter is
+only as safe as its riskiest open gap. Promotion is per the DATE answer alone: resolving the
+date turns the task into a firing reminder while a `detail` sibling sits open, because the
+rows are independent documents and nothing cascades between them.
+
 ---
 
 ## 2. Modes
@@ -423,9 +449,14 @@ produced a task and no question row**, measured: *"Remind me that I have math le
 `db.clarifications` gained nothing. No card, no way to answer.
 
 **Now:** the backend exposes an authenticated **`POST /me/clarifications`**, and the tool
-makes exactly one call to it. The route creates the task AND the question and links them by
+makes exactly one call to it. The route creates the task AND the questions and links them by
 `taskId`, porting `runHoldForClarification` from
-`server/src/modules/ai/toolRunner.ts`. Response: `201 {clarification, task, queueFull}`.
+`server/src/modules/ai/toolRunner.ts`. Response:
+`201 {clarification, clarifications, task, queueFull}` — `clarifications` is every row
+created, `clarification` the first of them, kept so a caller written against the
+single-question response is unaffected. The request's optional `questions` array (max 3) is
+additive in the same way: absent, the body and the response are byte-for-byte what they
+always were.
 
 This is the **recommended** option from the two originally listed, not the minimum one: the
 model is out of the persistence path, so the `clarification` the tool returns is a
@@ -476,6 +507,15 @@ Verified by executing the flow's own code, in `scratchpad/`:
   task, choosing `kind` from `costOfWrong`, taking the guess from the first option, linking
   `taskId`, preserving `sourceText` verbatim, and surviving malformed options JSON; backend
   error codes propagating; and an empty base URL failing without issuing a request.
+- **The multi-question hold**, executing the real component code against the same mocked
+  layer: a one-gap hold sends **no** `questions` key at all, so the legacy body is
+  unchanged; a hold with `secondary_question` sends two questions, the dated one first with
+  its chips intact and the secondary carrying an EXPLICIT `"options": []` so the server
+  cannot inherit time chips onto a who/what/where question; an invalid `secondary_kind`
+  falls back to `detail` rather than reaching the wire; a whitespace-only
+  `secondary_question` adds nothing; both receipts carry the one `taskId`; `clarification`
+  and `clarificationId` stay the FIRST row; and a response with no `clarifications` array
+  still reports the single row.
 
 **Not verified — Langflow is not running here and cannot be:**
 
