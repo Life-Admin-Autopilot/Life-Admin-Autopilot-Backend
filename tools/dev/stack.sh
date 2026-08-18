@@ -60,6 +60,24 @@ start_dotnet() {
     export MongoDbSettings__ConnectionString="mongodb://127.0.0.1:27018"
     export MongoDbSettings__DatabaseName="kitto_dev"
     export Jwt__Key="${JWT_KEY:-dev-only-not-a-real-secret-0000000000000000000000000000000000}"
+
+    # The admin console, served by THIS process rather than a second backend.
+    #
+    # Without ADMIN_JWT_SECRET the console is switched off — /admin/auth/signin
+    # answers 403 admin_console_disabled — which is the safe default for a
+    # deployment that has no console, and was why the dashboard was pointed at a
+    # separate backend on :5099. That backend read a DIFFERENT database
+    # (kitto_admin_demo), so a kill switch flipped in the console wrote somewhere
+    # the app never looks: the switch appeared to do nothing, twice over. One
+    # process serving both is what makes that divergence impossible rather than
+    # merely fixed.
+    export ADMIN_JWT_SECRET="${ADMIN_JWT_SECRET:-dev-only-admin-console-secret-000000000000000000000000000000}"
+
+    # Grants Admin to an account that ALREADY EXISTS — it never creates
+    # credentials. Sign up in the app first, then name that address here:
+    #
+    #   ADMIN_BOOTSTRAP_EMAIL=you@example.com ./tools/dev/stack.sh up
+    export ADMIN_BOOTSTRAP_EMAIL="${ADMIN_BOOTSTRAP_EMAIL:-}"
     # The frontend's origins. Capacitor's webview sends capacitor://localhost.
     #
     # EXTRA_CORS_ORIGINS is how `Steward: npm run app` adds this machine's LAN
