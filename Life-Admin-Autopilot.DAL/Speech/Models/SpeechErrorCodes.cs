@@ -37,6 +37,13 @@ namespace Life_Admin_Autopilot.DAL.Speech.Models
 
         public const string NotConfigured = "ASR_NOT_CONFIGURED";
 
+        // An operator pulled the transcription kill switch from the admin console.
+        // Kept distinct from NotConfigured and Unavailable, both of which describe a
+        // deployment that cannot transcribe: this one can, and has been deliberately
+        // told not to. The difference is what the user should be told — "we turned
+        // this off for a moment" invites waiting, "not configured" does not.
+        public const string FeatureDisabled = "ASR_FEATURE_DISABLED";
+
         public const string UnrecognizedResponseShape = "ASR_UNRECOGNIZED_RESPONSE_SHAPE";
 
         public const string GatewayError = "ASR_GATEWAY_ERROR";

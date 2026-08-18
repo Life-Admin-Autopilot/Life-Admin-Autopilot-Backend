@@ -1,4 +1,5 @@
 using Life_Admin_Autopilot.DAL.Kernel.Mongo;
+using Life_Admin_Autopilot.DAL.Kernel.Ops;
 using Life_Admin_Autopilot.DAL.Kernel.Quota;
 using Life_Admin_Autopilot.DAL.Kernel.Telemetry;
 using Life_Admin_Autopilot.DAL.Kernel.UserData;
@@ -29,6 +30,17 @@ public static class KernelDataExtensions
         // registration would be a startup failure in a deployment that simply has no
         // console.
         services.TryAddScoped<IAiUsageRecorder, NullAiUsageRecorder>();
+
+        // The kill switches. Registered in the KERNEL, not in the admin slice that
+        // writes them, because the readers are customer paths — /ai/ask, the
+        // transcribe routes, the document-scan worker. A deployment with no console
+        // configured still has to be able to read a flag; if this lived in
+        // AddAdminFeature() every one of those readers would take a hidden
+        // dependency on the console being present, and the switches would silently
+        // stop being consulted in exactly the deployment that cannot flip them.
+        services.TryAddScoped<IFeatureFlagStore, MongoFeatureFlagStore>();
+        services.AddMongoIndexProvider<FeatureFlagIndexes>();
+
         services.TryAddScoped<MongoIndexInitializer>();
         services.AddMongoIndexProvider<KernelIndexProvider>();
 

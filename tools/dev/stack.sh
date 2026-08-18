@@ -14,7 +14,21 @@ set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 STEWARD="$(cd "$ROOT/../Steward" && pwd)"
-SCRATCH="${TMPDIR:-/tmp}/kitto-stack"
+# NOT $TMPDIR. macOS deletes files there, and on 2026-08-18 it took a WiredTiger
+# index file out from under a RUNNING mongod: fatal assertion, server gone, every
+# endpoint answering 500 with no code having changed. It happened three times in
+# one afternoon, helped along by a full disk, and each time it looked like an
+# application bug.
+#
+# The database was rebuilt here from a mongodump on 2026-08-18 — a fresh dbpath
+# rather than a file copy, so no corrupted index came across. The old directory
+# under $TMPDIR was left in place as a fallback and can be deleted once you trust
+# this one:
+#
+#   rm -rf "$TMPDIR/kitto-stack"
+#
+# Override with KITTO_STACK_HOME to run against a different copy.
+SCRATCH="${KITTO_STACK_HOME:-$HOME/.kitto-stack}"
 mkdir -p "$SCRATCH/mongo/data" "$SCRATCH/mongo/log" "$SCRATCH/log"
 
 export DOTNET_ROOT="$HOME/.dotnet"
@@ -60,6 +74,46 @@ start_dotnet() {
     export MongoDbSettings__ConnectionString="mongodb://127.0.0.1:27018"
     export MongoDbSettings__DatabaseName="kitto_dev"
     export Jwt__Key="${JWT_KEY:-dev-only-not-a-real-secret-0000000000000000000000000000000000}"
+
+    # The admin console, served by THIS process rather than a second backend.
+    #
+    # Without ADMIN_JWT_SECRET the console is switched off — /admin/auth/signin
+    # answers 403 admin_console_disabled — which is the safe default for a
+    # deployment that has no console, and was why the dashboard was pointed at a
+    # separate backend on :5099. That backend read a DIFFERENT database
+    # (kitto_admin_demo), so a kill switch flipped in the console wrote somewhere
+    # the app never looks: the switch appeared to do nothing, twice over. One
+    # process serving both is what makes that divergence impossible rather than
+    # merely fixed.
+    export ADMIN_JWT_SECRET="${ADMIN_JWT_SECRET:-dev-only-admin-console-secret-000000000000000000000000000000}"
+
+    # Grants Admin to an account that ALREADY EXISTS — it never creates
+    # credentials. Sign up in the app first, then name that address here:
+    #
+    #   ADMIN_BOOTSTRAP_EMAIL=you@example.com ./tools/dev/stack.sh up
+    export ADMIN_BOOTSTRAP_EMAIL="${ADMIN_BOOTSTRAP_EMAIL:-}"
+
+    # Firebase push. Without a service account the send path answers
+    # PUSH_NOT_CONFIGURED per device — which the console renders as a SERVER
+    # problem, not a broken handset, so an operator sees the real cause. That is
+    # a correct degraded mode, not a failure, and it stays the default here
+    # because the key must never live in the repo.
+    #
+    # To turn real delivery on, drop the service-account JSON for the Firebase
+    # project at the path below (it is gitignored), or point at it explicitly:
+    #
+    #   PUSH_SERVICE_ACCOUNT=/path/to/sa.json ./tools/dev/stack.sh up
+    #
+    # NOTE: the account must belong to the SAME Firebase project the mobile app
+    # registers its tokens with, or every send fails PUSH_NOT_AUTHORIZED while
+    # looking perfectly configured.
+    PUSH_SA="${PUSH_SERVICE_ACCOUNT:-$ROOT/secrets/firebase-service-account.json}"
+    if [ -f "$PUSH_SA" ]; then
+      export PushNotifications__ServiceAccountFilePath="$PUSH_SA"
+      echo "  ✓ push: service account found"
+    else
+      echo "  · push: no service account — sends will report PUSH_NOT_CONFIGURED"
+    fi
     # The frontend's origins. Capacitor's webview sends capacitor://localhost.
     #
     # EXTRA_CORS_ORIGINS is how `Steward: npm run app` adds this machine's LAN

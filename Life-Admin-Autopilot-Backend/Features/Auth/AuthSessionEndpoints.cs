@@ -45,6 +45,10 @@ public static class AuthSessionEndpoints
             throw AuthErrors.InvalidRefreshToken();
         }
 
+        // NOTE: suspension is enforced inside RotateAsync, not here — it already
+        // loads the profile, so checking there costs no extra read. See
+        // SessionService.RotateAsync.
+
         // NOTE: tokens only. No `user` key, unlike signup/signin/magic-consume.
         return Results.Json(new AuthTokensResponse { Tokens = tokens });
     }

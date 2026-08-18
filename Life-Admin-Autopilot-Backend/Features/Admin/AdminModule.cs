@@ -62,10 +62,9 @@ public static class AdminFeature
         services.TryAddScoped<AdminNotificationService>();
         services.TryAddScoped<AdminOpsService>();
 
-        // Kill switches. Registered here rather than in the kernel because the flags
-        // only exist to be flipped from the console.
-        services.TryAddScoped<IFeatureFlagStore, MongoFeatureFlagStore>();
-        services.AddMongoIndexProvider<FeatureFlagIndexes>();
+        // NOTE: IFeatureFlagStore is registered by AddKernelData(), not here. The
+        // console WRITES the switches but every reader is a customer path, so the
+        // registration has to exist in deployments that have no console at all.
 
         // Resolved LAZILY, from the container's IConfiguration, not eagerly from the
         // `configuration` handed to this method.

@@ -1085,3 +1085,18 @@ with the `(other - due).Duration() > ClashWindow` test, drop `Urgency`/`OtherUrg
 `Yields` from `MatterConflict` and the endpoint mapper, and revert the five call sites
 to passing a bare title. Doing so restores a rule that flags two quick errands ninety
 minutes apart and misses two four-hour jobs that genuinely collide.
+
+---
+
+## Typed clarification answers (`{type:'custom'}` on resolve)
+
+Ported 2026-08-17 (`CustomAnswerInterpreter`), faithful to
+`server/src/modules/ai/resolveClarificationAnswer.ts` with two deliberate
+divergences: the call walks `PlanningOptions.ModelChain` with a per-attempt
+timeout (Node had one hard-coded model and no timeout), and the model identity
+comes from `PlanningOptions`, so Node's `gemini-2.5`-only `thinkingBudget: 0`
+clause has nothing to apply to. The availability gate is
+`PlanningOptions.IsConfigured`, NOT `AiAvailability` (`GEMINI_API_KEY`) — the
+seam this feature rides is the Gemini-direct planning one, and satisfying the
+old gate by setting `GEMINI_API_KEY` would push six honest 503s elsewhere into
+`NotWiredHere` 500s.

@@ -1,6 +1,7 @@
 using Life_Admin_Autopilot.BLL.Features.VoiceNotes;
 using Life_Admin_Autopilot.DAL.Features.Account;
 using Life_Admin_Autopilot.DAL.Features.VoiceNotes;
+using Life_Admin_Autopilot.DAL.Kernel.Ops;
 using Life_Admin_Autopilot_Backend.Kernel.Hosting;
 
 namespace Life_Admin_Autopilot_Backend.Features.VoiceNotes;
@@ -34,6 +35,24 @@ internal sealed class VoiceNoteWorker : KernelPollingWorker
     protected override async Task RunOnceAsync(CancellationToken cancellationToken)
     {
         using var scope = Services.CreateScope();
+
+        // The transcription kill switch, checked BEFORE claiming — same reasoning as
+        // the document-scan worker, and it matters more here. This worker's retry
+        // classifier reads a 503 as transient, so a note that claimed and then hit a
+        // pulled switch would burn its entire attempt ladder in about twenty seconds
+        // and settle at `failed`. Pulling the switch for a minute would permanently
+        // fail every note recorded in that minute, each one a recording the user has
+        // already dismissed from the screen and cannot retake.
+        //
+        // Not claiming leaves them `pending` and the queue drains when the switch
+        // returns, with no attempt spent.
+        var flags = scope.ServiceProvider.GetRequiredService<IFeatureFlagStore>();
+
+        if (await flags.IsDisabledAsync(FeatureFlags.Transcription, cancellationToken).ConfigureAwait(false))
+        {
+            return;
+        }
+
         var notes = scope.ServiceProvider.GetRequiredService<IVoiceNoteRepository>();
 
         var claimed = await notes

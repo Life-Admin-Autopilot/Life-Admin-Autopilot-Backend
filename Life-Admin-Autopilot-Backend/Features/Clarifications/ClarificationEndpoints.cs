@@ -227,7 +227,7 @@ public static class ClarificationEndpoints
             ClarificationRepository clarifications,
             TaskRepository tasks,
             ClarificationTaskUpdater updater,
-            AiAvailability ai,
+            CustomAnswerInterpreter interpreter,
             CancellationToken cancellationToken) =>
         {
             var caller = context.RequireUser();
@@ -286,7 +286,32 @@ public static class ClarificationEndpoints
                 });
             }
 
-            var (patch, answerLabel) = BuildPatch(doc, answer, ai);
+            ClarificationTaskPatch patch;
+            string answerLabel;
+            if (answer.Kind == ResolveAnswerKind.Custom)
+            {
+                // The seam is the Gemini-direct planning one; its key is the gate.
+                // AiAvailability answers for GEMINI_API_KEY, which this deployment
+                // deliberately leaves empty — see CustomAnswerInterpreter's doc.
+                if (!interpreter.IsConfigured)
+                {
+                    throw ClarificationAiUnavailable.CustomAnswer();
+                }
+
+                // A 502 (no usable function call) or 400 (invalid args) escapes HERE,
+                // before the close-out below — the question must stay open rather
+                // than losing the held item to an answer nobody could interpret.
+                patch = await interpreter
+                    .InterpretAsync(doc, answer.Text, answer.Timezone, now, cancellationToken)
+                    .ConfigureAwait(false);
+
+                // Node records the raw typed text as the answer — never a paraphrase.
+                answerLabel = answer.Text;
+            }
+            else
+            {
+                (patch, answerLabel) = BuildPatch(doc, answer);
+            }
 
             // Non-null here: a null taskId returned above via the `existing is null` path.
             var task = await updater
@@ -408,18 +433,8 @@ public static class ClarificationEndpoints
     /// </summary>
     private static (ClarificationTaskPatch Patch, string AnswerLabel) BuildPatch(
         ClarificationDocument doc,
-        ResolveAnswer answer,
-        AiAvailability ai)
+        ResolveAnswer answer)
     {
-        if (answer.Kind == ResolveAnswerKind.Custom)
-        {
-            if (!ai.IsConfigured)
-            {
-                throw ClarificationAiUnavailable.CustomAnswer();
-            }
-
-            throw AiUnavailable.NotWiredHere("POST /me/clarifications/{id}/resolve {type:'custom'}");
-        }
 
         // `doc.options[index]` — an index inside the schema's 0..3 but past the end
         // of the stored array is this 400, NOT the schema's `invalid_answer`.
