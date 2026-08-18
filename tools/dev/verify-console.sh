@@ -11,7 +11,7 @@ set -uo pipefail
 API=http://127.0.0.1:5080
 MONGO="mongodb://127.0.0.1:27018/kitto_dev"
 SH="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-IDENTITY="${TMPDIR:-/tmp}/kitto-stack/identity.db"
+IDENTITY="${KITTO_STACK_HOME:-${TMPDIR:-/tmp}/kitto-stack}/identity.db"
 MSH=/opt/homebrew/bin/mongosh
 
 PASS=0; FAIL=0
