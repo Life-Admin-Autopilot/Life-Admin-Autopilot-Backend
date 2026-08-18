@@ -36,3 +36,6 @@ langflow/planning-agent.v3.baseline.json
 # Local secrets. NEVER commit — see .env.example and docs/RUNNING.md.
 .env
 .env.local
+
+# Firebase service account for local push testing — never commit a key.
+secrets/

@@ -14,7 +14,25 @@ set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 STEWARD="$(cd "$ROOT/../Steward" && pwd)"
-SCRATCH="${TMPDIR:-/tmp}/kitto-stack"
+# ⚠ THE DATABASE LIVES IN $TMPDIR, AND macOS DELETES FILES THERE.
+#
+# Observed 2026-08-18: a WiredTiger index file went missing out from under a
+# RUNNING mongod, which aborts on a fatal assertion ("Failed to open a WiredTiger
+# cursor ... No such file or directory"). Every endpoint then answers 500 with no
+# code having changed, which is a genuinely baffling hour if you do not know to
+# look here. A full disk produces the same corruption.
+#
+# The fix is to move this off $TMPDIR, which needs ~3GB free to copy the existing
+# data across:
+#
+#   ./tools/dev/stack.sh down
+#   rsync -a "$TMPDIR/kitto-stack/" "$HOME/.kitto-stack/"
+#   KITTO_STACK_HOME=$HOME/.kitto-stack ./tools/dev/stack.sh up
+#
+# Left pointing at $TMPDIR until then ON PURPOSE: switching the path without
+# copying the data would silently hand you an EMPTY database, and "all my
+# customers disappeared" is a worse failure than the one this warns about.
+SCRATCH="${KITTO_STACK_HOME:-${TMPDIR:-/tmp}/kitto-stack}"
 mkdir -p "$SCRATCH/mongo/data" "$SCRATCH/mongo/log" "$SCRATCH/log"
 
 export DOTNET_ROOT="$HOME/.dotnet"
@@ -78,6 +96,28 @@ start_dotnet() {
     #
     #   ADMIN_BOOTSTRAP_EMAIL=you@example.com ./tools/dev/stack.sh up
     export ADMIN_BOOTSTRAP_EMAIL="${ADMIN_BOOTSTRAP_EMAIL:-}"
+
+    # Firebase push. Without a service account the send path answers
+    # PUSH_NOT_CONFIGURED per device — which the console renders as a SERVER
+    # problem, not a broken handset, so an operator sees the real cause. That is
+    # a correct degraded mode, not a failure, and it stays the default here
+    # because the key must never live in the repo.
+    #
+    # To turn real delivery on, drop the service-account JSON for the Firebase
+    # project at the path below (it is gitignored), or point at it explicitly:
+    #
+    #   PUSH_SERVICE_ACCOUNT=/path/to/sa.json ./tools/dev/stack.sh up
+    #
+    # NOTE: the account must belong to the SAME Firebase project the mobile app
+    # registers its tokens with, or every send fails PUSH_NOT_AUTHORIZED while
+    # looking perfectly configured.
+    PUSH_SA="${PUSH_SERVICE_ACCOUNT:-$ROOT/secrets/firebase-service-account.json}"
+    if [ -f "$PUSH_SA" ]; then
+      export PushNotifications__ServiceAccountFilePath="$PUSH_SA"
+      echo "  ✓ push: service account found"
+    else
+      echo "  · push: no service account — sends will report PUSH_NOT_CONFIGURED"
+    fi
     # The frontend's origins. Capacitor's webview sends capacitor://localhost.
     #
     # EXTRA_CORS_ORIGINS is how `Steward: npm run app` adds this machine's LAN

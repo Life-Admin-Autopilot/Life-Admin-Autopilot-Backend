@@ -303,16 +303,59 @@ public static class AdminEndpoints
                 },
                 cancellationToken).ConfigureAwait(false);
 
-            var page = await customers
-                .SearchAsync(search, segment, null, true, 0, AdminCustomerRepository.MaxTake, cancellationToken)
-                .ConfigureAwait(false);
+            // PAGED, not one MaxTake read.
+            //
+            // MaxTake is 200 — a page size no caller can talk us past, which is
+            // right for a table and wrong for an export. Taking a single page
+            // handed an operator 200 of 362 customers with nothing anywhere
+            // saying so, and a silently short customer list is worse than a
+            // refused one: it gets filtered, mailed, and acted on as if complete.
+            //
+            // Bounded by ExportMaxRows so a runaway database cannot turn one
+            // click into an unbounded allocation. Reaching that ceiling is
+            // logged rather than silently truncated -- the same rule as above,
+            // one level up.
+            var rows = new List<AdminCustomerRowDto>();
+
+            while (rows.Count < ExportMaxRows)
+            {
+                var page = await customers
+                    .SearchAsync(
+                        search, segment, null, true,
+                        rows.Count, AdminCustomerRepository.MaxTake, cancellationToken)
+                    .ConfigureAwait(false);
+
+                if (page.Rows.Count == 0)
+                {
+                    break;
+                }
+
+                rows.AddRange(page.Rows);
+
+                // A short page is the last page.
+                if (page.Rows.Count < AdminCustomerRepository.MaxTake)
+                {
+                    break;
+                }
+            }
 
             return Results.Text(
-                AdminOpsService.ToCsv(page.Rows),
+                AdminOpsService.ToCsv(rows),
                 "text/csv",
                 Encoding.UTF8);
         });
     }
+
+    /// <summary>
+    /// The ceiling on ONE export, independent of how many customers exist.
+    ///
+    /// <para>
+    /// Generous enough that no realistic console session hits it, low enough that
+    /// a single click cannot materialise an unbounded CSV in memory. It exists as
+    /// a backstop on the paging loop, not as a business rule.
+    /// </para>
+    /// </summary>
+    private const int ExportMaxRows = 50_000;
 
     // ---- audit -------------------------------------------------------------
 
