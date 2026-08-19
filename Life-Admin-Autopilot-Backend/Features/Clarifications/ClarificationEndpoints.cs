@@ -1,4 +1,5 @@
 using Life_Admin_Autopilot.BLL.Features.Clarifications;
+using Life_Admin_Autopilot.BLL.Features.Knowledge;
 using Life_Admin_Autopilot.BLL.Kernel.Mappers;
 using Life_Admin_Autopilot.DAL.Features.Clarifications;
 using Life_Admin_Autopilot.DAL.Features.Tasks;
@@ -228,6 +229,7 @@ public static class ClarificationEndpoints
             TaskRepository tasks,
             ClarificationTaskUpdater updater,
             CustomAnswerInterpreter interpreter,
+            ConflictService conflicts,
             CancellationToken cancellationToken) =>
         {
             var caller = context.RequireUser();
@@ -326,6 +328,18 @@ public static class ClarificationEndpoints
                     cancellationToken)
                 .ConfigureAwait(false);
 
+            // Did the answer put it on top of something? Asked AFTER the close-out,
+            // deliberately: the question has been answered either way, and a check
+            // that failed must not be able to hold a resolved item open.
+            var clash = await RecheckAsync(
+                    conflicts,
+                    caller.Id,
+                    task,
+                    patch.DueAt,
+                    answer.Timezone,
+                    cancellationToken)
+                .ConfigureAwait(false);
+
             // Node records one AI message against the daily quota here, best-effort
             // and never gated. Only the custom branch does so, and that branch cannot
             // be reached while GEMINI_API_KEY is empty — it 503s above.
@@ -333,6 +347,9 @@ public static class ClarificationEndpoints
             {
                 Clarification = doc.ToDto(),
                 Task = task.ToDto(),
+                Conflicts = clash.Conflicts,
+                Suggestions = clash.Suggestions,
+                SuggestionReason = clash.Reason,
             });
         })
         .RequireAuthorization();
@@ -478,6 +495,117 @@ public static class ClarificationEndpoints
         }
 
         return JsDate.TryParse(raw[0], out var parsed) ? parsed : null;
+    }
+
+    /// <summary>
+    /// Does the answered task now clash with something, and where could it go
+    /// instead?
+    ///
+    /// <para>
+    /// <b>Only when the answer moved the date.</b> A confirmation ("yes, that is
+    /// right") changes nothing about when the matter is, so re-checking it would
+    /// spend a pool read to re-report a clash the user was already told about when
+    /// the item was filed — and, worse, would put a warning on a card whose answer
+    /// was not about time at all.
+    /// </para>
+    ///
+    /// <para>
+    /// <b>Excludes the task itself</b>, which is the whole reason this cannot reuse
+    /// the draft-shaped check: the matter now EXISTS at the instant being tested, so
+    /// a check that did not exclude it would find it colliding with itself, every
+    /// time, and every answer would come back with a conflict.
+    /// </para>
+    ///
+    /// <para>
+    /// <b>Never throws.</b> The answer has already been written and the question is
+    /// already closed by the time this runs. A failed check means the client shows no
+    /// warning — the same as before this existed — and that is strictly better than a
+    /// 500 on a request whose real work succeeded.
+    /// </para>
+    /// </summary>
+    private static async Task<RecheckResult> RecheckAsync(
+        ConflictService conflicts,
+        ObjectId userId,
+        TaskDocument task,
+        DateTime? answeredDueAt,
+        string? timezone,
+        CancellationToken cancellationToken)
+    {
+        if (answeredDueAt is null || task.DueAt is not { } dueAt)
+        {
+            return RecheckResult.None;
+        }
+
+        try
+        {
+            var candidate = ConflictService.MatterCandidate.From(task);
+            var pool = await conflicts.OpenMattersAsync(userId, cancellationToken).ConfigureAwait(false);
+
+            var found = await conflicts
+                .CheckAsync(
+                    userId,
+                    candidate,
+                    dueAt,
+                    pool,
+                    excludeTaskId: task.Id,
+                    cancellationToken: cancellationToken)
+                .ConfigureAwait(false);
+
+            if (found.Count == 0)
+            {
+                return RecheckResult.None;
+            }
+
+            var offset = OffsetFor(timezone, dueAt);
+            var suggestions = SlotSuggester.Suggest(
+                task.Title ?? string.Empty,
+                dueAt,
+                offset,
+                at => ConflictService.ClashesWithin(at, candidate, pool, task.Id));
+
+            return new RecheckResult(
+                found
+                    .Select(c => new ClarificationConflictDto
+                    {
+                        TaskId = c.TaskId.ToString(),
+                        Title = c.Title,
+                        DueAt = c.DueAt,
+                        Kind = c.Kind,
+                        Reason = c.Reason,
+                    })
+                    .ToList(),
+                suggestions,
+                SlotSuggester.ReasonFor(task.Title ?? string.Empty));
+        }
+        catch (Exception)
+        {
+            return RecheckResult.None;
+        }
+    }
+
+    /// <summary>The user's offset at that instant, so a suggested "evening" is theirs.</summary>
+    private static TimeSpan OffsetFor(string? timezone, DateTime at)
+    {
+        if (string.IsNullOrWhiteSpace(timezone)) return TimeSpan.Zero;
+        try
+        {
+            return TimeZoneInfo.FindSystemTimeZoneById(timezone).GetUtcOffset(at);
+        }
+        catch (Exception)
+        {
+            return TimeSpan.Zero;
+        }
+    }
+
+    private readonly record struct RecheckResult(
+        IReadOnlyList<ClarificationConflictDto> Conflicts,
+        IReadOnlyList<DateTime> Suggestions,
+        string Reason)
+    {
+        public static RecheckResult None => new(
+            Array.Empty<ClarificationConflictDto>(),
+            Array.Empty<DateTime>(),
+            string.Empty);
     }
 }
 

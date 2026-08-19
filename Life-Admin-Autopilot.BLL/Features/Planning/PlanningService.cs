@@ -12,8 +12,26 @@ using MongoDB.Driver;
 
 namespace Life_Admin_Autopilot.BLL.Features.Planning;
 
-/// <summary>One conflict found against something the user already has.</summary>
-public sealed record PlanningConflict(ObjectId TaskId, string Title, DateTime? DueAt, string Reason);
+/// <summary>
+/// One conflict found against something the user already has.
+///
+/// <para>
+/// <b><see cref="Kind"/> is carried, not re-derived.</b> It used to be dropped on
+/// the way out of <see cref="MatterConflict"/>, which left every consumer to work
+/// out what sort of clash it had from the prose in <see cref="Reason"/> — the voice
+/// policy did it with <c>Reason.Contains("already")</c>. That is a classifier built
+/// on a sentence nobody promised to keep stable: reword the reason, or localise it,
+/// and every duplicate silently becomes a time clash and gets asked the wrong
+/// question. The value exists upstream; it just has to survive the trip.
+/// </para>
+/// </summary>
+/// <param name="Kind"><c>time_clash</c> or <c>duplicate</c> — see <see cref="MatterConflict"/>.</param>
+public sealed record PlanningConflict(
+    ObjectId TaskId,
+    string Title,
+    DateTime? DueAt,
+    string Reason,
+    string Kind = MatterConflict.TimeClash);
 
 /// <summary>A proposed task. <b>Nothing here has been saved.</b></summary>
 /// <param name="TimeAssumed">
@@ -147,7 +165,7 @@ public sealed class PlanningService
             drafts.Add(raw with
             {
                 Conflicts = found
-                    .Select(c => new PlanningConflict(c.TaskId, c.Title, c.DueAt, c.Reason))
+                    .Select(c => new PlanningConflict(c.TaskId, c.Title, c.DueAt, c.Reason, c.Kind))
                     .ToList(),
             });
         }

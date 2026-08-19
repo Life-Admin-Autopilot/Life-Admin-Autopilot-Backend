@@ -84,16 +84,16 @@ public static class VoiceAutoFilePolicy
     };
 
     /// <summary>
-    /// How far a clashing matter is offered to move.
+    /// How many free slots the clash question offers.
     ///
     /// <para>
-    /// A coarse affordance, not the detection rule. It used to be derived from the
-    /// old fixed two-hour clash radius, which no longer exists now that a clash is
-    /// window overlap; the offered jump keeps its previous size deliberately, so this
-    /// card does not change behaviour for a reason unrelated to it.
+    /// Two, beside "keep this time" — three chips is what the card can show without
+    /// scrolling, and a list of alternatives long enough to need scanning turns a
+    /// one-tap answer back into a decision. <see cref="SlotSuggester"/> returns them
+    /// soonest-first, so the two taken are the two most likely to suit.
     /// </para>
     /// </summary>
-    private static readonly TimeSpan ClashShift = ConflictService.SuggestedShift;
+    private const int MaxSuggestedSlots = 2;
 
     /// <summary>
     /// Turn one planning draft into the voice slice's item shape, with a
@@ -103,15 +103,32 @@ public static class VoiceAutoFilePolicy
     /// Already reduced to a zone this machine recognises, or null. Callers must not
     /// pass the note's raw stored value — see <see cref="ResolveZone"/>.
     /// </param>
-    public static DraftVoiceItem Apply(TaskDraft draft, string? timezone)
+    public static DraftVoiceItem Apply(
+        TaskDraft draft,
+        string? timezone,
+        IReadOnlyList<DateTime>? freeSlots = null)
     {
         var clash = draft.Conflicts.FirstOrDefault(c => !IsDuplicate(c));
         var duplicate = draft.Conflicts.FirstOrDefault(IsDuplicate);
         var unsure = draft.Confidence < ConfidenceFloor;
 
+        // A clash outranks an assumed time, and that order is a correction.
+        //
+        // It used to run the other way, so a draft that both guessed a clock time AND
+        // landed on top of something else was only ever asked "what time?" — the
+        // collision was filed silently and never mentioned, because one item carries
+        // one question. That is backwards on both counts. The clash is the more
+        // expensive mistake (a double-booking rather than an hour out), and it is
+        // also the one the user cannot discover for themselves, whereas a wrong hour
+        // is visible the moment they look at the matter.
+        //
+        // Nothing is lost by the swap: the clash question is itself a date question
+        // whose options are real times, so answering it settles the assumed time in
+        // the same tap. Only the wording differs, and the clash's wording is the one
+        // that explains why it is being asked.
         var clarification =
-            draft.TimeAssumed && draft.DueAt.HasValue ? AskForTheTime(draft, timezone)
-            : clash is not null ? AskAboutTheClash(draft, clash)
+            clash is not null ? AskAboutTheClash(draft, clash, timezone, freeSlots)
+            : draft.TimeAssumed && draft.DueAt.HasValue ? AskForTheTime(draft, timezone)
             : duplicate is not null ? AskAboutTheDuplicate(draft, duplicate)
             : unsure ? AskWhetherItIsReal(draft)
             : null;
@@ -199,16 +216,31 @@ public static class VoiceAutoFilePolicy
     /// question is a date question, because the only thing that resolves it is a
     /// different time.
     /// </summary>
-    private static DraftClarification AskAboutTheClash(TaskDraft draft, PlanningConflict clash)
+    private static DraftClarification AskAboutTheClash(
+        TaskDraft draft,
+        PlanningConflict clash,
+        string? timezone,
+        IReadOnlyList<DateTime>? freeSlots)
     {
         var guess = draft.DueAt;
 
         var options = new List<DraftClarifyOption> { new("Keep this time", guess) };
 
-        if (guess is { } at)
+        // Real free slots when the caller found any, and nothing when it did not.
+        //
+        // What used to be here was `guess + ClashShift` — a time no one had checked,
+        // offered as though it were an answer. Roughly half the time it lands on the
+        // very matter being clashed with (a two-hour window shifted by two and a
+        // half), so accepting the suggestion recreated the clash, and the question
+        // could not be asked a second time because it had already been answered.
+        //
+        // An offer of nothing is the honest alternative when the week is genuinely
+        // full: the card still carries Keep, Skip and Discard, and the user can type
+        // a time. A wrong suggestion is worse than no suggestion here, because this
+        // one gets tapped without being read.
+        foreach (var slot in (freeSlots ?? Array.Empty<DateTime>()).Take(MaxSuggestedSlots))
         {
-            var moved = at + ClashShift;
-            options.Add(new DraftClarifyOption($"Later that day — {Clock(ToLocal(moved, null))}", moved));
+            options.Add(new DraftClarifyOption(SlotLabel(slot, guess, timezone), slot));
         }
 
         return new DraftClarification(
@@ -216,6 +248,23 @@ public static class VoiceAutoFilePolicy
             "date",
             ClarificationVocabulary.CostHigh,
             options);
+    }
+
+    /// <summary>
+    /// A free slot, named by when it actually is. Same day says the clock time alone;
+    /// another day names the day, because "14:00" on a card the user opens tomorrow
+    /// is otherwise a time with no date attached.
+    /// </summary>
+    private static string SlotLabel(DateTime slot, DateTime? from, string? timezone)
+    {
+        var local = ToLocal(slot, timezone);
+
+        if (from is { } origin && ToLocal(origin, timezone).Date == local.Date)
+        {
+            return $"Later that day — {Clock(local)}";
+        }
+
+        return $"{Day(local)} — {Clock(local)}";
     }
 
     /// <summary>
@@ -275,13 +324,29 @@ public static class VoiceAutoFilePolicy
         PlanningConflict? conflict,
         bool unsure) =>
         clarification is null ? "clear"
-        : conflict is not null ? "maybe_duplicate"
+        // The two conflict kinds are now told apart. Every clash used to report
+        // itself as a possible duplicate, which is a different claim about the
+        // user's list and the wrong one for a matter they have never seen before.
+        : conflict is not null
+            ? IsDuplicate(conflict) ? "maybe_duplicate" : "time_clash"
         : unsure ? "ambiguous_intent"
         : "vague_date";
 
+    /// <summary>
+    /// Read off the conflict's own <c>Kind</c>, not out of its prose.
+    ///
+    /// <para>
+    /// This used to be <c>Reason.Contains("already")</c>, which asked a sentence
+    /// written for a human to act as a type tag. It worked only for as long as
+    /// nobody reworded the reason and only in English — a localised reason would
+    /// have classified every duplicate as a time clash, and the user would have been
+    /// asked to move a matter that did not need moving instead of being told they
+    /// already had it. <see cref="PlanningConflict.Kind"/> now carries the answer the
+    /// detector already knew.
+    /// </para>
+    /// </summary>
     private static bool IsDuplicate(PlanningConflict conflict) =>
-        conflict.Reason.Contains("already", StringComparison.OrdinalIgnoreCase)
-        || conflict.Reason.Contains("duplicate", StringComparison.OrdinalIgnoreCase);
+        string.Equals(conflict.Kind, MatterConflict.Duplicate, StringComparison.Ordinal);
 
     // ---- time, always through the one normalizer -----------------------------
 
