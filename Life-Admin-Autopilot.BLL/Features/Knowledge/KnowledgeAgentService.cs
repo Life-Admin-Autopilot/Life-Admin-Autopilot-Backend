@@ -200,7 +200,15 @@ public sealed class KnowledgeAgentService
         var request = new GeminiRequest(
             new[] { new GeminiContent(new[] { new GeminiPart(JsonSerializer.Serialize(facts)) }) },
             new GeminiSystem(new[] { new GeminiPart(system) }),
-            new GeminiConfig(0.4, 512));
+            // Thinking off, and the budget raised well past what two sentences of
+            // JSON need. Reasoning tokens come out of the SAME allowance as the
+            // answer, so at 512-with-thinking this call spent its budget deliberating
+            // and returned either a truncated object or nothing — and because a
+            // half-written object fails to parse, the failure was invisible: the
+            // briefing simply reported `phrased: false` forever and nobody could tell
+            // it apart from an unreachable model. Same defect as DigestProseWriter's,
+            // one surface along.
+            new GeminiConfig(0.4, 1024, new GeminiThinking(0)));
 
         foreach (var model in _options.ModelChain)
         {
@@ -238,8 +246,21 @@ public sealed class KnowledgeAgentService
     {
         try
         {
-            var text = JsonDocument.Parse(body)
-                .RootElement.GetProperty("candidates")[0]
+            var candidate = JsonDocument.Parse(body).RootElement.GetProperty("candidates")[0];
+
+            // A candidate that stopped for any reason other than finishing is a
+            // fragment. Here that usually surfaces as unparsable JSON a moment later,
+            // but catching it by name logs WHY the briefing fell back to its
+            // deterministic sentence instead of leaving "unparsable" as the only clue.
+            if (candidate.TryGetProperty("finishReason", out var finish)
+                && finish.GetString() is { } reason
+                && !string.Equals(reason, "STOP", StringComparison.OrdinalIgnoreCase))
+            {
+                _logger.LogWarning("briefing:phrasing-unfinished reason={Reason}", reason);
+                return null;
+            }
+
+            var text = candidate
                 .GetProperty("content").GetProperty("parts")[0]
                 .GetProperty("text").GetString();
 
@@ -294,5 +315,10 @@ public sealed class KnowledgeAgentService
 
     private sealed record GeminiConfig(
         [property: JsonPropertyName("temperature")] double Temperature,
-        [property: JsonPropertyName("maxOutputTokens")] int MaxOutputTokens);
+        [property: JsonPropertyName("maxOutputTokens")] int MaxOutputTokens,
+        [property: JsonPropertyName("thinkingConfig")] GeminiThinking Thinking);
+
+    /// <summary>Zero, for the reason given at the call site.</summary>
+    private sealed record GeminiThinking(
+        [property: JsonPropertyName("thinkingBudget")] int ThinkingBudget);
 }

@@ -63,14 +63,16 @@ public sealed class TaskCountsService
 
             // Slipping: pushed back repeatedly, or overdue by more than a
             // fortnight. Either signals a commitment that is not real any more.
+            //
+            // The rule itself lives in TaskQuery.SlippingRule and is shared with the
+            // `slipping` LIST filter, so the number here and the matters that number
+            // opens are the same set by construction. They were not: the client had
+            // no way to list this, sent the user to `overdue` instead, and the banner
+            // ended up contradicting the list it opened.
             ["slipping"] = Branch(Count(With(
                 live,
                 "$or",
-                new BsonArray
-                {
-                    new BsonDocument("rescheduleCount", new BsonDocument("$gte", 3)),
-                    new BsonDocument("dueAt", new BsonDocument("$lt", day.TodayStart.AddDays(-14))),
-                }))),
+                TaskQuery.SlippingRule.Clauses(day.TodayStart)))),
 
             ["completedToday"] = Branch(Count(new BsonDocument
             {
