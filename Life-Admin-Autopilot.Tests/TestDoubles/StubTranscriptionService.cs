@@ -15,13 +15,29 @@ namespace Life_Admin_Autopilot.Tests.TestDoubles
 
         public List<TranscriptionRequest> Requests { get; } = new();
 
-        public Task<Result<TranscriptionResult>> TranscribeAsync(
+        /// <summary>
+        /// What each call could actually READ off the audio stream, in call order.
+        ///
+        /// <para>
+        /// Recording the request object alone is not enough to catch the bug that matters
+        /// with a fallback in front of this: a stream the previous provider drained arrives
+        /// here positioned at the end, and a provider that "received the audio" would
+        /// faithfully transcribe zero bytes and report silence.
+        /// </para>
+        /// </summary>
+        public List<byte[]> AudioRead { get; } = new();
+
+        public async Task<Result<TranscriptionResult>> TranscribeAsync(
             TranscriptionRequest request,
             CancellationToken cancellationToken = default)
         {
             Requests.Add(request);
 
-            return Task.FromResult(_responder(request));
+            using var buffer = new MemoryStream();
+            await request.Audio.CopyToAsync(buffer, cancellationToken);
+            AudioRead.Add(buffer.ToArray());
+
+            return _responder(request);
         }
 
         public static StubTranscriptionService Returning(string text, string? language = "en") =>

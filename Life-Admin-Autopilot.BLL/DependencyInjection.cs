@@ -18,6 +18,12 @@ namespace Life_Admin_Autopilot.BLL
             services.AddScoped<INotificationService, NotificationService>();
             services.AddScoped<ISpeechToTextService, SpeechToTextService>();
 
+            // SINGLETON, and that is the whole point of it: what one request observed
+            // about the provider has to be visible to the next one, or the capability
+            // endpoint learns nothing and every user rediscovers an exhausted quota
+            // for themselves. See AsrAvailability.
+            services.AddSingleton<AsrAvailability>();
+
             return services;
         }
     }

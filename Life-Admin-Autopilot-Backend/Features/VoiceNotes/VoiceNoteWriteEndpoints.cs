@@ -1,5 +1,6 @@
 using Life_Admin_Autopilot.BLL.Features.VoiceNotes;
 using Life_Admin_Autopilot.BLL.Kernel.Mappers;
+using Life_Admin_Autopilot.BLL.Services;
 using Life_Admin_Autopilot.DAL.Features.Account;
 using Life_Admin_Autopilot.DAL.Features.VoiceNotes;
 using Life_Admin_Autopilot.DAL.Kernel.Errors;
@@ -82,6 +83,77 @@ public static class VoiceNoteWriteEndpoints
                 Tasks = outcome.Created.Select(t => t.ToDto()).ToList(),
                 VoiceNote = note.ToDto(),
             });
+        })
+        .RequireAuthorization();
+
+        // ---- POST /me/voice-notes/{id}/retry — put a failed note back in the queue.
+        //
+        // The app has told users "It is kept — retry from Notifications" since voice
+        // shipped, and until now there was nothing anywhere that could retry one. The
+        // audio was genuinely kept; there was simply no way to ask for it to be tried
+        // again, so "kept" meant "kept where you cannot reach it".
+        //
+        // NOT `extract-tasks`. That re-runs extraction over a STORED TRANSCRIPT and is
+        // the wrong tool for the common failure: a note that died in transcription has
+        // no transcript, so re-extraction has nothing to work from. This resets the
+        // whole job — the worker's own claim loop picks it up and re-transcribes from
+        // the stored audio.
+        endpoints.MapPost("/me/voice-notes/{id}/retry", async (
+            HttpContext context,
+            string id,
+            IVoiceNoteRepository notes,
+            AsrAvailability asr,
+            CancellationToken cancellationToken) =>
+        {
+            var caller = context.RequireUser();
+
+            var note = await VoiceNoteReadEndpoints
+                .FindOrThrowAsync(notes, id, caller.Id, cancellationToken);
+
+            // Idempotent, like the clarification resolve: a second tap on a note that
+            // is already queued or already finished echoes its state rather than
+            // resetting a job in flight. Only a settled failure is retryable.
+            if (note.Status != "failed")
+            {
+                return Results.Ok(new VoiceSingleResponse { VoiceNote = note.ToDto() });
+            }
+
+            // The audio is what a retry re-reads. Without a key there is nothing to
+            // re-transcribe, and queueing it would spend the whole attempt ladder
+            // discovering that.
+            if (string.IsNullOrEmpty(note.StorageKey))
+            {
+                throw AppException.Conflict(
+                    "voice_note_audio_gone",
+                    "The recording is no longer stored, so it cannot be processed again.");
+            }
+
+            // Refusing while the provider is known to be down is the kind part.
+            // Otherwise the note re-queues, fails again within seconds for exactly the
+            // reason it failed the first time, and the user learns only that retrying
+            // does not work. See AsrAvailability — this reopens by itself.
+            if (!asr.IsAvailable)
+            {
+                throw new AppException(
+                    503,
+                    "transcription_unavailable",
+                    "Voice input is not available right now, so there is nothing to gain by trying again yet.");
+            }
+
+            // A FRESH ladder, not a resumed one. The note is at `failed` precisely
+            // because it exhausted its attempts (or hit something non-transient), so
+            // leaving the counter where it was would let the worker take the note,
+            // fail once and settle it again — a retry that never really retried.
+            note.Status = "pending";
+            note.Attempts = 0;
+            note.NextRunAt = DateTime.UtcNow;
+            note.LockedUntil = null;
+            note.LastError = null;
+            note.FailureReason = null;
+
+            await notes.SaveAsync(note, cancellationToken).ConfigureAwait(false);
+
+            return Results.Ok(new VoiceSingleResponse { VoiceNote = note.ToDto() });
         })
         .RequireAuthorization();
 

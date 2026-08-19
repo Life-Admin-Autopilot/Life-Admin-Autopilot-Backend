@@ -29,9 +29,13 @@ The Hugging Face free tier is exhausted. Calls now return:
 402 — "You have depleted your monthly included credits."
 ```
 
-The backend handles this cleanly (`ASR_QUOTA_EXCEEDED` → HTTP 503, logged, no crash), but
-**nothing will transcribe until the account has credits** — HF PRO or pre-paid. This must be
-sorted before any demo. It is not a code problem and no code change fixes it.
+The backend handles this cleanly (`ASR_QUOTA_EXCEEDED` → HTTP 503, logged, no crash), and
+`/me/capabilities` now reports `transcription: false` so the app stops offering a microphone
+it knows it cannot use.
+
+**There is now a second way out: the Azure fallback below.** Either restoring HF credits
+*or* configuring an Azure Speech resource makes voice work again — neither is a code change,
+and only one of them has to happen.
 
 ## Language handling — the part that matters for Arabic
 
@@ -64,22 +68,44 @@ wasted call and still gets the right answer.
 So the client should still send the user's locale — as a hint. FR-1.3 already stores
 `LocalePreference` on the user, so the value exists.
 
-The provider accepts exactly 41 locale strings and rejects anything else with a `422`, so
+Nemotron accepts exactly **40** locale strings (plus the `auto` sentinel) and rejects
+anything else with a `422`, so
 [`LanguageNormalizer`](../Life-Admin-Autopilot.DAL/Speech/LanguageNormalizer.cs) maps client
-locales onto that set before the call:
+locales onto that set before the call.
 
-| Client sends | Sent to provider | Why |
-| --- | --- | --- |
-| `ar-EG`, `ar`, `ar_EG` | `ar-AR` | **There is no `ar-EG`.** Egyptian users' locale must resolve to `ar-AR` or Arabic stops working entirely. |
-| `en`, `en-AU` | `en-US` | Nearest supported region for the language. |
-| `xx-XX`, empty | `auto` | Unknown locales still transcribe, just without the hint. |
+**The rules are shared; the vocabulary is per-provider.** The normalizer holds only the five
+mapping rules and takes the table as an argument; each transport owns its own list
+(`NemotronTranscriptionService.SupportedLocales`, `AzureFastTranscriptionService.SupportedLocales`).
+That split exists because the two providers disagree about the one locale that matters most
+here:
+
+| Client sends | → Nemotron | → Azure | Why |
+| --- | --- | --- | --- |
+| `ar-EG`, `ar`, `ar_EG` | `ar-AR` | `ar-EG` | **Nemotron has no `ar-EG`**, so an Egyptian user's locale must collapse onto `ar-AR` or Arabic stops working entirely. Azure ships a real `ar-EG`, and collapsing it there would throw away the Egyptian acoustic model for nothing. |
+| `en`, `en-AU` | `en-US` | `en-US` | Nearest supported region for the language. |
+| `xx-XX`, empty | `auto` | `auto` → `["en-US","ar-EG"]` | Unknown locales still transcribe, just without the hint. |
+
+Table **order is a behavioural contract**, not formatting: the "nearest region" rule takes
+the FIRST entry for a language, so `en` → `en-US` is a consequence of declaration order. Do
+not alphabetise a provider table.
+
+`auto` is a **neutral protocol sentinel**, not any provider's locale — the BLL sends it as
+its detect-first signal, so every transport has to accept it and translate it. Nemotron takes
+the literal string; Azure has no such value and turns it into a candidate list for language
+identification instead.
 
 ## Audio format
 
 WAV or MP3. **Stereo 48 kHz passes through fine** — verified against the live provider,
 producing an identical transcript to a mono 16 kHz conversion of the same recording. The
-backend therefore does **no** audio processing, and the client does not need to downmix or
-resample.
+backend therefore does **no** audio processing: no resample, no transcode, no re-container,
+at any layer including the Azure transport.
+
+⚠️ **That is not a licence to stop converting on the client.** The recorder already emits
+16 kHz mono 16-bit PCM (`lib/ai/wavEncoder.ts`), and that is the only reason the 5 MB ceiling
+is survivable — a 48 kHz stereo capture is roughly **six times** larger and would fail almost
+every recording of usable length. "The provider tolerates it" and "we can afford to send it"
+are different claims.
 
 AAC/M4A — Capacitor's recorder default — is **not** accepted, and is rejected up front with
 `ASR_UNSUPPORTED_FORMAT`. The recording story must record WAV, or transcode:
@@ -102,8 +128,9 @@ mobile app ──(multipart WAV)──► POST /api/speech/transcribe ──► 
 
 `ISpeechToTextService` (BLL) is the seam the rest of the backend transcribes through — the
 Planning Agent's `propose` path should inject it directly. `ITranscriptionService` (DAL) is
-the transport and the only thing that talks to the provider. Three providers have now been
-swapped behind that interface without anything above it changing.
+the transport and the only thing that talks to the provider. Four transports have now been
+swapped behind that interface without anything above it changing — and it now holds *two at
+once*, see the failover section below.
 
 ## The request shape
 
@@ -217,5 +244,62 @@ Arabic voice input can be called done. English is solid.
 1. Restore HF credits — nothing works without them.
 2. Record 5–10 Egyptian Arabic commands in a quiet room, close to the mic, and measure how
    many transcribe usably.
-3. If the failure rate stays high, Azure Speech is the fallback: it has an explicit `ar-EG`
-   locale and a renewing free tier, and only the transport class would change.
+3. If the failure rate stays high, Azure is already wired as a fallback (below) and has a
+   real `ar-EG`. Two claims in the original version of this line were wrong and are worth
+   recording: there is **no usable free tier** — fast transcription is Standard (S0) only —
+   and it was **not** just the transport class, because `LanguageNormalizer.Auto` had already
+   leaked into the BLL as a protocol sentinel.
+
+## Failover: Azure Speech as a second provider
+
+`ITranscriptionService` is answered by
+[`FailoverTranscriptionService`](../Life-Admin-Autopilot.DAL/Speech/FailoverTranscriptionService.cs),
+which tries one provider and falls through to the other. Nothing above the DAL seam knows it
+exists; the BLL's detect-first/pin-second repair and `AsrAvailability` are unchanged.
+
+**Which Azure API.** Fast transcription (`/speechtotext/transcriptions:transcribe`), not the
+classic short-audio endpoint — that one caps *directly transmitted* audio at 60 seconds,
+which chunked transfer does not raise, and our 5 MB ceiling admits ~2m45s of 16 kHz mono.
+Splitting that into three recognition sessions would restart punctuation and sentence
+continuity at every boundary. Fast transcription is one synchronous request.
+
+**Configuration.** `AZURE_SPEECH_KEY` and `AZURE_SPEECH_ENDPOINT`, both flat root keys
+alongside `HF_TOKEN` — never `appsettings.json`, which is overwritten unconditionally at
+startup. Both halves are required; a key with no endpoint reports `ASR_NOT_CONFIGURED`
+rather than spending a round trip on a guaranteed 401. `Speech:PrimaryProvider`
+(`nemotron` | `azure`) decides which is tried first.
+
+**When it does NOT fail over**, and why each case is deliberate:
+
+| Primary's outcome | Second provider? | Why |
+| --- | --- | --- |
+| `ASR_EMPTY_TRANSCRIPT` | **never** | Silence is a legitimate answer *and* the policy layer's own retry trigger. Failing over would pre-empt the bilingual repair and break the voice-note worker, which settles a note `ready` on exactly this code. |
+| Caller cancelled | **never** | The user walked away. Not worth a second provider's quota. |
+| `NO_AUDIO`, `TOO_LARGE`, `UNSUPPORTED_FORMAT`, `INVALID_AUDIO` | no | Client errors; the other provider rejects them identically. |
+| Timeout, network, 5xx, rate limit | yes | Transient. |
+| Quota, credentials, not configured | yes | Exactly what the fallback exists for. |
+
+**Two things that are easy to get wrong and are pinned by tests.** The wrapper snapshots the
+audio to a `byte[]` and hands each provider a fresh stream — the policy layer rewinds only
+before *its* calls, so a fallback given the same stream would transcribe zero bytes and
+report silence, which looks exactly like a working fallback that heard nothing. And a shared
+`Speech:TotalBudgetSeconds` deadline is enforced with a linked token, which each provider's
+own cancellation guard would otherwise rethrow as an escaping exception, breaking the "never
+throws" contract and skipping `AsrAvailability` entirely.
+
+**`ProviderHealth` vs `AsrAvailability`.** They answer different questions and both are
+needed. `AsrAvailability` is the product signal — *should the app offer a microphone at all* —
+and is unchanged. `ProviderHealth` sidelines one provider for an hour after a permanent
+failure, because once a fallback exists a dry primary becomes invisible: the wrapper falls
+through, the fallback succeeds, and the breaker correctly clears. Without it, that dry
+primary is re-tried on every single request forever and no operator ever learns.
+
+**Not verified.** No Azure resource exists for this project yet, so the canned response
+bodies in `AzureFastTranscriptionServiceTests` are shaped from Microsoft's reference rather
+than captured live. Unverified until a real key exists: that 16 kHz mono PCM WAV is accepted
+(argued from the *documented absence* of a sample-rate constraint on this API — the 16 kHz
+rule people remember belongs to the short-audio endpoint); the exact response shape on
+silence; what an exhausted quota returns (429 and 403 map to opposite codes here, so the 403
+body is currently sniffed for a quota phrase); and whether `ar-EG` transcribes Egyptian
+dialect verbatim or normalises toward MSA — which is the entire reason to prefer Azure, and
+which Microsoft documents nowhere.
