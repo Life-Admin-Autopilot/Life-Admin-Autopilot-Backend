@@ -214,6 +214,37 @@ public sealed class TaskDocument
 
     public int RescheduleCount { get; set; }
 
+    /// <summary>
+    /// A field-for-field copy, for a presenter that needs to alter a matter for
+    /// ONE response without touching the document its caller still holds.
+    ///
+    /// <para>
+    /// <b>Why this exists rather than an object initialiser at the call site.</b>
+    /// <c>MatterLocale.StripI18n</c> was a hand-written list of every property on
+    /// this class, and it silently fell four behind: <see cref="Amount"/>,
+    /// <see cref="SchemaVersion"/>, <see cref="GoogleEventId"/> and
+    /// <see cref="GooglePushedAt"/> were never copied, so <c>GET /me/tasks</c> and
+    /// <c>GET /me/tasks/{id}</c> — the only two routes that overlay a translation —
+    /// answered with <c>amount: null</c> on a matter that had one. The money was in
+    /// the database and on the finance summary, and absent from the matter the user
+    /// opened to edit it. Nothing failed; the figure was just gone.
+    /// </para>
+    ///
+    /// <para>
+    /// A mirror of a 32-property class maintained by hand is a defect waiting on the
+    /// next property. <c>MemberwiseClone</c> cannot fall behind.
+    /// </para>
+    ///
+    /// <para>
+    /// SHALLOW, deliberately: the copy shares <see cref="Subtasks"/>,
+    /// <see cref="Tags"/> and <see cref="Reminders"/> with the original, exactly as
+    /// the hand-written version did. A presenter that rewrites one of those must
+    /// assign a NEW list rather than mutate in place — which is what the subtask
+    /// overlay does.
+    /// </para>
+    /// </summary>
+    public TaskDocument ShallowCopy() => (TaskDocument)MemberwiseClone();
+
     public DateTime CreatedAt { get; set; }
 
     public DateTime UpdatedAt { get; set; }

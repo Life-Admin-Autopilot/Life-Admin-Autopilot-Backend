@@ -114,36 +114,28 @@ public static class MatterLocale
     /// <summary>
     /// A shallow copy with <c>i18n</c> cleared, so the overlay never mutates the
     /// document the caller still holds.
+    ///
+    /// <para>
+    /// <b>This was a hand-written property list and it dropped four fields</b> —
+    /// <c>Amount</c>, <c>SchemaVersion</c>, <c>GoogleEventId</c> and
+    /// <c>GooglePushedAt</c>. Only <c>Amount</c> reaches the wire today, and it is
+    /// the one that mattered: a matter with a price came back from these two routes
+    /// with <c>amount: null</c>, so the app's amount field sat on its "0.00"
+    /// placeholder while the finance summary — which reads the documents directly —
+    /// showed the real figure. Two screens, one database, different answers, no
+    /// error anywhere.
+    /// </para>
+    ///
+    /// <para>
+    /// It delegates to <see cref="TaskDocument.ShallowCopy"/> now, so a property
+    /// added to the document is carried here without anyone remembering to.
+    /// <c>MatterLocaleFidelityTests</c> fails if this ever stops being true.
+    /// </para>
     /// </summary>
-    private static TaskDocument StripI18n(TaskDocument doc) => new()
+    private static TaskDocument StripI18n(TaskDocument doc)
     {
-        Id = doc.Id,
-        UserId = doc.UserId,
-        Title = doc.Title,
-        Domain = doc.Domain,
-        Kind = doc.Kind,
-        Status = doc.Status,
-        Priority = doc.Priority,
-        Subtasks = doc.Subtasks,
-        Tags = doc.Tags,
-        DueAt = doc.DueAt,
-        Notes = doc.Notes,
-        SourceLocale = doc.SourceLocale,
-        I18n = null,
-        SourceVoiceNoteId = doc.SourceVoiceNoteId,
-        SourceDocumentId = doc.SourceDocumentId,
-        SourceTaskKey = doc.SourceTaskKey,
-        ExternalSource = doc.ExternalSource,
-        ExternalId = doc.ExternalId,
-        TimePrecision = doc.TimePrecision,
-        Confidence = doc.Confidence,
-        Estimate = doc.Estimate,
-        CompletedAt = doc.CompletedAt,
-        SnoozedUntil = doc.SnoozedUntil,
-        Reminders = doc.Reminders,
-        DeletedAt = doc.DeletedAt,
-        RescheduleCount = doc.RescheduleCount,
-        CreatedAt = doc.CreatedAt,
-        UpdatedAt = doc.UpdatedAt,
-    };
+        var copy = doc.ShallowCopy();
+        copy.I18n = null;
+        return copy;
+    }
 }
