@@ -1,5 +1,6 @@
 using Life_Admin_Autopilot.BLL.Dtos;
 using Life_Admin_Autopilot.BLL.Services;
+using Life_Admin_Autopilot.DAL.Common;
 using Life_Admin_Autopilot.DAL.Entities;
 using Life_Admin_Autopilot.DAL.Push.Models;
 using Life_Admin_Autopilot.Tests.TestDoubles;
@@ -168,8 +169,49 @@ namespace Life_Admin_Autopilot.Tests.Push
                 UserId,
                 new RegisterDeviceRequest(AndroidToken, DevicePlatform.Android));
 
-            Assert.NotEqual(AndroidToken, response.DeviceToken);
-            Assert.Equal(PushTokenMask.Mask(AndroidToken), response.DeviceToken);
+            Assert.NotEqual(AndroidToken, response.Device.DeviceToken);
+            Assert.Equal(PushTokenMask.Mask(AndroidToken), response.Device.DeviceToken);
+        }
+
+        // The client switches its own local reminder schedule off when the server takes
+        // over delivery. These two pin the signal it makes that decision on: registering
+        // successfully is NOT the same question as whether this server can send, and
+        // conflating them blacked out every Android device on a deployment with no
+        // credential. See DeviceRegistrationResponse.
+        [Fact]
+        public async Task RegisterDeviceAsync_SaysTheServerDelivers_WhenPushIsConfigured()
+        {
+            var repository = new InMemoryDeviceTokenRepository();
+            var push = StubPushNotificationService.AlwaysSucceeds();
+            var service = CreateService(repository, push, out _);
+
+            var response = await service.RegisterDeviceAsync(
+                UserId,
+                new RegisterDeviceRequest(AndroidToken, DevicePlatform.Android));
+
+            Assert.True(response.ServerDelivers);
+        }
+
+        [Fact]
+        public async Task RegisterDeviceAsync_SaysTheServerDoesNot_WhenNoCredentialIsConfigured()
+        {
+            var repository = new InMemoryDeviceTokenRepository();
+            var push = new StubPushNotificationService(
+                _ => Result<PushNotificationResult>.Failure(
+                    new Error(PushErrorCodes.NotConfigured, "no service account")))
+            {
+                IsConfigured = false
+            };
+            var service = CreateService(repository, push, out _);
+
+            var response = await service.RegisterDeviceAsync(
+                UserId,
+                new RegisterDeviceRequest(AndroidToken, DevicePlatform.Android));
+
+            // The device is still stored - it becomes reachable the moment a credential
+            // is supplied, with no re-registration needed.
+            Assert.Single(repository.All);
+            Assert.False(response.ServerDelivers);
         }
 
         [Fact]
