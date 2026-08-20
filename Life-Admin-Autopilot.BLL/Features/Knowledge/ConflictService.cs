@@ -1,6 +1,7 @@
 using Life_Admin_Autopilot.BLL.Kernel.Reminders;
 using Life_Admin_Autopilot.DAL.Features.Tasks;
 using Life_Admin_Autopilot.DAL.Kernel.Documents;
+using Life_Admin_Autopilot.DAL.Kernel.Mongo;
 using Microsoft.Extensions.Logging;
 using MongoDB.Bson;
 using MongoDB.Driver;
@@ -139,7 +140,7 @@ public sealed class ConflictService
     public Task<List<TaskDocument>> OpenMattersAsync(ObjectId userId, CancellationToken cancellationToken = default) =>
         _tasks.Tasks
             .Find(Builders<TaskDocument>.Filter.And(
-                Builders<TaskDocument>.Filter.Eq(t => t.UserId, userId),
+                MongoRepositoryBase<TaskDocument>.LiveForUser(userId),
                 Builders<TaskDocument>.Filter.Eq(t => t.Status, "open")))
             .ToListAsync(cancellationToken);
 
