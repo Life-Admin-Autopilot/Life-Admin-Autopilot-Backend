@@ -1,4 +1,5 @@
 using Life_Admin_Autopilot.BLL.Kernel.Tasks;
+using Life_Admin_Autopilot.DAL.Kernel.Time;
 using MongoDB.Bson;
 
 namespace Life_Admin_Autopilot.Tests.Kernel;
@@ -142,19 +143,41 @@ public sealed class TaskQueryTests
         Assert.Equal(boundaries.TodayStart.AddDays(7), boundaries.WeekEnd);
     }
 
+    /// <summary>
+    /// A missing zone is the PRODUCT DEFAULT, not UTC.
+    ///
+    /// <para>
+    /// This test used to assert 0 and a UTC midnight, and that assertion was the bug:
+    /// the profile's timezone is optional, nothing populated it, and so every account
+    /// that had never set one got its "today" cut at UTC midnight — 02:00 or 03:00 in
+    /// Cairo. Both halves are pinned here because they are read together: the offset
+    /// feeds every due filter, the day start feeds every count.
+    /// </para>
+    /// </summary>
     [Fact]
-    public void a_missing_zone_falls_back_to_utc()
+    public void a_missing_zone_falls_back_to_the_product_default()
     {
+        // Arrange — Now is 2026-08-09T…Z, inside Egyptian DST, so the default zone is
+        // +03:00. Read from the zone rather than hardcoded so the test does not have to
+        // be revisited if Egypt drops DST again.
+        var expectedOffset = (int)AppTimeZone.Default.GetUtcOffset(Now).TotalMinutes;
+
         // Assert
-        Assert.Equal(0, TaskQuery.ZoneOffsetMinutes(Now, null));
-        Assert.Equal(new DateTime(2026, 8, 9, 0, 0, 0, DateTimeKind.Utc), TaskQuery.StartOfLocalDay(Now, null));
+        Assert.Equal(expectedOffset, TaskQuery.ZoneOffsetMinutes(Now, null));
+        Assert.Equal(
+            TaskQuery.StartOfLocalDay(Now, AppTimeZone.DefaultId),
+            TaskQuery.StartOfLocalDay(Now, null));
+
+        // And it is genuinely NOT UTC any more — the whole point of the change.
+        Assert.NotEqual(0, expectedOffset);
     }
 
     [Fact]
-    public void an_unrecognised_zone_throws_rather_than_silently_using_utc()
+    public void an_unrecognised_zone_throws_rather_than_silently_falling_back()
     {
-        // Assert — Node's Intl call raises here too, surfacing as a 500. A silent UTC
-        // fallback would move a Cairo user's whole day with nothing to reveal it.
+        // Assert — Node's Intl call raises here too, surfacing as a 500. A client
+        // sending a zone it invented is worth surfacing; an ABSENT zone is not, and
+        // that is the case the test above covers.
         Assert.ThrowsAny<Exception>(() => TaskQuery.ZoneOffsetMinutes(Now, "Not/AZone"));
     }
 

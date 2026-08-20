@@ -1,5 +1,6 @@
 using Life_Admin_Autopilot.DAL.Kernel.Documents;
 using Life_Admin_Autopilot.DAL.Kernel.Mongo;
+using Life_Admin_Autopilot.DAL.Kernel.Time;
 using MongoDB.Bson;
 using MongoDB.Driver;
 
@@ -18,8 +19,15 @@ namespace Life_Admin_Autopilot.DAL.Features.Notifications;
 /// </summary>
 public sealed class ReminderUserTimezoneReader : MongoRepositoryBase<UserProfileDocument>
 {
-    /// <summary>Node's <c>row.timezone ?? 'UTC'</c> — the field is optional by design.</summary>
-    public const string DefaultTimezone = "UTC";
+    /// <summary>
+    /// The zone used for an account that still has none. Node wrote
+    /// <c>row.timezone ?? 'UTC'</c>; this port uses <see cref="AppTimeZone.DefaultId"/>
+    /// instead, because the day this notification NAMES is the whole reason the
+    /// lookup exists and UTC names the wrong one for this product's users. A matter
+    /// due at <c>2026-03-04T22:30Z</c> is "Mar 4" in UTC and "Mar 5" in Cairo, and
+    /// "Mar 5" is the day the user actually wrote down.
+    /// </summary>
+    public const string DefaultTimezone = AppTimeZone.DefaultId;
 
     public ReminderUserTimezoneReader(IMongoDatabase database)
         : base(database, MongoCollections.Users)

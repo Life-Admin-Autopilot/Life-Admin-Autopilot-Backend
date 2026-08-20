@@ -1,6 +1,7 @@
 using Life_Admin_Autopilot.DAL.Features.DocumentScans;
 using Life_Admin_Autopilot.DAL.Features.Finance;
 using Life_Admin_Autopilot.DAL.Kernel.Documents;
+using Life_Admin_Autopilot.DAL.Kernel.Time;
 using MongoDB.Bson;
 
 namespace Life_Admin_Autopilot.BLL.Features.Finance;
@@ -297,21 +298,12 @@ public sealed class FinanceSummaryService
     // below converts to the user's wall clock, does calendar arithmetic there, and
     // converts back.
 
-    private static TimeZoneInfo ResolveZone(string? timezone)
-    {
-        if (string.IsNullOrWhiteSpace(timezone)) return TimeZoneInfo.Utc;
-
-        try
-        {
-            return TimeZoneInfo.FindSystemTimeZoneById(timezone);
-        }
-        catch (Exception ex) when (ex is TimeZoneNotFoundException or InvalidTimeZoneException)
-        {
-            // A stored zone the host does not know is a bad stored value, not a
-            // reason to fail the request. UTC buckets are off by hours at worst.
-            return TimeZoneInfo.Utc;
-        }
-    }
+    /// <summary>
+    /// A stored zone the host does not know is a bad stored value, not a reason to
+    /// fail the request — it falls through to the product default rather than to
+    /// UTC, which is the zone the note above this method is warning about.
+    /// </summary>
+    private static TimeZoneInfo ResolveZone(string? timezone) => AppTimeZone.Resolve(timezone);
 
     private static string MonthKey(DateTime utc, TimeZoneInfo zone)
     {

@@ -1410,13 +1410,16 @@ components:
         `hasPassword` is DERIVED (`typeof passwordHash === 'string' && length > 0`)
         and is always present. `_id` becomes `id`; `__v` is dropped
         (`versionKey: false`).
-        The six optional properties below are OMITTED — not null — when unset.
+        The optional properties below are OMITTED — not null — when unset.
         OBSERVED PROPERTY ORDER from the Node implementation (Mongo document
         field order, then `id` and `hasPassword` appended last):
         email, [pendingEmail], hasOnboarded, theme, textSize, preferredDomains,
         onboardingAnswers, mic, notifications, imports, privacy, subscription,
         createdAt, updatedAt, [displayName], [locale], [localeFollowsDevice],
-        [timezone], [emailVerifiedAt], [pendingEmail], id, hasPassword.
+        [timezone], [timezoneFollowsDevice], [emailVerifiedAt], [pendingEmail],
+        id, hasPassword.
+        `timezoneFollowsDevice` is a .NET-only field with no Node counterpart —
+        see docs/DIVERGENCES.md §16.
         Property order is NOT semantically part of the contract for JSON
         consumers, but it IS observable in the pretty-printed /me/export body.
       required:
@@ -1479,7 +1482,20 @@ components:
           type: string
           maxLength: 64
           description: >-
-            IANA zone, e.g. "Africa/Cairo". Omitted means "trust the device".
+            IANA zone, e.g. "Africa/Cairo". Set at signup to the server's
+            default (`Africa/Cairo`), so it is present on every account created
+            since. Omitted on older ones, where every server-side reader
+            resolves it to that same default — NOT to UTC, which is what it used
+            to mean. See docs/DIVERGENCES.md §16.
+        timezoneFollowsDevice:
+          type: boolean
+          description: >-
+            True while `timezone` is still the server default rather than a zone
+            the user picked, so a client may replace it with the device's own.
+            Cleared to false when the Profile picker writes a choice — a client
+            that sends `timezone` WITHOUT this leaves the account marked as
+            following, and the next client to launch overwrites the choice.
+            Omitted on accounts predating the flag, which read as true.
         locale:
           type: string
           maxLength: 35
@@ -1922,6 +1938,11 @@ components:
             Validated against the runtime's own tables, not a fixed list:
             `new Intl.DateTimeFormat('en-US', { timeZone: zone })` must not
             throw. Failure message: "Not a recognised time zone."
+        timezoneFollowsDevice:
+          type: boolean
+          description: >-
+            Send `false` alongside `timezone` when the zone is the user's own
+            pick. Send `true` alongside it when the zone was read off the device.
         locale:
           type: string
           minLength: 2

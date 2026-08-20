@@ -131,6 +131,7 @@ public static class KernelMappers
         HasOnboarded = doc.HasOnboarded,
         EmailVerifiedAt = doc.EmailVerifiedAt,
         Timezone = doc.Timezone,
+        TimezoneFollowsDevice = doc.TimezoneFollowsDevice,
         Locale = doc.Locale,
         LocaleFollowsDevice = doc.LocaleFollowsDevice,
         Theme = doc.Theme,

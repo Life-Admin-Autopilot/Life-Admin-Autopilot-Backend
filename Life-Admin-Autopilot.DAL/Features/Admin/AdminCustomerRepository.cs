@@ -1,6 +1,7 @@
 using System.Text.RegularExpressions;
 using Life_Admin_Autopilot.DAL.Kernel.Documents;
 using Life_Admin_Autopilot.DAL.Kernel.Mongo;
+using Life_Admin_Autopilot.DAL.Kernel.Time;
 using MongoDB.Bson;
 using MongoDB.Driver;
 
@@ -311,7 +312,13 @@ public sealed class AdminCustomerRepository : IAdminCustomerRepository
                 {
                     ["format"] = "%Y-%m-%d",
                     ["date"] = "$createdAt",
-                    ["timezone"] = "UTC",
+
+                    // The product default, not UTC. This chart has no user to take a
+                    // zone from, and an admin reading "signups on Aug 20" means the
+                    // day they lived through — a 23:30 Cairo signup counted against
+                    // Aug 19 under UTC, which made the daily totals impossible to
+                    // reconcile with anything else on the page.
+                    ["timezone"] = AppTimeZone.DefaultId,
                 }),
                 ["count"] = new BsonDocument("$sum", 1),
             }),

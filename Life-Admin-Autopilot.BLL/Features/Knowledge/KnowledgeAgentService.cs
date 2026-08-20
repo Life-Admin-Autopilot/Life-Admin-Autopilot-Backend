@@ -3,6 +3,7 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using Life_Admin_Autopilot.BLL.Features.Planning;
 using Life_Admin_Autopilot.DAL.Kernel.Documents;
+using Life_Admin_Autopilot.DAL.Kernel.Time;
 using Microsoft.Extensions.Logging;
 using MongoDB.Bson;
 
@@ -287,20 +288,12 @@ public sealed class KnowledgeAgentService
         }
     }
 
-    private static TimeZoneInfo ResolveZone(string? timezone)
-    {
-        if (string.IsNullOrWhiteSpace(timezone)) return TimeZoneInfo.Utc;
-        try
-        {
-            return TimeZoneInfo.FindSystemTimeZoneById(timezone);
-        }
-        catch (Exception)
-        {
-            // An unknown zone must not fail the briefing — UTC still produces a
-            // correct, if slightly off-boundary, day.
-            return TimeZoneInfo.Utc;
-        }
-    }
+    /// <summary>
+    /// An unknown zone must not fail the briefing. It resolves to the product
+    /// default, which produces the right day for this product's users; UTC produced
+    /// one that rolled over at 02:00 or 03:00 their time.
+    /// </summary>
+    private static TimeZoneInfo ResolveZone(string? timezone) => AppTimeZone.Resolve(timezone);
 
     private sealed record GeminiRequest(
         [property: JsonPropertyName("contents")] GeminiContent[] Contents,

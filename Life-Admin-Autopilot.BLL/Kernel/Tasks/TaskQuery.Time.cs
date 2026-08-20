@@ -1,3 +1,5 @@
+using Life_Admin_Autopilot.DAL.Kernel.Time;
+
 namespace Life_Admin_Autopilot.BLL.Kernel.Tasks;
 
 /// <summary>
@@ -21,23 +23,34 @@ public static partial class TaskQuery
     /// <paramref name="at"/> — so DST is accounted for.
     ///
     /// <para>
-    /// A null/empty zone returns 0, matching Node. An UNRECOGNISED zone throws,
-    /// also matching Node: <c>Intl.DateTimeFormat</c> raises a RangeError there and
-    /// <c>zoneOffsetMinutes</c> does not catch it, so the request becomes a 500
-    /// <c>internal_error</c>. Do not "fix" this into a silent UTC fallback — that
-    /// would move a Cairo user's whole day by two hours with nothing in the UI to
-    /// reveal it.
+    /// <b>A null/empty zone means the product default, not 0.</b> Node returned 0,
+    /// and the warning that used to sit here — that a silent UTC fallback "would
+    /// move a Cairo user's whole day by two hours with nothing in the UI to reveal
+    /// it" — described what this function was ALREADY doing on the absent-zone
+    /// branch, because the profile field is optional and nothing ever populated it.
+    /// Every count, digest and due bucket for an account with no stored zone was
+    /// cut against UTC midnight, which is 02:00 or 03:00 in Cairo. The offset now
+    /// comes from <see cref="AppTimeZone.Default"/> instead.
+    /// </para>
+    ///
+    /// <para>
+    /// An UNRECOGNISED zone still throws, matching Node: <c>Intl.DateTimeFormat</c>
+    /// raises a RangeError there and <c>zoneOffsetMinutes</c> does not catch it, so
+    /// the request becomes a 500 <c>internal_error</c>. That path is a client
+    /// sending a zone it made up, which is worth surfacing; an absent one is not.
     /// </para>
     /// </summary>
     public static int ZoneOffsetMinutes(DateTime at, string? timezone)
     {
+        var instant = DateTime.SpecifyKind(at, DateTimeKind.Utc);
+
         if (string.IsNullOrEmpty(timezone))
         {
-            return 0;
+            return (int)AppTimeZone.Default.GetUtcOffset(instant).TotalMinutes;
         }
 
         var zone = TimeZoneInfo.FindSystemTimeZoneById(timezone);
-        return (int)zone.GetUtcOffset(DateTime.SpecifyKind(at, DateTimeKind.Utc)).TotalMinutes;
+        return (int)zone.GetUtcOffset(instant).TotalMinutes;
     }
 
     /// <summary>

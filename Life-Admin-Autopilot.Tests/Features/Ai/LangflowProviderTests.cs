@@ -7,6 +7,7 @@ using Life_Admin_Autopilot.BLL.Features.Ai.Langflow;
 using Life_Admin_Autopilot.DAL.Features.Ai;
 using Life_Admin_Autopilot.DAL.Kernel.Errors;
 using Life_Admin_Autopilot.DAL.Kernel.Mongo;
+using Life_Admin_Autopilot.DAL.Kernel.Time;
 using Life_Admin_Autopilot.Tests.Kernel;
 using Life_Admin_Autopilot.Tests.TestDoubles;
 using Microsoft.Extensions.Configuration;
@@ -234,7 +235,7 @@ public sealed class LangflowProviderTests
     }
 
     [Fact]
-    public async Task falls_back_to_utc_rather_than_failing_the_turn_on_a_bad_timezone()
+    public async Task falls_back_to_the_default_zone_rather_than_failing_the_turn_on_a_bad_timezone()
     {
         if (Database is null)
         {
@@ -244,14 +245,21 @@ public sealed class LangflowProviderTests
         var handler = Handler(Ndjson("""{"event":"end","data":{}}"""));
 
         // `timezone` is optional on the request, and a turn is worth more than a
-        // perfect offset. It still carries AN offset, which is the part that matters.
+        // perfect offset. It still carries AN offset, which is the part that matters —
+        // and since the fallback became the product default rather than UTC, that
+        // offset is now the one this product's users are actually on.
         await DrainAsync(Provider(handler, InputNodeBound), timezone: "Mars/Olympus_Mons");
 
         var currentDate = JsonDocument.Parse(handler.LastRequestBody!)
             .RootElement.GetProperty("tweaks").GetProperty("PlanningInput-v4")
             .GetProperty("currentDate").GetString()!;
 
-        Assert.Contains("+00:00 (", currentDate);
+        var expectedOffset = AppTimeZone.Default
+            .GetUtcOffset(DateTimeOffset.UtcNow)
+            .ToString(@"'+'hh\:mm");
+
+        Assert.Contains(expectedOffset + " (", currentDate);
+        Assert.DoesNotContain("+00:00 (", currentDate);
     }
 
     [Fact]

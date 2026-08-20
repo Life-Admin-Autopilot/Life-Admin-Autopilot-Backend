@@ -1,4 +1,5 @@
 using System.Text.Json.Serialization;
+using Life_Admin_Autopilot.DAL.Kernel.Time;
 
 namespace Life_Admin_Autopilot.BLL.Features.Finance;
 
@@ -171,7 +172,7 @@ public sealed class FinanceSummaryDto
     /// re-bucketing on its own would silently disagree.
     /// </summary>
     [JsonPropertyName("timezone")]
-    public string Timezone { get; init; } = "UTC";
+    public string Timezone { get; init; } = AppTimeZone.DefaultId;
 
     [JsonPropertyName("generatedAt")]
     public DateTime GeneratedAt { get; init; }

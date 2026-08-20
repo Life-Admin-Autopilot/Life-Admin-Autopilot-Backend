@@ -1,5 +1,6 @@
 using Life_Admin_Autopilot.DAL.Features.Auth;
 using Life_Admin_Autopilot.DAL.Kernel.Documents;
+using Life_Admin_Autopilot.DAL.Kernel.Time;
 using Microsoft.Extensions.Logging;
 using MongoDB.Bson;
 
@@ -220,6 +221,19 @@ public sealed class UserProvisioningService : IUserProvisioningService
             // Presence marker only — the real hash never leaves Identity. Absent for
             // a magic-link account, which is what makes hasPassword false.
             PasswordHash = password is null ? null : UserProfileRepository.PasswordPresentMarker,
+
+            // Provisioned, not left null. An absent zone used to mean UTC to every
+            // reader downstream, which is two or three hours off for an Egyptian
+            // account and shows up as reminders firing early rather than as an
+            // error.
+            //
+            // The flag is what keeps this a DEFAULT rather than a decision: the
+            // client reads it and may replace the zone with the device's own on
+            // first run, and picking one in Profile clears it. Without the flag,
+            // provisioning a real value here would have silently killed device
+            // detection, which used to trigger on the field being null.
+            Timezone = AppTimeZone.DefaultId,
+            TimezoneFollowsDevice = true,
             CreatedAt = now,
             UpdatedAt = now,
         };
