@@ -1,5 +1,6 @@
 using System.Globalization;
 using Life_Admin_Autopilot.BLL.Kernel.Tasks;
+using Life_Admin_Autopilot.DAL.Kernel.Time;
 using Microsoft.Extensions.Logging;
 
 namespace Life_Admin_Autopilot.BLL.Features.Digest;
@@ -45,34 +46,33 @@ public static class DigestClock
     /// Port of <c>localDateKey</c> — <c>YYYY-MM-DD</c> in the caller's zone.
     ///
     /// <para>
-    /// <b>PORTED BUG — the fallback zone here is not UTC.</b> Node builds this with
-    /// <c>new Intl.DateTimeFormat('en-CA', { timeZone: timezone, … })</c>, and when
-    /// <c>timezone</c> is <c>undefined</c> Intl does NOT fall back to UTC — it falls
-    /// back to the HOST's zone. Every other time decision in the digest treats an
-    /// absent zone as UTC: <c>dayBoundaries</c> goes through
-    /// <c>zoneOffsetMinutes</c>, which returns 0, and the busiest-day grouping
-    /// passes <c>timezone ?? 'UTC'</c> to <c>$dateToString</c> explicitly.
+    /// <b>FIXED PORTED BUG — the absent-zone fallback was the host's own zone.</b>
+    /// Node builds this with <c>new Intl.DateTimeFormat('en-CA', { timeZone:
+    /// timezone, … })</c>, and when <c>timezone</c> is <c>undefined</c> Intl does
+    /// NOT fall back to UTC — it falls back to the HOST's zone. This port reproduced
+    /// that with <c>TimeZoneInfo.Local.Id</c>, so on a caller who sends no
+    /// <c>tz</c>, and on one whose <c>tz</c> was invalid and got dropped,
+    /// <c>localDate</c> named the SERVER's calendar date while every count in the
+    /// same payload was bucketed against UTC midnight. Two different calendars in
+    /// one response, disagreeing for part of every day, and neither of them the
+    /// user's.
     /// </para>
     ///
     /// <para>
-    /// So on a caller who sends no <c>tz</c>, and on one whose <c>tz</c> was invalid
-    /// and got dropped, <c>localDate</c> is the SERVER's calendar date while every
-    /// count in the payload is bucketed against UTC midnight. On a host that is not
-    /// itself on UTC the two disagree for part of every day. Reproduced rather than
-    /// corrected: <c>localDate</c> is also the digest cache key, so "fixing" it to
-    /// UTC would move which row a request reads and silently change what a real user
-    /// is served. Logged as a follow-up against the Node source instead.
+    /// Both halves now resolve to <see cref="AppTimeZone.Default"/> when the zone is
+    /// absent — <c>dayBoundaries</c> through <c>TaskQuery.ZoneOffsetMinutes</c>, the
+    /// busiest-day grouping through <c>AppTimeZone.ResolveId</c>, and this key here
+    /// — so the payload is internally consistent and identical on every host, which
+    /// the old pair could not be. <c>localDate</c> is also the digest cache key, so
+    /// this moves which row an absent-<c>tz</c> request reads: the first digest
+    /// after deploy is recomputed rather than read, which is what the cache is for.
     /// </para>
     /// </summary>
     public static string LocalDateKey(DateTime at, string? timezone)
     {
-        // Intl's default-zone behaviour, spelled out. TimeZoneInfo.Local reads the
-        // same tz database ICU does, so the two servers agree on one host.
-        var effective = timezone ?? TimeZoneInfo.Local.Id;
-
         var shifted = DateTime
             .SpecifyKind(at, DateTimeKind.Utc)
-            .AddMinutes(TaskQuery.ZoneOffsetMinutes(at, effective));
+            .AddMinutes(TaskQuery.ZoneOffsetMinutes(at, timezone));
 
         return shifted.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
     }

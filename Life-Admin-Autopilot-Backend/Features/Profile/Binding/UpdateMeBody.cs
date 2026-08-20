@@ -35,6 +35,9 @@ public sealed class UpdateMeBody
     [JsonPropertyName("timezone")]
     public JsonElement Timezone { get; init; }
 
+    [JsonPropertyName("timezoneFollowsDevice")]
+    public JsonElement TimezoneFollowsDevice { get; init; }
+
     [JsonPropertyName("locale")]
     public JsonElement Locale { get; init; }
 

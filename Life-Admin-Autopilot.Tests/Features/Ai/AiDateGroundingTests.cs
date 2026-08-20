@@ -1,4 +1,5 @@
 using Life_Admin_Autopilot.BLL.Features.Ai.Grounding;
+using Life_Admin_Autopilot.DAL.Kernel.Time;
 
 namespace Life_Admin_Autopilot.Tests.Features.Ai;
 
@@ -384,27 +385,36 @@ public sealed class AiDateGroundingTests
     [InlineData("")]
     [InlineData("Mars/Olympus_Mons")]
     [InlineData("Factory")]
-    public void an_unusable_timezone_is_utc_rather_than_the_servers_own(string? timezone)
+    public void an_unusable_timezone_is_the_product_default_not_the_servers_own(string? timezone)
     {
         // A DELIBERATE divergence, recorded in docs/DIVERGENCES.md. Node's
         // no-timezone branch prints a UTC instant but takes the weekday and the whole
         // 14-day table from the SERVER's local zone, so the same request answers
         // differently on a Cairo laptop and in a UTC container — and labels a UTC
-        // timestamp with Cairo's weekday. Treating an unusable zone as UTC is
-        // self-consistent and, usefully, byte-identical to Node's own `UTC` output.
+        // timestamp with Cairo's weekday.
+        //
+        // This used to resolve to UTC, which fixed the inconsistency but kept the
+        // wrong clock: the grounding block IS what the agent reads "now" from, so a
+        // UTC fallback is what put every derived dueAt three hours early for this
+        // product's users. It now resolves to the product default.
         var instant = Instant("2026-12-31T22:10:00.000Z");
 
         Assert.Equal(
-            DateGrounding.FormatNow(instant, "UTC"),
+            DateGrounding.FormatNow(instant, AppTimeZone.DefaultId),
             DateGrounding.FormatNow(instant, timezone));
 
         Assert.Equal(
-            DateGrounding.BuildDateReference(instant, "UTC"),
+            DateGrounding.BuildDateReference(instant, AppTimeZone.DefaultId),
             DateGrounding.BuildDateReference(instant, timezone));
 
-        // Still offset-bearing. A bare date is the v3 format that made the agent
-        // invent +00:00 and put every dueAt out by the user's whole offset.
-        Assert.Contains("+00:00 (", DateGrounding.FormatNow(instant, timezone));
+        // Still offset-bearing, and no longer +00:00. A bare date is the v3 format
+        // that made the agent invent +00:00 and put every dueAt out by the user's
+        // whole offset; so was a fallback that PRINTED +00:00 to an Egyptian account.
+        var expectedOffset = AppTimeZone.Default
+            .GetUtcOffset(instant)
+            .ToString(@"'+'hh\:mm");
+
+        Assert.Contains(expectedOffset + " (", DateGrounding.FormatNow(instant, timezone));
     }
 
     [Fact]
@@ -476,8 +486,12 @@ public sealed class AiDateGroundingTests
     [InlineData("Africa/Cairo", "+03:00")]
     [InlineData("Asia/Kolkata", "+05:30")]
     [InlineData("UTC", "+00:00")]
-    [InlineData("Not/AZone", "+00:00")]
-    [InlineData(null, "+00:00")]
+
+    // An unusable and an absent zone both resolve to the product default, which at
+    // this instant — 2026-08-11, inside Egyptian DST — is +03:00. Both rows read
+    // "+00:00" before the default existed.
+    [InlineData("Not/AZone", "+03:00")]
+    [InlineData(null, "+03:00")]
     public void the_utc_offset_matches_the_one_on_current_date(string? timezone, string expected)
     {
         var instant = Instant("2026-08-11T11:23:45.000Z");

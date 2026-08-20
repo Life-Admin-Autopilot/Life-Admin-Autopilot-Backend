@@ -102,6 +102,16 @@ public sealed class UserDto
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? Timezone { get; init; }
 
+    /// <summary>
+    /// True while <c>timezone</c> is still the default rather than the user's own
+    /// pick, so the client knows whether it may offer the device's zone. Omitted
+    /// when null, like every other nullable on this DTO — a legacy profile reads as
+    /// absent and the client treats that as true.
+    /// </summary>
+    [JsonPropertyName("timezoneFollowsDevice")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public bool? TimezoneFollowsDevice { get; init; }
+
     [JsonPropertyName("locale")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? Locale { get; init; }

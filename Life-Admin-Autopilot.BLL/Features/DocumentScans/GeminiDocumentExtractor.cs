@@ -4,6 +4,7 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using Life_Admin_Autopilot.DAL.Kernel.Documents;
 using Life_Admin_Autopilot.DAL.Kernel.Errors;
+using Life_Admin_Autopilot.DAL.Kernel.Time;
 using Microsoft.Extensions.Logging;
 
 namespace Life_Admin_Autopilot.BLL.Features.DocumentScans;
@@ -114,7 +115,7 @@ public sealed class GeminiDocumentExtractor : IDocumentExtractor
     private static string BuildPrompt(string? timezone, string? locale)
     {
         var now = DateTimeOffset.UtcNow;
-        var zone = string.IsNullOrWhiteSpace(timezone) ? "UTC" : timezone;
+        var zone = AppTimeZone.ResolveId(timezone);
         var language = string.IsNullOrWhiteSpace(locale) ? "the document's own language" : locale;
 
         return

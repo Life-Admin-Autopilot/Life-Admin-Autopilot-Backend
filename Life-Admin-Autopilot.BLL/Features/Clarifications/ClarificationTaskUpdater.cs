@@ -15,17 +15,24 @@ namespace Life_Admin_Autopilot.BLL.Features.Clarifications;
 /// A confirmed date is the whole point of asking, so a task whose reminder was
 /// WITHHELD on an uncertain high-stakes guess starts firing once the user confirms.
 /// </param>
+/// <param name="Amount">
+/// What the matter costs, when the answer settled that. Only the custom branch
+/// produces it — a tapped option never carries money — and it is already a
+/// normalised <c>MoneyDocument</c>, stamped <c>source: "user"</c> because a figure
+/// typed into an answer is the user's own, not the model's guess.
+/// </param>
 public readonly record struct ClarificationTaskPatch(
     string? Title = null,
     string? Notes = null,
     DateTime? DueAt = null,
     string? Kind = null,
     string? Domain = null,
-    string? Priority = null)
+    string? Priority = null,
+    MoneyDocument? Amount = null)
 {
     public bool IsEmpty =>
         Title is null && Notes is null && DueAt is null && Kind is null
-        && Domain is null && Priority is null;
+        && Domain is null && Priority is null && Amount is null;
 }
 
 /// <summary>
@@ -43,12 +50,19 @@ public readonly record struct ClarificationTaskPatch(
 /// </para>
 ///
 /// <para>
-/// <b>Deliberately narrow.</b> <c>runUpdate</c> also handles domain, priority, tags,
-/// status/completedAt and the guarded estimate write. None of those is reachable
-/// from this route: the option branch produces only title/notes/dueAt, and the
-/// custom branch (CustomAnswerInterpreter) adds domain/priority — both land here. The full tool runner belongs to the AI slice;
-/// speculating the other fields here would ship untested code and a second copy for
-/// that slice to reconcile.
+/// <b>Deliberately narrow.</b> <c>runUpdate</c> also handles tags, status/completedAt
+/// and the guarded estimate write. None of those is reachable from this route: the
+/// option branch produces only title/notes/dueAt, and the custom branch
+/// (CustomAnswerInterpreter) adds domain/priority and the AMOUNT. The full tool
+/// runner belongs to the AI slice; speculating the other fields here would ship
+/// untested code and a second copy for that slice to reconcile.
+/// </para>
+///
+/// <para>
+/// <b>Amount is here because the agent now asks for it.</b> A money matter with no
+/// figure raises a 'detail' question, and the whole point of asking is that the
+/// answer lands on the matter — without this field the question was a dead end: the
+/// user typed 730, the question closed, and the matter was still worth nothing.
 /// </para>
 /// </summary>
 public sealed class ClarificationTaskUpdater
@@ -114,6 +128,21 @@ public sealed class ClarificationTaskUpdater
             // ever puts a TRUTHY `notes` in the patch, so the clearing branch is
             // unreachable from this route.
             set["notes"] = validated.Notes;
+        }
+
+        if (validated.Amount is { } money)
+        {
+            // Written as the embedded shape the document stores, not through the
+            // PATCH route's reader: this path deliberately bypasses
+            // TaskWriteService (see the type remarks) and must not start
+            // incrementing rescheduleCount on the way past.
+            set["amount"] = new BsonDocument
+            {
+                ["amountMinor"] = money.AmountMinor,
+                ["currency"] = money.Currency,
+                ["source"] = money.Source,
+                ["direction"] = money.Direction,
+            };
         }
 
         TaskDocument? task;

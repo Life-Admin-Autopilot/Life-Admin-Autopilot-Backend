@@ -1,4 +1,5 @@
 using Life_Admin_Autopilot.BLL.Features.Finance;
+using Life_Admin_Autopilot.DAL.Kernel.Time;
 using Life_Admin_Autopilot.DAL.Features.DocumentScans;
 using Life_Admin_Autopilot.DAL.Features.Finance;
 using Life_Admin_Autopilot.DAL.Kernel.Documents;
@@ -219,7 +220,7 @@ public sealed class FinanceSummaryServiceTests
     }
 
     [Fact]
-    public async Task an_unknown_timezone_falls_back_to_utc_rather_than_failing()
+    public async Task an_unknown_timezone_falls_back_to_the_default_rather_than_failing()
     {
         // Arrange — a bad stored value is not a reason to deny the user their page.
         var repository = new FakeFinanceRepository
@@ -230,8 +231,10 @@ public sealed class FinanceSummaryServiceTests
         // Act
         var summary = await Build(repository, timezone: "Mars/Olympus_Mons");
 
-        // Assert
-        Assert.Equal("UTC", summary.Timezone);
+        // Assert — the echoed zone is the product default, not UTC. The client
+        // re-buckets nothing and trusts this field, so echoing "UTC" while the months
+        // were cut in Cairo would have been the worse of the two failures.
+        Assert.Equal(AppTimeZone.Default.Id, summary.Timezone);
         Assert.Equal(10_000, Assert.Single(summary.Currencies).SpentThisMonthMinor);
     }
 

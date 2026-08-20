@@ -52,6 +52,7 @@ public static class UpdateMeValidator
         ReadBool(body.HasOnboarded, "hasOnboarded", set, issues);
         ReadOnboardingAnswers(body.OnboardingAnswers, set, issues);
         ReadRefinedString(body.Timezone, "timezone", 1, 64, NodeIntl.IsValidTimezone, NotATimezone, set, issues);
+        ReadBool(body.TimezoneFollowsDevice, "timezoneFollowsDevice", set, issues);
         ReadRefinedString(body.Locale, "locale", 2, 35, NodeIntl.IsValidLocale, NotALocale, set, issues);
         ReadBool(body.LocaleFollowsDevice, "localeFollowsDevice", set, issues);
         ReadEnum(body.Theme, "theme", UserVocabulary.Themes, set, issues);

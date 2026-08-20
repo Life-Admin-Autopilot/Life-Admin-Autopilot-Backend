@@ -111,8 +111,37 @@ public sealed class UserProfileDocument
 
     public DateTime? EmailVerifiedAt { get; set; }
 
-    /// <summary>IANA zone. Absent means "trust the device"; workers fall back to UTC.</summary>
+    /// <summary>
+    /// IANA zone. The EFFECTIVE zone, always set on accounts created since the
+    /// default landed — signup writes <c>AppTimeZone.DefaultId</c>. Readers that
+    /// meet an absent one (a profile written before that) resolve it through
+    /// <c>AppTimeZone.Resolve</c>, which is the product default, NOT UTC. See
+    /// <c>docs/DIVERGENCES.md</c> §16 for what the UTC fallback used to cost.
+    /// </summary>
     public string? Timezone { get; set; }
+
+    /// <summary>
+    /// Whether <see cref="Timezone"/> is still the default rather than a choice the
+    /// user made, mirroring <see cref="LocaleFollowsDevice"/>.
+    ///
+    /// <para>
+    /// <b>Why a flag rather than inferring it from a null zone.</b> The client used
+    /// to detect "never set" as <c>timezone == null</c> and write the device's zone
+    /// on first run. Once signup started provisioning a real default that test was
+    /// never true again, so device detection silently stopped — the account would
+    /// sit on the default forever for a user who had travelled or who simply is not
+    /// in Egypt. The flag says what the null used to imply, without having to leave
+    /// the field empty and every server-side reader guessing.
+    /// </para>
+    ///
+    /// <para>
+    /// <c>true</c> means the client may keep this in step with the device.
+    /// <c>false</c> means the user picked a zone in Profile and nothing may
+    /// overwrite it. <c>null</c> is a legacy profile and reads as <c>true</c>, which
+    /// reproduces the old first-run behaviour for accounts that predate the flag.
+    /// </para>
+    /// </summary>
+    public bool? TimezoneFollowsDevice { get; set; }
 
     /// <summary>BCP 47 tag. The EFFECTIVE language, set even when following the device.</summary>
     public string? Locale { get; set; }

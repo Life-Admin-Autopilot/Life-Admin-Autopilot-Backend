@@ -445,6 +445,11 @@ ported with it.
 
 ## 7. The agent's grounding is ported; a missing timezone means UTC, not the server's zone
 
+> **Superseded in part by §16.** The ruling below — that the fallback must not depend on
+> `TimeZoneInfo.Local` — stands. Its *conclusion*, that the fallback should therefore be
+> UTC, does not: an absent timezone now resolves to `Africa/Cairo`. Read §16 before
+> acting on this section.
+
 **Decided:** slice m-grounding, porting `modules/ai/contextBuilder.ts`.
 **Status:** implemented. The port is byte-identical to Node everywhere the caller
 supplies a timezone; the single difference is what an absent or unusable one means.
@@ -1326,3 +1331,125 @@ drop the `timezone` argument from `TaskGrounding.BuildTaskBlock` and return
 delete `FailedLookupGuard.cs` and its call site in `RunTurnAsync`; restore `langflow/planning-agent.v4.json` from git AND re-import it into Langflow (see below). Doing so restores a
 server whose agent cannot see any future matter it has more than twenty undated ones, and
 which reports a broken lookup as an empty day.
+
+---
+
+## 16. An absent timezone means `Africa/Cairo`, not UTC — and signup writes it
+
+**Decided:** slice tz-default, after a user report that task times, reminders and the
+briefing all read three hours behind Egyptian wall-clock time.
+**Status:** implemented. `AppTimeZone` is the single source of truth; twelve
+independent UTC fallbacks now route through it.
+
+### The bug this replaces
+
+`UserProfileDocument.Timezone` is `string?`, and `UserProvisioningService.CreateAsync`
+never set it — so **every account created by this server had no timezone at all**. That
+was survivable only because each consumer invented its own answer for the absent case,
+and all twelve of them invented UTC:
+
+| Site | Was | Consequence for an Egyptian account |
+| --- | --- | --- |
+| `TaskQuery.ZoneOffsetMinutes` | `return 0` | "today" / "this week" cut at 02:00 or 03:00 local |
+| `DateGrounding.ToLocal` | `now.ToUniversalTime()` | agent told the wrong clock; every derived `dueAt` 3h early |
+| `ReminderUserTimezoneReader.DefaultTimezone` | `"UTC"` | notification names the wrong DAY across local midnight |
+| `DigestClock.LocalDateKey` | `TimeZoneInfo.Local.Id` | digest cache key = the SERVER's date, not the user's |
+| `DailyDigestComputer` | `timezone ?? "UTC"` | busiest-day bucketed against a different calendar than it was labelled with |
+| `FinanceSummaryService.ResolveZone` | `TimeZoneInfo.Utc` | a 23:30 spend on the 31st booked to the wrong month |
+| `FinanceSummaryDto.Timezone` | `"UTC"` | client told UTC while the months were cut elsewhere |
+| `KnowledgeAgentService.ResolveZone` | `TimeZoneInfo.Utc` | briefing rolls over mid-evening |
+| `CustomAnswerInterpreter.ResolveZone` | `TimeZoneInfo.Utc` | "Thursday morning" resolved 3h out |
+| `PlanningService` prompt | `"UTC"` | extraction grounded on the wrong clock |
+| `GeminiDocumentExtractor` prompt | `"UTC"` | same, for scanned documents |
+| `AdminCustomerRepository` signups-per-day | `"UTC"` | daily totals unreconcilable with the rest of the page |
+
+None of it raised, logged or rendered anything unusual. Egypt is UTC+02:00 in winter and
+UTC+03:00 under DST, so the whole product was simply two or three hours early.
+
+`DateGrounding`'s own doc comment had already measured the symptom and left it standing:
+*"Measured on the live stack with `Africa/Cairo`: hand the agent a bare `yyyy-MM-dd` and
+it invents `+00:00` rather than complaining, putting every derived `dueAt` three hours
+early with no error anywhere."* The fix for the format shipped; the fallback that
+produced the same number did not.
+
+### What changed
+
+1. **`AppTimeZone`** (`DAL/Kernel/Time/AppTimeZone.cs`) — `DefaultId = "Africa/Cairo"`,
+   plus `Resolve` (→ `TimeZoneInfo`) and `ResolveId` (→ zone name). Every site in the
+   table above calls one of them.
+2. **Signup provisions it.** `UserProvisioningService.CreateAsync` writes
+   `Timezone = AppTimeZone.DefaultId`, so the fallback stops being the normal path.
+3. **A stored zone still wins, unconditionally.** `Resolve` returns the caller's zone
+   whenever the host can resolve it; the default is reached only for absent, blank or
+   unresolvable values. A user on Europe/Berlin is not pulled back to Cairo.
+
+### Why a named zone and not an offset
+
+Egypt reinstated daylight saving in 2023 — last Friday of April to last Thursday of
+October. A hardcoded `+02:00` or `+03:00` is wrong for roughly half of every year, and
+wrong in the way that surfaces months after it ships. `AppTimeZoneTests` pins both
+offsets against real 2026 instants for exactly that reason.
+
+### Why this supersedes §7's ruling
+
+§7 argued that an unusable timezone should mean **UTC** rather than the server's own
+zone, on the grounds that `TimeZoneInfo.Local` is "an accident of where the process
+runs". That reasoning stands and is unchanged — the conclusion was just incomplete.
+UTC is *also* an accident, and a less defensible one: it is nobody's wall clock. The
+requirement §7 actually established is that the fallback be **machine-independent and
+self-consistent**, and `Africa/Cairo` satisfies both while additionally being the clock
+this product's users are on.
+
+§7's cost analysis said the difference is "reachable only by a caller that omits
+`timezone` entirely". That was measured against the API surface and was correct there;
+what it missed is that the *stored profile field* was empty for every account, so the
+server-side readers — workers, digest, finance, reminders — took the fallback on every
+single request. The blast radius was the product, not an edge case.
+
+### What it costs
+
+- **Parity:** on the absent-`timezone` path the port no longer matches Node's
+  `timezone: 'UTC'` output. `/ai/ask` is 503 on the parity target, so no harness row
+  reaches the grounding path; the finance, digest and counts paths now answer in
+  `Africa/Cairo` where Node answers in UTC. Accepted: the alternative is a server that
+  is provably wrong for its actual users in order to match a reference nobody runs.
+- **One cache moved.** `DigestClock.LocalDateKey` is the digest cache key, so the first
+  absent-`tz` digest after deploy is recomputed rather than read. That is what the cache
+  is for.
+- **Existing accounts are not migrated.** Rows written before this change still have
+  `timezone: null` and now resolve to the default at read time, which is the intended
+  outcome. Nothing needs backfilling; a backfill would only make the field explicit.
+
+### What was verified, and how
+
+`dotnet test` — 1975 tests, 1969 passing. Nine tests asserted the old UTC fallback
+directly and were rewritten to assert the default, each keeping a note of what it used
+to claim:
+
+- `TaskQueryTests.a_missing_zone_falls_back_to_the_product_default` (was
+  `…_falls_back_to_utc`)
+- `AiDateGroundingTests.an_unusable_timezone_is_the_product_default_not_the_servers_own`
+  × 4 cases (was `…_is_utc_…`)
+- `AiDateGroundingTests.the_utc_offset_matches_the_one_on_current_date` — the
+  `Not/AZone` and `null` rows moved `+00:00` → `+03:00`
+- `LangflowProviderTests.falls_back_to_the_default_zone_rather_than_failing_the_turn_on_a_bad_timezone`
+- `FinanceSummaryServiceTests.an_unknown_timezone_falls_back_to_the_default_rather_than_failing`
+
+`AppTimeZoneTests` is new: 16 cases covering the id, that it resolves on the host at
+all (a silent degrade to UTC is the failure being prevented, so it must not pass
+quietly), both DST offsets, the five absent/unusable inputs, and that a stored zone
+beats the default.
+
+The six remaining failures are pre-existing and unrelated — CRLF-sensitive string
+comparisons and one ICU zone (`CET`) this host does not publish. Confirmed by running
+the suite against a stashed tree first: 18 failing before this change, and the six are a
+subset of those 18.
+
+### How to revert
+
+Set `AppTimeZone.DefaultId` to `"UTC"` — every site routes through it, so that one edit
+restores the old behaviour everywhere except the two places where the old code was
+*differently* wrong: `TaskQuery.ZoneOffsetMinutes` returned a literal `0` and
+`DigestClock.LocalDateKey` used `TimeZoneInfo.Local.Id`. Also drop
+`Timezone = AppTimeZone.DefaultId` from `UserProvisioningService.CreateAsync`, or new
+accounts will keep carrying an explicit zone that no longer matches the fallback.

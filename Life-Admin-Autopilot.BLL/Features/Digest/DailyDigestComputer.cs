@@ -1,6 +1,7 @@
 using Life_Admin_Autopilot.BLL.Kernel.Tasks;
 using Life_Admin_Autopilot.DAL.Features.Digest;
 using Life_Admin_Autopilot.DAL.Kernel.Mongo;
+using Life_Admin_Autopilot.DAL.Kernel.Time;
 using MongoDB.Bson;
 using MongoDB.Driver;
 
@@ -140,10 +141,12 @@ public sealed class DailyDigestComputer
                             ["date"] = "$dueAt",
                             ["format"] = "%Y-%m-%d",
 
-                            // Explicitly UTC when absent. Note this does NOT match
-                            // what localDate does with an absent zone — see
-                            // DigestClock.LocalDateKey.
-                            ["timezone"] = timezone ?? "UTC",
+                            // Explicitly the product default when absent, which
+                            // is now also what DigestClock.LocalDateKey does. The two
+                            // used to disagree, so the busiest day could be bucketed
+                            // against a different calendar than the one it was
+                            // labelled with.
+                            ["timezone"] = AppTimeZone.ResolveId(timezone),
                         }),
                         ["n"] = new BsonDocument("$sum", 1),
                     }),

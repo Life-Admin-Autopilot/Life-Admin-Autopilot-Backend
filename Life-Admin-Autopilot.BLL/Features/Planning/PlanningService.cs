@@ -6,6 +6,7 @@ using Life_Admin_Autopilot.BLL.Features.Knowledge;
 using Life_Admin_Autopilot.DAL.Features.Tasks;
 using Life_Admin_Autopilot.DAL.Kernel.Documents;
 using Life_Admin_Autopilot.DAL.Kernel.Errors;
+using Life_Admin_Autopilot.DAL.Kernel.Time;
 using Microsoft.Extensions.Logging;
 using MongoDB.Bson;
 using MongoDB.Driver;
@@ -195,7 +196,7 @@ public sealed class PlanningService
         var now = at is { } anchor
             ? new DateTimeOffset(DateTime.SpecifyKind(anchor, DateTimeKind.Utc))
             : DateTimeOffset.UtcNow;
-        var zone = string.IsNullOrWhiteSpace(timezone) ? "UTC" : timezone;
+        var zone = AppTimeZone.ResolveId(timezone);
 
         var system =
             "You split a user's message into the distinct tasks it describes.\n"

@@ -1,5 +1,6 @@
 using System.Globalization;
 using Life_Admin_Autopilot.BLL.Kernel.Integrations;
+using Life_Admin_Autopilot.DAL.Kernel.Time;
 
 namespace Life_Admin_Autopilot.BLL.Features.Ai.Grounding;
 
@@ -27,15 +28,19 @@ namespace Life_Admin_Autopilot.BLL.Features.Ai.Grounding;
 /// </para>
 ///
 /// <para>
-/// <b>The one deliberate difference: an absent or unusable timezone means UTC.</b>
-/// Node's no-timezone branch prints the instant with <c>Date#toISOString()</c> (a
-/// <c>Z</c> timestamp) but takes the weekday — and the whole 14-day table — from the
-/// SERVER's local zone, so a laptop in Cairo and a container in UTC produce different
-/// tables for the same request. That output is not reproducible and is internally
-/// inconsistent (a UTC instant labelled with Cairo's weekday). Here an absent,
-/// unknown or malformed zone is treated as <c>UTC</c>, which makes the fallback
-/// self-consistent and byte-identical to Node's own <c>timezone: 'UTC'</c> output.
-/// Recorded in <c>docs/DIVERGENCES.md</c>.
+/// <b>The one deliberate difference: an absent or unusable timezone means the
+/// product default.</b> Node's no-timezone branch prints the instant with
+/// <c>Date#toISOString()</c> (a <c>Z</c> timestamp) but takes the weekday — and the
+/// whole 14-day table — from the SERVER's local zone, so a laptop in Cairo and a
+/// container in UTC produce different tables for the same request. That output is
+/// not reproducible and is internally inconsistent (a UTC instant labelled with
+/// Cairo's weekday). Here an absent, unknown or malformed zone resolves to
+/// <see cref="AppTimeZone.Default"/>, which is self-consistent, identical on every
+/// host, and — unlike the UTC fallback this used to carry — the clock the users of
+/// this product are actually on. The measured cost of getting it wrong is spelled
+/// out on <see cref="FormatNow"/>: the model invents <c>+00:00</c> and every derived
+/// <c>dueAt</c> lands three hours early, with no error anywhere. Recorded in
+/// <c>docs/DIVERGENCES.md</c>.
 /// </para>
 /// </summary>
 public static class DateGrounding
@@ -78,8 +83,9 @@ public static class DateGrounding
     /// <para>
     /// The same offset <see cref="FormatNow"/> prints, from the same conversion, so the
     /// clock the agent reads and the offset its <c>due_on</c> filter computes with
-    /// cannot drift apart. An absent or unusable zone is <c>+00:00</c>, matching this
-    /// type's UTC fallback.
+    /// cannot drift apart. An absent or unusable zone takes the default zone's offset
+    /// (<c>+02:00</c>, or <c>+03:00</c> under Egyptian DST), matching this type's
+    /// fallback.
     /// </para>
     /// </summary>
     public static string UtcOffset(DateTimeOffset now, string? timezone) =>
@@ -201,13 +207,16 @@ public static class DateGrounding
     }
 
     /// <summary>
-    /// The caller's wall clock. An absent, unknown or malformed zone is UTC — see the
-    /// type remarks for why this does not follow Node's system-zone branch.
+    /// The caller's wall clock. An absent, unknown or malformed zone resolves to
+    /// <see cref="AppTimeZone.Default"/> — see the type remarks for why this
+    /// follows neither Node's system-zone branch nor a UTC one.
     /// </summary>
     private static DateTimeOffset ToLocal(DateTimeOffset now, string? timezone) =>
-        ImportedTimeResolver.IsValidTimeZone(timezone)
-            ? TimeZoneInfo.ConvertTime(now, TimeZoneInfo.FindSystemTimeZoneById(timezone!))
-            : now.ToUniversalTime();
+        TimeZoneInfo.ConvertTime(
+            now,
+            ImportedTimeResolver.IsValidTimeZone(timezone)
+                ? TimeZoneInfo.FindSystemTimeZoneById(timezone!)
+                : AppTimeZone.Default);
 
     /// <summary>
     /// <c>Intl.DateTimeFormat('en-US', { weekday: 'long' })</c>. Invariant culture, so
