@@ -76,6 +76,71 @@ public static partial class TaskQuery
         public bool? Undated { get; init; }
 
         public bool? Untagged { get; init; }
+
+        /// <summary>
+        /// Matters that have stopped being real commitments — pushed repeatedly, or
+        /// left overdue for a fortnight.
+        ///
+        /// <para>
+        /// <b>Why this filter had to exist.</b> <c>slipping</c> was a COUNT with no
+        /// way to list what it counted, so the banner that reports it sent the user
+        /// to <c>overdue</c> instead — a different, larger set. It read "1 matter has
+        /// slipped", opened two matters, and left the reader to work out which number
+        /// was lying. Neither was; they were answers to different questions, and only
+        /// one of them was on screen.
+        /// </para>
+        ///
+        /// <para>
+        /// The definition lives in <see cref="SlippingRule"/> and is used by both the
+        /// count and this filter, so they cannot drift apart again.
+        /// </para>
+        /// </summary>
+        public bool? Slipping { get; init; }
+
+        /// <summary>
+        /// The zone the day boundary is measured in. Only <see cref="Slipping"/> reads
+        /// it — every other filter here compares instants, which need no zone.
+        ///
+        /// <para>
+        /// Absent means UTC, which is a REAL difference of up to a day for the
+        /// staleness cut-off: a caller that sends it to <c>/me/tasks/counts</c> and
+        /// omits it here would get a count and a list that disagree at the edge, which
+        /// is the exact failure this filter exists to end.
+        /// </para>
+        /// </summary>
+        public string? Timezone { get; init; }
+    }
+
+    /// <summary>
+    /// What "slipping" means, in one place.
+    ///
+    /// <para>
+    /// It was written twice: once as an aggregation branch in
+    /// <c>TaskCountsService</c> and once, implicitly and wrongly, as "overdue" in the
+    /// client that reported it. Two definitions of one word is how a banner ends up
+    /// contradicting the list underneath it.
+    /// </para>
+    /// </summary>
+    public static class SlippingRule
+    {
+        /// <summary>Pushed this many times, and the date has stopped meaning anything.</summary>
+        public const int Pushes = 3;
+
+        /// <summary>Overdue by longer than this, and it is not a deadline any more.</summary>
+        public const int StaleDays = 14;
+
+        /// <summary>The instant a due date has to precede to count as stale.</summary>
+        public static DateTime StaleBefore(DateTime todayStart) => AddDays(todayStart, -StaleDays);
+
+        /// <summary>
+        /// The match, as Mongo sees it. Shared verbatim by the counter and the list
+        /// filter — a change to one is a change to both, which is the point.
+        /// </summary>
+        public static BsonArray Clauses(DateTime todayStart) => new()
+        {
+            new BsonDocument("rescheduleCount", new BsonDocument("$gte", Pushes)),
+            new BsonDocument("dueAt", new BsonDocument("$lt", StaleBefore(todayStart))),
+        };
     }
 
     /// <summary>
@@ -174,6 +239,30 @@ public static partial class TaskQuery
             {
                 filter["status"] = new BsonDocument("$in", new BsonArray(new[] { "open", "snoozed" }));
             }
+        }
+
+        if (f.Slipping == true)
+        {
+            // Live only, for the same reason `overdue` narrows: something already
+            // done has not slipped, however stale the date on it.
+            if (f.Status is null or { Count: 0 })
+            {
+                filter["status"] = new BsonDocument("$in", new BsonArray(new[] { "open", "snoozed" }));
+            }
+
+            // Under `$and`, never as a bare root `$or`. The free-text search already
+            // owns `$or` on this document, and assigning a second one would silently
+            // replace it — a search combined with this filter would quietly stop
+            // searching.
+            var conditions = filter.TryGetValue("$and", out var existing)
+                ? existing.AsBsonArray
+                : new BsonArray();
+
+            conditions.Add(new BsonDocument(
+                "$or",
+                SlippingRule.Clauses(GetDayBoundaries(now, f.Timezone).TodayStart)));
+
+            filter["$and"] = conditions;
         }
 
         if (f.Undated == true)

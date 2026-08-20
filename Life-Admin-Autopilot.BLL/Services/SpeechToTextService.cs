@@ -13,15 +13,18 @@ namespace Life_Admin_Autopilot.BLL.Services
     {
         private readonly ITranscriptionService _transcriptionService;
         private readonly SpeechOptions _options;
+        private readonly AsrAvailability _availability;
         private readonly ILogger<SpeechToTextService> _logger;
 
         public SpeechToTextService(
             ITranscriptionService transcriptionService,
             IOptions<SpeechOptions> options,
+            AsrAvailability availability,
             ILogger<SpeechToTextService> logger)
         {
             _transcriptionService = transcriptionService;
             _options = options.Value;
+            _availability = availability;
             _logger = logger;
         }
 
@@ -139,8 +142,15 @@ namespace Life_Admin_Autopilot.BLL.Services
                     error.Code,
                     error.Message);
 
+                // Tell the capability endpoint what just happened, so a quota that has
+                // run dry stops being discovered one wasted recording at a time. Only
+                // the permanent codes close anything — see AsrAvailability.
+                _availability.Observe(succeeded: false, error.Code);
+
                 return TranscriptionResponse.Fail(error.Code, ToUserMessage(error.Code, error.Message));
             }
+
+            _availability.Observe(succeeded: true, null);
 
             var transcription = result.Value!;
 

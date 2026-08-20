@@ -33,7 +33,12 @@ public static class VoiceNoteVocabulary
     /// </summary>
     public static readonly IReadOnlyList<string> ReviewReasons = new[]
     {
-        "clear", "ambiguous_intent", "vague_date", "maybe_duplicate", "incomplete", "low_asr", "unknown_domain",
+        // `time_clash` is distinct from `maybe_duplicate` on purpose: one says "you
+        // may already have this", the other says "you cannot be in two places". They
+        // were collapsed onto the duplicate term while the policy could not tell them
+        // apart, which put "possible duplicate" on a matter that was neither.
+        "clear", "ambiguous_intent", "vague_date", "maybe_duplicate", "time_clash",
+        "incomplete", "low_asr", "unknown_domain",
     };
 
     /// <summary>Ten minutes, the <c>.max()</c> on <c>x-voice-note-duration-ms</c>.</summary>

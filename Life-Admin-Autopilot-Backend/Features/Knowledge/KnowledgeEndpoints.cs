@@ -287,10 +287,30 @@ public static class KnowledgeEndpoints
                     cancellationToken: cancellationToken)
                 .ConfigureAwait(false);
 
+            // Same escape-hatch rule as /me/conflicts above: a clash without a way out
+            // is just an obstacle. Verified against the same pool — still excluding
+            // this task, which would otherwise collide with every slot proposed for
+            // itself — so a suggestion taken here cannot be refused when applied.
+            var suggestions = Array.Empty<DateTime>();
+            var suggestionReason = string.Empty;
+            if (found.Count > 0 && dueAt is { } wanted)
+            {
+                suggestions = SlotSuggester
+                    .Suggest(
+                        title,
+                        wanted,
+                        OffsetFor(body.Timezone, wanted),
+                        at => ConflictService.ClashesWithin(at, candidate, pool, taskId))
+                    .ToArray();
+                suggestionReason = SlotSuggester.ReasonFor(title);
+            }
+
             return Results.Ok(new
             {
                 taskId = task.Id.ToString(),
                 conflicts = found.Select(Conflict),
+                suggestions,
+                suggestionReason,
             });
         })
         .RequireAuthorization();

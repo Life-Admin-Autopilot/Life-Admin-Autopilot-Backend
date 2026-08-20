@@ -86,7 +86,12 @@ public sealed class DigestProseWriter
 
             // Low, not zero. The sentence should read as written rather than
             // templated, but it is describing facts and must not wander off them.
-            new GeminiConfig(0.3, 256));
+            //
+            // The budget is generous relative to the 240-character ceiling because a
+            // budget that binds does not shorten the sentence — it CUTS it, and a cut
+            // sentence is what shipped. Thinking is off (see GeminiThinking), so this
+            // is the answer's own allowance and nothing competes with it.
+            new GeminiConfig(0.3, 800, new GeminiThinking(0)));
 
         foreach (var model in _options.ModelChain)
         {
@@ -283,15 +288,41 @@ public sealed class DigestProseWriter
         }
     }
 
-    /// <summary>The candidate's text, or null if the envelope was not what it should be.</summary>
+    /// <summary>
+    /// The candidate's text, or null if the envelope was not what it should be — or
+    /// if the model did not finish the sentence.
+    ///
+    /// <para>
+    /// <b><c>finishReason</c> is checked, and this is the whole reason the headline
+    /// stopped mid-clause.</b> A candidate that ran out of budget still carries text,
+    /// and that text is a fragment: "Today you need to pay the Concordia Hill
+    /// Hospital" was served to real users under the greeting. <see cref="Clean"/>
+    /// cannot catch it — its only length rule rejects text that is too LONG, and a
+    /// truncated sentence is short. So the stop reason is the signal, and anything
+    /// other than a clean stop is treated as no answer at all. Falling back to the
+    /// computed sentence is never wrong; half a sentence always is.
+    /// </para>
+    /// </summary>
     private string? ReadText(string body)
     {
         try
         {
             using var document = JsonDocument.Parse(body);
 
-            var text = document.RootElement
-                .GetProperty("candidates")[0]
+            var candidate = document.RootElement.GetProperty("candidates")[0];
+
+            // MAX_TOKENS, SAFETY, RECITATION — all mean the same thing here: what
+            // came back is not the sentence that was asked for. Absent is fine; some
+            // responses omit it entirely and those are ordinary completions.
+            if (candidate.TryGetProperty("finishReason", out var finish)
+                && finish.GetString() is { } reason
+                && !string.Equals(reason, "STOP", StringComparison.OrdinalIgnoreCase))
+            {
+                _logger.LogWarning("daily-digest:prose-unfinished reason={Reason}", reason);
+                return null;
+            }
+
+            var text = candidate
                 .GetProperty("content")
                 .GetProperty("parts")[0]
                 .GetProperty("text")
@@ -343,8 +374,29 @@ public sealed class DigestProseWriter
             return null;
         }
 
+        // A sentence that does not END is not a sentence.
+        //
+        // The stop reason already catches the usual truncation, but this is the check
+        // that does not depend on the provider reporting one — a response envelope
+        // that omits `finishReason`, or a future model that spells it differently,
+        // would put a fragment straight onto the home screen. Terminal punctuation is
+        // a weak signal in general and a sufficient one here, because the prompt asks
+        // for exactly one finished sentence: anything trailing off mid-clause fails
+        // it, and the computed headline takes over.
+        if (!EndsLikeASentence(text))
+        {
+            return null;
+        }
+
         return text;
     }
+
+    /// <summary>
+    /// Western and Arabic full stops, question and exclamation marks, and the
+    /// ellipsis — an ellipsis is a deliberate authorial choice rather than a cut.
+    /// </summary>
+    private static bool EndsLikeASentence(string text) =>
+        text[^1] is '.' or '!' or '?' or '…' or '۔' or '؟';
 
     // ---- Wire shapes -------------------------------------------------------
 
@@ -361,5 +413,28 @@ public sealed class DigestProseWriter
 
     private sealed record GeminiConfig(
         [property: JsonPropertyName("temperature")] double Temperature,
-        [property: JsonPropertyName("maxOutputTokens")] int MaxOutputTokens);
+        [property: JsonPropertyName("maxOutputTokens")] int MaxOutputTokens,
+        [property: JsonPropertyName("thinkingConfig")] GeminiThinking Thinking);
+
+    /// <summary>
+    /// Thinking is switched OFF for this call, and that is the fix for the truncated
+    /// headline rather than a performance tweak.
+    ///
+    /// <para>
+    /// On a thinking-capable model the reasoning tokens are drawn from the SAME
+    /// <c>maxOutputTokens</c> budget as the answer. With 256 for both, the model
+    /// spent nearly all of it deliberating about a one-sentence summary and had ten
+    /// tokens left to write it in — which is exactly how a headline stops after
+    /// "Today you need to pay the Concordia Hill Hospital".
+    /// </para>
+    ///
+    /// <para>
+    /// Nothing here needs deliberation. The facts are computed, the pool is handed
+    /// over pre-sorted and pre-labelled, and the job is one sentence of prose about
+    /// them. Zero also makes the call cheaper and faster on a surface the user is
+    /// waiting on.
+    /// </para>
+    /// </summary>
+    private sealed record GeminiThinking(
+        [property: JsonPropertyName("thinkingBudget")] int ThinkingBudget);
 }

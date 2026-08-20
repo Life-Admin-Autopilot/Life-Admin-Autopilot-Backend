@@ -106,11 +106,21 @@ public static class VoiceNotesFeature
     /// Is there an ASR provider to call?
     ///
     /// <para>
-    /// Reads <c>HF_TOKEN</c> the way <c>AddSpeechServices</c> does — the same key,
-    /// deliberately, so "the speech feature is configured" cannot mean one thing to
-    /// the controller and another to the worker.
+    /// Reads the same keys <c>AddSpeechServices</c> does — deliberately, so "the speech
+    /// feature is configured" cannot mean one thing to the controller and another to the
+    /// worker.
+    /// </para>
+    ///
+    /// <para>
+    /// EITHER provider is enough. The transport is a failover wrapper over both, so a
+    /// deployment holding only an Azure key transcribes perfectly well — and gating this
+    /// on <c>HF_TOKEN</c> alone would leave the worker wired to the null transcriber,
+    /// failing every voice note on a system that could have handled them.
     /// </para>
     /// </summary>
     private static bool HasSpeechProvider(IConfiguration configuration) =>
-        !string.IsNullOrWhiteSpace(configuration["HF_TOKEN"]);
+        !string.IsNullOrWhiteSpace(configuration["HF_TOKEN"])
+        || (!string.IsNullOrWhiteSpace(configuration["AZURE_SPEECH_KEY"])
+            && (!string.IsNullOrWhiteSpace(configuration["AZURE_SPEECH_ENDPOINT"])
+                || !string.IsNullOrWhiteSpace(configuration["Speech:Azure:Endpoint"])));
 }

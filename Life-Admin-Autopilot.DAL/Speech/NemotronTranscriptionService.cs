@@ -18,6 +18,27 @@ namespace Life_Admin_Autopilot.DAL.Speech
     // into Modern Standard Arabic.
     public class NemotronTranscriptionService : ITranscriptionService
     {
+        /// <summary>
+        /// Exactly the values this provider's schema allows, taken from its own 422 body.
+        /// Ordered so that the first entry for a language is the one a bare language code
+        /// resolves to (en -> en-US, pt -> pt-BR).
+        ///
+        /// <para>
+        /// <b>ar-AR is the whole reason LanguageNormalizer exists.</b> This model has no
+        /// Egyptian locale, so ar-EG must resolve to ar-AR here or Arabic stops working.
+        /// That is a fact about THIS TABLE, not about the mapping rules - Azure keeps
+        /// ar-EG, and does so through the same normalizer.
+        /// </para>
+        /// </summary>
+        public static readonly IReadOnlyList<string> SupportedLocales =
+        [
+            "en-US", "en-GB", "es-US", "es-ES", "de-DE", "fr-FR", "fr-CA", "it-IT", "ar-AR",
+            "ja-JP", "ko-KR", "pt-BR", "pt-PT", "ru-RU", "hi-IN", "zh-CN", "vi-VN", "he-IL",
+            "nl-NL", "cs-CZ", "da-DK", "pl-PL", "nn-NO", "nb-NO", "sv-SE", "th-TH", "tr-TR",
+            "bg-BG", "el-GR", "et-EE", "fi-FI", "hr-HR", "hu-HU", "lt-LT", "lv-LV", "ro-RO",
+            "sk-SK", "uk-UA", "mt-MT", "sl-SI"
+        ];
+
         private readonly HttpClient _httpClient;
         private readonly SpeechOptions _options;
         private readonly ILogger<NemotronTranscriptionService> _logger;
@@ -57,7 +78,10 @@ namespace Life_Admin_Autopilot.DAL.Speech
 
             // Anything outside the provider's fixed locale set is a 422, so the requested
             // language is mapped onto it here rather than sent through as-is.
-            var language = LanguageNormalizer.Normalize(request.Language, _options.DefaultLanguage);
+            var language = LanguageNormalizer.Normalize(
+                request.Language,
+                SupportedLocales,
+                _options.DefaultLanguage);
 
             using var httpRequest = new HttpRequestMessage(HttpMethod.Post, _options.TranscriptionUrl)
             {

@@ -1,5 +1,6 @@
 using Life_Admin_Autopilot.BLL.Features.Knowledge;
 using Life_Admin_Autopilot.BLL.Features.Planning;
+using Life_Admin_Autopilot.DAL.Kernel.Documents;
 using Microsoft.Extensions.Logging;
 
 namespace Life_Admin_Autopilot.BLL.Features.VoiceNotes;
@@ -81,24 +82,38 @@ public sealed class PlanningVoiceExtractor : IVoiceExtractor
         var items = new List<DraftVoiceItem>(drafts.Count);
         foreach (var draft in drafts)
         {
+            var candidate = new ConflictService.MatterCandidate(draft.Title, draft.Domain, draft.Priority);
+
             var found = await _conflicts
                 .CheckAsync(
                     request.UserId,
-                    new ConflictService.MatterCandidate(draft.Title, draft.Domain, draft.Priority),
+                    candidate,
                     draft.DueAt,
                     open,
                     excludeTaskId: null,
                     cancellationToken: cancellationToken)
                 .ConfigureAwait(false);
 
+            // Real free slots, on the same terms every typed surface already gets.
+            //
+            // The clash question used to offer "later that day" as the wanted time
+            // plus a fixed two-and-a-half hours — a slot nothing had checked, in the
+            // one lane where the user is least likely to be looking. Every other
+            // surface calls /me/conflicts and is handed times that are known free and
+            // that suit the kind of matter. Same suggester, same pool, same clash
+            // predicate, so a slot offered here cannot be refused the moment it is
+            // taken.
+            var slots = SuggestFor(draft, candidate, open, timezone);
+
             items.Add(VoiceAutoFilePolicy.Apply(
                 draft with
                 {
                     Conflicts = found
-                        .Select(c => new PlanningConflict(c.TaskId, c.Title, c.DueAt, c.Reason))
+                        .Select(c => new PlanningConflict(c.TaskId, c.Title, c.DueAt, c.Reason, c.Kind))
                         .ToList(),
                 },
-                timezone));
+                timezone,
+                slots));
         }
 
         _logger.LogInformation(
@@ -107,5 +122,57 @@ public sealed class PlanningVoiceExtractor : IVoiceExtractor
             items.Count(i => i.Clarification is not null));
 
         return items;
+    }
+
+    /// <summary>
+    /// Times this draft could move to instead, or empty when it has no time to move
+    /// from.
+    ///
+    /// <para>
+    /// Computed for every draft rather than only for the clashing ones: the policy
+    /// decides which question to ask, and asking it for the slots afterwards would
+    /// put that decision in two places. The walk is a few dozen in-memory window
+    /// comparisons against a pool already in hand — no database, no model.
+    /// </para>
+    /// </summary>
+    private static IReadOnlyList<DateTime> SuggestFor(
+        TaskDraft draft,
+        ConflictService.MatterCandidate candidate,
+        IReadOnlyList<TaskDocument> pool,
+        string? timezone)
+    {
+        if (draft.DueAt is not { } wanted)
+        {
+            return Array.Empty<DateTime>();
+        }
+
+        return SlotSuggester.Suggest(
+            draft.Title,
+            wanted,
+            OffsetFor(timezone, wanted),
+            at => ConflictService.ClashesWithin(at, candidate, pool, null));
+    }
+
+    /// <summary>
+    /// The user's offset at that instant, so "evening" means their evening.
+    ///
+    /// <para>
+    /// The zone has already been through <see cref="VoiceAutoFilePolicy.ResolveZone"/>
+    /// by the time it reaches here, so the catch is a formality rather than the
+    /// working path — but a suggestion is decoration on a note that is otherwise
+    /// fine, and it must not be the thing that fails one.
+    /// </para>
+    /// </summary>
+    private static TimeSpan OffsetFor(string? timezone, DateTime at)
+    {
+        if (string.IsNullOrWhiteSpace(timezone)) return TimeSpan.Zero;
+        try
+        {
+            return TimeZoneInfo.FindSystemTimeZoneById(timezone).GetUtcOffset(at);
+        }
+        catch (Exception)
+        {
+            return TimeSpan.Zero;
+        }
     }
 }

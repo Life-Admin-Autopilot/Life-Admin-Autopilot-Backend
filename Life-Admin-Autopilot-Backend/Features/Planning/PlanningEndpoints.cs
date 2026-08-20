@@ -87,6 +87,11 @@ public static class PlanningEndpoints
                         taskId = c.TaskId.ToString(),
                         title = c.Title,
                         dueAt = c.DueAt,
+                        // The one conflict payload in the API that used to omit this,
+                        // because PlanningConflict dropped it. The client's
+                        // DraftConflict type has always declared `kind` — it was
+                        // simply arriving undefined on the propose lane alone.
+                        kind = c.Kind,
                         reason = c.Reason,
                     }),
                 }),
@@ -234,19 +239,42 @@ public static class PlanningEndpoints
             var category = body.Category ?? body.Domain;
             var due = body.DueDate ?? body.DueAt;
 
+            var candidate = new ConflictService.MatterCandidate(
+                title,
+                PlanningService.NormaliseDomain(category),
+                PlanningService.NormalisePriority(body.Priority));
+
             var pool = await conflicts.OpenMattersAsync(caller.Id, cancellationToken).ConfigureAwait(false);
             var found = await conflicts
                 .CheckAsync(
                     caller.Id,
-                    new ConflictService.MatterCandidate(
-                        title,
-                        PlanningService.NormaliseDomain(category),
-                        PlanningService.NormalisePriority(body.Priority)),
+                    candidate,
                     due,
                     pool,
                     excludeTaskId: null,
                     cancellationToken: cancellationToken)
                 .ConfigureAwait(false);
+
+            // A refusal the user cannot act on is just an obstacle — the same rule
+            // /me/conflicts follows. When the draft clashes, the answer carries times
+            // that suit this kind of matter and are verified free against the SAME
+            // pool, so a suggestion cannot be refused the moment it is taken. Two
+            // readers act on these: the confirm card renders them as one-tap chips,
+            // and the agent reads them back, so its reply can name real alternatives
+            // instead of narrating a dead end.
+            var suggestions = Array.Empty<DateTime>();
+            var suggestionReason = string.Empty;
+            if (found.Count > 0 && due is { } wanted)
+            {
+                suggestions = SlotSuggester
+                    .Suggest(
+                        title,
+                        wanted,
+                        OffsetFor(body.Timezone, wanted),
+                        at => ConflictService.ClashesWithin(at, candidate, pool, null))
+                    .ToArray();
+                suggestionReason = SlotSuggester.ReasonFor(title);
+            }
 
             return Results.Ok(new
             {
@@ -273,9 +301,32 @@ public static class PlanningEndpoints
                         kind = c.Kind,
                         reason = c.Reason,
                     }),
+                    suggestions,
+                    suggestionReason,
                 },
             });
         }).RequireAuthorization();
+    }
+
+    /// <summary>
+    /// The user's UTC offset at that moment — DST included, which is why it is
+    /// resolved AT the instant rather than taken as a fixed number. Mirrors the
+    /// helper in <c>KnowledgeEndpoints</c>, which is private there for the same
+    /// reason this one is here: it is a detail of turning a clash into slots.
+    /// </summary>
+    private static TimeSpan OffsetFor(string? timezone, DateTime at)
+    {
+        if (string.IsNullOrWhiteSpace(timezone)) return TimeSpan.Zero;
+        try
+        {
+            return TimeZoneInfo.FindSystemTimeZoneById(timezone).GetUtcOffset(at);
+        }
+        catch (Exception)
+        {
+            // An unknown zone must not fail a draft; UTC just makes the suggested
+            // hours less local, not wrong.
+            return TimeSpan.Zero;
+        }
     }
 }
 
@@ -305,6 +356,14 @@ public sealed class DraftBody : CommitBody
 
     [JsonPropertyName("dueAt")]
     public DateTime? DueAt { get; set; }
+
+    /// <summary>
+    /// IANA zone, so a clashing draft's suggested slots land in the user's evening
+    /// rather than UTC's. Optional — the agent may not send one, and an absent or
+    /// unknown zone only makes the suggested hours less local, never wrong.
+    /// </summary>
+    [JsonPropertyName("timezone")]
+    public string? Timezone { get; set; }
 }
 
 /// <summary>

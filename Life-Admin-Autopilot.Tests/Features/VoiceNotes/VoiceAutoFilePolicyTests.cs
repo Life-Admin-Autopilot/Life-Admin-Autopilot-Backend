@@ -1,4 +1,5 @@
 using System.Text;
+using Life_Admin_Autopilot.BLL.Features.Knowledge;
 using Life_Admin_Autopilot.BLL.Features.Planning;
 using Life_Admin_Autopilot.BLL.Features.VoiceNotes;
 using MongoDB.Bson;
@@ -78,6 +79,14 @@ public sealed class VoiceAutoFilePolicyTests
     [Fact]
     public void asks_before_filing_a_second_matter_on_top_of_an_existing_one()
     {
+        // The two free slots the caller found, which is what the alternatives are now
+        // built from. This used to assert `MondayMorning.AddHours(2.5)` — a fixed jump
+        // nothing had checked, which landed back inside the very window it was meant
+        // to escape roughly half the time. Accepting that suggestion recreated the
+        // clash, and the question could not be asked again because it had been
+        // answered.
+        var free = new[] { MondayMorning.AddHours(4), MondayMorning.AddHours(6) };
+
         var item = VoiceAutoFilePolicy.Apply(
             Draft(dueAt: MondayMorning, timeAssumed: false) with
             {
@@ -87,10 +96,12 @@ public sealed class VoiceAutoFilePolicyTests
                         ObjectId.GenerateNewId(),
                         "Dentist",
                         MondayMorning,
-                        "Scheduled within two hours of this."),
+                        "Scheduled within two hours of this.",
+                        MatterConflict.TimeClash),
                 },
             },
-            Zone);
+            Zone,
+            free);
 
         var clarification = Assert.IsType<DraftClarification>(item.Clarification);
         Assert.Contains("Dentist", clarification.Question);
@@ -98,8 +109,96 @@ public sealed class VoiceAutoFilePolicyTests
         // A clash is never cheap to be wrong about: the failure mode is a
         // double-booking nobody chose to make.
         Assert.Equal("high", clarification.CostOfWrong);
-        Assert.Equal(MondayMorning, clarification.Options[0].DueAt);
-        Assert.Equal(MondayMorning.AddHours(2.5), clarification.Options[1].DueAt);
+        Assert.Equal("time_clash", item.ReviewReason);
+
+        // Option zero is still the reading the item was filed under — the staging
+        // layer files at Options[0], so anything else there silently moves it.
+        Assert.Equal(
+            new DateTime?[] { MondayMorning, free[0], free[1] },
+            clarification.Options.Select(o => o.DueAt).ToArray().AsEnumerable());
+    }
+
+    [Fact]
+    public void offers_no_alternative_when_no_free_slot_was_found()
+    {
+        // A genuinely full week. Offering a time anyway would be inventing one, and
+        // this is the lane where a suggestion gets tapped without being read — the
+        // card still carries Keep, Skip and Discard, and a typed answer.
+        var item = VoiceAutoFilePolicy.Apply(
+            Draft(dueAt: MondayMorning, timeAssumed: false) with
+            {
+                Conflicts = new[]
+                {
+                    new PlanningConflict(
+                        ObjectId.GenerateNewId(),
+                        "Dentist",
+                        MondayMorning,
+                        "Scheduled within two hours of this.",
+                        MatterConflict.TimeClash),
+                },
+            },
+            Zone,
+            Array.Empty<DateTime>());
+
+        var clarification = Assert.IsType<DraftClarification>(item.Clarification);
+        Assert.Equal(MondayMorning, Assert.Single(clarification.Options).DueAt);
+    }
+
+    [Fact]
+    public void tells_a_duplicate_from_a_clash_by_kind_rather_than_by_wording()
+    {
+        // The reason here says nothing about duplication — under the old
+        // `Reason.Contains("already")` test this was a time clash, and the user was
+        // asked to move a matter instead of being told they already had it. A
+        // localised reason failed the same way for every duplicate.
+        var item = VoiceAutoFilePolicy.Apply(
+            Draft(dueAt: MondayMorning, timeAssumed: false) with
+            {
+                Conflicts = new[]
+                {
+                    new PlanningConflict(
+                        ObjectId.GenerateNewId(),
+                        "Renew the passport",
+                        MondayMorning,
+                        "يشبه أمرًا لديك بالفعل.",
+                        MatterConflict.Duplicate),
+                },
+            },
+            Zone);
+
+        var clarification = Assert.IsType<DraftClarification>(item.Clarification);
+        Assert.Equal("confirm", clarification.Kind);
+        Assert.Contains("Renew the passport", clarification.Question);
+        Assert.Equal("maybe_duplicate", item.ReviewReason);
+    }
+
+    [Fact]
+    public void asks_about_the_clash_rather_than_the_hour_when_a_draft_has_both()
+    {
+        // Both unsettled at once, and one item carries one question. The clash wins:
+        // it is the more expensive mistake and the one the user cannot discover for
+        // themselves, and answering it settles the assumed hour in the same tap.
+        var free = new[] { MondayMorning.AddHours(4) };
+
+        var item = VoiceAutoFilePolicy.Apply(
+            Draft(dueAt: MondayMorning, timeAssumed: true) with
+            {
+                Conflicts = new[]
+                {
+                    new PlanningConflict(
+                        ObjectId.GenerateNewId(),
+                        "Dentist",
+                        MondayMorning,
+                        "Scheduled within two hours of this.",
+                        MatterConflict.TimeClash),
+                },
+            },
+            Zone,
+            free);
+
+        var clarification = Assert.IsType<DraftClarification>(item.Clarification);
+        Assert.Contains("Dentist", clarification.Question);
+        Assert.Equal("time_clash", item.ReviewReason);
     }
 
     [Fact]

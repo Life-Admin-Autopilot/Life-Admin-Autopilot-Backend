@@ -227,12 +227,25 @@ namespace Life_Admin_Autopilot.Tests.Speech
             StubTranscriptionService provider,
             out RecordingLogger<SpeechToTextService> logger,
             long maxAudioBytes = 10 * 1024 * 1024)
+            => CreateService(provider, out logger, out _, maxAudioBytes);
+
+        /// <summary>
+        /// The overload that also hands back the availability tracker, for the tests
+        /// that care what the service reported into it.
+        /// </summary>
+        private static SpeechToTextService CreateService(
+            StubTranscriptionService provider,
+            out RecordingLogger<SpeechToTextService> logger,
+            out AsrAvailability availability,
+            long maxAudioBytes = 10 * 1024 * 1024)
         {
             logger = new RecordingLogger<SpeechToTextService>();
+            availability = new AsrAvailability();
 
             return new SpeechToTextService(
                 provider,
                 Options.Create(new SpeechOptions { MaxAudioBytes = maxAudioBytes }),
+                availability,
                 logger);
         }
     }

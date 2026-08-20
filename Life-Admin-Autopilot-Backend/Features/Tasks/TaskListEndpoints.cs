@@ -25,6 +25,14 @@ internal static class TaskListEndpoints
         "q", "status", "domain", "priority", "kind", "tag",
         "dueBefore", "dueAfter", "createdBefore", "createdAfter", "completedBefore", "completedAfter",
         "overdue", "undated", "untagged",
+
+        // `slipping` and its `tz` have no Node counterpart — recorded as a
+        // divergence. They exist because `slipping` was a count with nothing to open:
+        // the home and matters banners both report it and both sent the user to
+        // `overdue`, a different and larger set, so the prompt disagreed with the list
+        // it opened. `tz` is read only by this filter, which needs a local day
+        // boundary; every other filter here compares instants.
+        "slipping", "tz",
         "sort", "limit", "cursor",
     };
 
@@ -63,6 +71,13 @@ internal static class TaskListEndpoints
                 Overdue = q.Bool("overdue"),
                 Undated = q.Bool("undated"),
                 Untagged = q.Bool("untagged"),
+                Slipping = q.Bool("slipping"),
+
+                // Read straight through: an unrecognised zone throws inside
+                // GetDayBoundaries exactly as it does on /me/tasks/counts, so the two
+                // routes reject the same bad value rather than one of them quietly
+                // answering in UTC.
+                Timezone = QueryStrings.Optional(ctx, q, "tz", maxLength: 64),
             };
 
             var sort = q.Enum("sort", TaskQuery.Sorts, TaskQuery.DefaultSort);

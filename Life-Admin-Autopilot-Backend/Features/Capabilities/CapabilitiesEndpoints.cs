@@ -1,4 +1,5 @@
 using System.Text.Json.Serialization;
+using Life_Admin_Autopilot.BLL.Services;
 using Life_Admin_Autopilot.DAL.Kernel.Ops;
 using Life_Admin_Autopilot_Backend.Kernel.Auth;
 using Life_Admin_Autopilot_Backend.Kernel.Modules;
@@ -51,6 +52,7 @@ public static class CapabilitiesEndpoints
         endpoints.MapGet("/me/capabilities", async (
             HttpContext context,
             IFeatureFlagStore flags,
+            AsrAvailability asr,
             CancellationToken cancellationToken) =>
         {
             // Authenticated, though nothing here is per-user. Two reasons: an
@@ -72,7 +74,14 @@ public static class CapabilitiesEndpoints
             {
                 AiChat = Available(FeatureFlags.AiChat),
                 DocumentScan = Available(FeatureFlags.DocumentScan),
-                Transcription = Available(FeatureFlags.Transcription),
+
+                // Two ways for voice to be off, and the client needs neither of them
+                // spelled out — only the answer. The operator's switch is one; the
+                // other is the provider itself refusing every call, which is what an
+                // exhausted quota looks like from here. Reporting only the switch is
+                // what let the app keep offering a microphone into a dead ASR: the
+                // flag said "enabled", and it was — the credits were not.
+                Transcription = Available(FeatureFlags.Transcription) && asr.IsAvailable,
             });
         })
         .RequireAuthorization();
