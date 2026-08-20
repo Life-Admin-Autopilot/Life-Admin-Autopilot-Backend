@@ -6,6 +6,7 @@ using System.Text.Json.Serialization;
 using Life_Admin_Autopilot.BLL.Features.Planning;
 using Life_Admin_Autopilot.DAL.Kernel.Documents;
 using Life_Admin_Autopilot.DAL.Kernel.Errors;
+using Life_Admin_Autopilot.DAL.Kernel.Time;
 using Microsoft.Extensions.Logging;
 
 namespace Life_Admin_Autopilot.BLL.Features.Clarifications;
@@ -150,7 +151,12 @@ public sealed class CustomAnswerInterpreter
             "You interpret a user's typed answer to a clarifying question about a task "
             + "they already filed. Call updateTask with ONLY the fields the answer "
             + "settles. Keep the title in the user's language. dueAt is ISO 8601 in "
-            + "the user's local time.\n"
+            + "the user's local time. When the question asked what something COSTS, "
+            + "the answer is a figure: send amount as digits in MAJOR units and "
+            + "currency as an ISO 4217 code. A figure spelled in words counts, in any "
+            + "language, and so do Arabic-Indic digits. 'pounds' and the Egyptian "
+            + "'\u062c\u0646\u064a\u0647' are EGP unless the user clearly meant another country's "
+            + "currency. An answer that names no figure sets neither field.\n"
             + $"NOW (user local time): {anchor}\n"
             + $"QUESTION: {doc.Question}\n"
             + $"TASK: title \"{doc.Draft.Title}\", domain {doc.Draft.Domain}"
@@ -186,6 +192,8 @@ public sealed class CustomAnswerInterpreter
                                     ["priority"] = new { type = "string", @enum = TaskVocabulary.Priorities },
                                     ["notes"] = new { type = "string" },
                                     ["dueAt"] = new { type = "string" },
+                                    ["amount"] = new { type = "string" },
+                                    ["currency"] = new { type = "string" },
                                 },
                             },
                         },
@@ -203,18 +211,12 @@ public sealed class CustomAnswerInterpreter
         };
     }
 
-    private static TimeZoneInfo ResolveZone(string? timezone)
-    {
-        if (string.IsNullOrWhiteSpace(timezone)) return TimeZoneInfo.Utc;
-        try
-        {
-            return TimeZoneInfo.FindSystemTimeZoneById(timezone);
-        }
-        catch (Exception ex) when (ex is TimeZoneNotFoundException or InvalidTimeZoneException)
-        {
-            return TimeZoneInfo.Utc;
-        }
-    }
+    /// <summary>
+    /// The answerer's zone, or the product default. "Move it to Thursday morning"
+    /// is a wall-clock statement, so reading it against UTC lands it two or three
+    /// hours off for the accounts this product serves.
+    /// </summary>
+    private static TimeZoneInfo ResolveZone(string? timezone) => AppTimeZone.Resolve(timezone);
 
     /// <summary>The first functionCall's args, from any part of the first candidate.</summary>
     private JsonElement? ParseFunctionArgs(string body)
@@ -268,6 +270,8 @@ public sealed class CustomAnswerInterpreter
         var priority = Truthy(a, "priority");
         var notes = Truthy(a, "notes");
         var dueAtIso = Truthy(a, "dueAt");
+        var amountText = Truthy(a, "amount");
+        var currency = Truthy(a, "currency");
 
         var issues = new List<string>();
         if (domain is not null && !TaskVocabulary.Domains.Contains(domain)) issues.Add("domain");
@@ -289,7 +293,52 @@ public sealed class CustomAnswerInterpreter
             // Node: `confirmsDate` — ANY resolution producing a dueAt arms the reminder.
             Kind: dueAt.HasValue ? "reminder" : null,
             Domain: domain,
-            Priority: priority);
+            Priority: priority,
+            Amount: ToMoney(amountText, currency));
+    }
+
+    /// <summary>
+    /// The figure the answer settled, or null when it settled none.
+    ///
+    /// <para>
+    /// <b>An unparseable pair is dropped, never guessed, and never fatal.</b> That
+    /// is <c>MoneyVocabulary.Normalize</c>'s own rule, and it is why this does not
+    /// validate-and-throw the way domain and dueAt do: a cost question answered in
+    /// prose — "not sure yet", "whatever the meter says" — must still CLOSE the
+    /// question. Failing the resolve over an unreadable figure would strand it open
+    /// with no way past. A missing amount is a field the user can fill later; a 400
+    /// on an honest answer is a dead end.
+    /// </para>
+    ///
+    /// <para>
+    /// Stamped <c>"user"</c> because a person typed it. That is what stops a later
+    /// AI pass overwriting it, and it matches what <c>PATCH /me/tasks/{id}</c> does
+    /// with a figure arriving from a client.
+    /// </para>
+    /// </summary>
+    private static MoneyDocument? ToMoney(string? amount, string? currency)
+    {
+        if (amount is null)
+        {
+            return null;
+        }
+
+        // Thousands separators are how people write money and how a model echoes it
+        // back; Arabic-Indic digits are what an Egyptian keyboard produces, and
+        // decimal.TryParse does not read them. U+066C is the Arabic thousands
+        // separator, U+066B the Arabic decimal mark.
+        var normalized = new string(amount
+            .Where(c => !char.IsWhiteSpace(c) && c != ',' && c != '\u066C')
+            .Select(c => c == '\u066B' ? '.' : (char.IsDigit(c) ? (char)('0' + (int)char.GetNumericValue(c)) : c))
+            .ToArray());
+
+        return decimal.TryParse(
+            normalized,
+            NumberStyles.Number,
+            CultureInfo.InvariantCulture,
+            out var value)
+            ? MoneyVocabulary.Normalize(value, currency, "user")
+            : null;
     }
 
     private static string? Truthy(JsonElement args, string name) =>
