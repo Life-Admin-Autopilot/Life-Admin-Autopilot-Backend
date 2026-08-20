@@ -87,8 +87,22 @@ public sealed class AiTaskGroundingTests
             TaskGrounding.BuildTaskBlock([task]));
     }
 
+    /// <summary>
+    /// A due date reaches the agent in the USER'S zone with an explicit offset, not as
+    /// the stored UTC instant.
+    ///
+    /// <para>
+    /// <b>A DELIBERATE divergence from Node</b>, which prints <c>toISOString()</c>.
+    /// Recorded in <c>docs/DIVERGENCES.md</c>. Every <c>dueAt</c> the agent could see was
+    /// a <c>Z</c> instant while <c>CURRENT DATE</c> beside it carried the user's offset,
+    /// and no prompt rule converts one to the other before an hour is read back. The
+    /// agent usually manages the conversion anyway — but the transcript where it read a
+    /// time back perfectly turned out to be reading its OWN earlier sentence in the same
+    /// thread, not the data, and a pre-existing matter has no such sentence.
+    /// </para>
+    /// </summary>
     [Fact]
-    public void renders_a_due_date_as_javascripts_toISOString()
+    public void renders_a_due_date_in_the_users_zone_with_an_explicit_offset()
     {
         var task = new TaskDocument
         {
@@ -102,10 +116,14 @@ public sealed class AiTaskGroundingTests
             DueAt = new DateTime(2026, 6, 23, 5, 0, 0, DateTimeKind.Utc),
         };
 
-        // Three fractional digits and a literal Z — Date#toISOString(). STJ's default
-        // would trim .000 away entirely, which is a different string.
         Assert.Equal(
-            "[task:6a7a64a0f9aa48566160711a] Renew Nour’s passport — due 2026-06-23T05:00:00.000Z — family — reminder — open — urgent — tags: passport, documents",
+            "[task:6a7a64a0f9aa48566160711a] Renew Nour’s passport — due 2026-06-23T08:00:00+03:00 — family — reminder — open — urgent — tags: passport, documents",
+            TaskGrounding.BuildTaskBlock([task], "Africa/Cairo"));
+
+        // No zone is UTC — still offset-bearing, never a bare instant, matching
+        // DateGrounding's own fallback so the clock and the matters agree.
+        Assert.Contains(
+            "— due 2026-06-23T05:00:00+00:00 —",
             TaskGrounding.BuildTaskBlock([task]));
     }
 

@@ -1,7 +1,7 @@
 namespace Life_Admin_Autopilot.BLL.Features.Ai;
 
 /// <summary>
-/// SEVEN of the EIGHT frame shapes the shipped chat UI parses, built in one place
+/// EIGHT of the NINE frame shapes the shipped chat UI parses, built in one place
 /// so no caller hand-rolls a payload dictionary and gets a key wrong.
 ///
 /// <para>
@@ -41,6 +41,7 @@ public static class AiStreamEvents
     public const string TokenKind = "token";
     public const string ToolCallKind = "tool_call";
     public const string ToolResultKind = "tool_result";
+    public const string TextResetKind = "text_reset";
     public const string DoneKind = "done";
     public const string ErrorKind = "error";
     public const string QuotaKind = "quota";
@@ -108,6 +109,31 @@ public static class AiStreamEvents
         {
             ["usage"] = usage ?? EmptyUsage,
         });
+
+    /// <summary>
+    /// <c>{"type":"text_reset"}</c> — drop the prose streamed for this turn.
+    ///
+    /// <para>
+    /// <b>The other half of a guard.</b> Tokens go out live, so by the time
+    /// <see cref="Langflow.FabricatedActionGuard"/> or
+    /// <see cref="Langflow.FailedLookupGuard"/> can judge the turn, the sentence they
+    /// object to is already on the user's screen. Withholding it from the DATABASE is
+    /// only half the correction: without this frame the retracted claim — "Added it.",
+    /// or "I don't see anything on your schedule for Friday, August 28" — sits directly
+    /// above the error saying it was wrong, which reads worse than either alone.
+    /// </para>
+    ///
+    /// <para>
+    /// The client has handled this since the frontend shipped
+    /// (<c>lib/ai/draft.ts</c>, <c>case 'text_reset'</c>), and its contract note says the
+    /// server "retracts it rather than leaving the guess standing next to the
+    /// correction". Nothing on this server ever sent it, so the guards corrected the
+    /// record and left the screen alone. Sources and tool calls deliberately survive —
+    /// only the prose was provisional.
+    /// </para>
+    /// </summary>
+    public static AiStreamEvent TextReset() =>
+        new(TextResetKind, new Dictionary<string, object?>(0));
 
     /// <summary>
     /// <c>{"type":"error","code","message"}</c> — a failure that happened AFTER the

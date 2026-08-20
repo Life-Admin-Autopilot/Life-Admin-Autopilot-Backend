@@ -1100,3 +1100,229 @@ clause has nothing to apply to. The availability gate is
 seam this feature rides is the Gemini-direct planning one, and satisfying the
 old gate by setting `GEMINI_API_KEY` would push six honest 503s elsewhere into
 `NotWiredHere` 500s.
+
+---
+
+## 14. Reminders are actually scheduled, and the schedule is adaptive
+
+**Decided:** `Steward/reminder-scheduling-logic.md` §3.1–§3.5. Scope held to the
+reminder schedule and the two paths that deliver it; the worker, the per-entry claim
+and the push/local split are untouched.
+**Status:** implemented. Full .NET suite **1882 passed / 0 failed**, two consecutive
+runs, up from 1849 before the change.
+
+### The part that is not a divergence but a defect
+
+`ReminderPlanner` had three production callers: the clarification round-trip
+(`ClarificationHoldService`, `ClarificationTaskUpdater`) and the Google/ICS importer
+(`ExternalMatterReconciler`). It was **not** called by `POST /me/tasks`,
+`PATCH /me/tasks/{id}`, `POST /api/planning/commit`, or the bulk endpoints.
+
+`TaskWriteService.CreateAsync` set `Reminders = new List<ReminderEntryDocument>()` and
+nothing ever filled it in. The chat agent's `CreateTaskTool` posts to `/me/tasks`, and
+so does the app — so **the main way a person files a reminder produced a matter that
+could never notify anybody.** Everything downstream was correct and never ran.
+
+This is ported from Node, which has the same gap; `ClarificationHoldService` already
+carried a comment saying so ("Note POST /me/tasks does NOT do this, in either
+server"). It is fixed here rather than reproduced, because a reminder nobody is told
+about is the one thing the product exists to prevent.
+
+`SetSnoozeReminderAsync` had **zero** production callers on either server, so snoozing
+wrote `status` and `snoozedUntil` and left the matter carrying only already-fired
+entries — "later today" meant "never". Also fixed.
+
+Voice-note and document-scan seeds hardcoded `kind: "list"` even when they carried a
+`dueAt`, and `ComputeRules` returns nothing for a list item — so a due date lifted off
+a scanned bill could never fire. They now derive `kind` from `dueAt`, as `POST
+/me/tasks` and the chat tool already did.
+
+### What .NET now does that Node does not
+
+- **Adaptive lead time (§3.1).** `ReminderLeadTime.AdaptiveLeadAt`: when the deadline
+  is nearer than the base lead time, the heads-up is placed at half the REMAINING
+  time instead of being dropped. Node computes `due - leadDays` and silently discards
+  the entry when that is in the past, so car insurance filed 20 days out against a
+  30-day rule got no warning at all before the deadline itself.
+- **Priority decides how many nudges (§3.2).** low 1, normal 2, high 3, urgent 4.
+  Priority was previously read nowhere in this path — only in `ReminderUrgency`, which
+  affects delivery ORDER. New kinds `midpoint` and `final24h`.
+- **Quiet hours (§3.3).** `ReminderQuietHours` moves a nudge out of 21:00–08:00 local.
+  The planner had no timezone at all; the zone was read only at fire time, and only to
+  word the date. Two guards the spec does not state are enforced: a shift is refused
+  when it would land in the past (the evening rule moves backwards, and the worker
+  matches `at <= now`), and when it would overtake the entry it precedes.
+- **The deadline nudge is never moved by quiet hours.** A 07:00 appointment lives
+  inside the window, and pushing its nudge to 08:30 delivers it after the appointment.
+  This is a deliberate departure from a literal reading of §3.3.
+- **Overdue cadence (§3.5).** A finite, pre-scheduled sequence of `overdue` follow-ups
+  by priority: none / +2d / +1d,+4d / +1d,+3d,+7d. Entries whose instant has already
+  passed are dropped, so filing something a fortnight late produces ONE nudge rather
+  than a burst of seven.
+- **Re-planning preserves `firedAt`.** `ReminderPlanner.CarryForwardFired` matches on
+  the INSTANT, so editing priority on a matter whose heads-up already went out does
+  not re-buzz the user, while moving `dueAt` re-arms the whole schedule as it should.
+- **The timezone read is cached per scope.** A bulk snooze covers up to 500 matters on
+  one account; without it that was 500 identical `users` queries.
+
+### Deliberately NOT done
+
+§3.2 and §3.4 say the final alert fires "exactly at `DueAt`". It fires at
+`DueAt - duration`, per **§12 above**, which is a considered decision this change does
+not reverse: telling someone at 17:00 that a four-hour job was due at 17:00 is an
+accusation, not a reminder. Read the spec's "at `DueAt`" as "the deadline nudge".
+
+### Copy
+
+`ReminderNotificationText.Body` gains three strings for the new kinds. The `lead` and
+`due` strings are byte-for-byte parity fixtures and are unchanged. The device's local
+channel carries the same three in `Steward/lib/i18n/messages/{en,ar}/notifications.json`
+— both channels must agree, or the same reminder reads differently depending on
+whether push is available.
+
+### How to revert
+
+Drop the `ReminderPlanner` argument from `TaskWriteService`, `BulkService`,
+`VoiceNoteTaskPersistence` and `DocumentScanReviewService`; delete
+`ReminderQuietHours.cs`; restore `ComputeRules` to its three-parameter form and its
+`leadAt > now` guard; restore `ReminderKinds` to `{lead, due, ai}`. Doing so restores a
+server that plans no reminders for anything a user files through the app or the chat
+agent.
+
+---
+
+## 15. The agent's grounding stops hiding the future, and stops answering over a dead lookup
+
+Four related changes to what the planning agent is handed and what it is allowed to say.
+All four were driven by one reported symptom — *"I asked what I have on the 28th; it
+showed one of three, at the wrong time"* — and by reproducing it against the live flow.
+
+### 15.1 `MY TASKS` sorts undated LAST (Node sorts them first)
+
+Node:
+
+```js
+Task.find({ userId, ...notDeleted(), status: { $in: ['open','snoozed'] } })
+    .sort({ dueAt: 1, createdAt: -1 })
+    .limit(TASK_CAP)
+```
+
+Mongo orders **missing fields before every value**, so `dueAt: 1` means "the dateless
+backlog first, then the soonest deadlines" — and the cap then truncates from the far end.
+
+Measured on the seeded `demo@kitto.test` (143 open matters): the twenty rows the agent
+received were **14 undated plus 6 dated, and all six dated rows were in the past** —
+2026-06-09 through 2026-08-05, against a clock reading 2026-08-20. Not one upcoming
+matter could reach the prompt, at any cap, for any account carrying twenty-odd undated
+items. An agent asked "what do I have on Friday" was structurally incapable of answering
+from its own grounding.
+
+`AiGroundingRepository.ListForPromptAsync` now substitutes `TaskQuery.FarFuture` for a
+missing `dueAt` before sorting — the same sentinel `TaskQuery.ListAsync` already applies
+for the REST list and the UI. A plain `Find` cannot express this (no sort direction puts
+missing fields last), so it is an aggregation with `$ifNull` + `$sort` + `$limit`.
+
+Side effect worth stating: **the agent and the matter list now agree about what "first"
+means.** They did not before.
+
+### 15.2 `dueAt` reaches the agent in the user's zone, not as a `Z` instant
+
+Node prints `t.dueAt.toISOString()`. So did this port. Meanwhile `CURRENT DATE` beside it
+carries the user's offset, and **no rule anywhere in the 572-line system prompt converts
+one into the other before an hour is read back to the user**.
+
+The agent usually manages anyway — verified live: given three Cairo matters at `09:00Z`,
+`14:00Z` and `18:30Z` it answered 12:00 PM, 5:00 PM and 9:30 PM, all correct. But the one
+stored transcript where it read a time back perfectly turned out to be reading its **own
+earlier sentence** in the same thread ("I've set that for Friday at 10:00 AM"), not the
+data. A matter that already existed has no such sentence to lean on.
+
+`TaskGrounding.FormatDue` now renders `2026-08-28T12:00:00+03:00`. Same reasoning
+`DateGrounding.FormatNow` already records for the clock: hand the agent a bare instant and
+it invents an offset rather than complaining.
+
+### 15.3 `DATE REFERENCE` anchors every weekday (Node anchors two phrases)
+
+Node's anchor block covers `this weekend` and `end of this month`. Its own comment says
+why anchors exist: *"Literal anchors for common relative phrases the model otherwise
+guesses."* `next <weekday>` — the commonest relative phrase after today/tomorrow — was
+never anchored, so the 14-day table hands the model **two of every weekday and labels
+neither**, while the prompt tells it to "resolve phrases by FINDING them there" and then
+forbids the arithmetic it must fall back on.
+
+Measured non-deterministic: two runs of the identical prompt
+`ذكرني يوم الاثنين بموعد الدكتور` on Monday 2026-08-17 resolved to `2026-08-24` in one and
+`2026-08-17` in the other. Same input, same day, same table. Both transcripts are in the
+seeded `aiconversations`.
+
+`BuildDateReference` now emits seven extra lines, one per weekday, resolving both
+phrasings to the soonest upcoming occurrence. The 14 table rows and Node's two anchors are
+unchanged and still asserted byte-for-byte (`matches_node_buildDateReference` became a
+superset assertion rather than an equality one).
+
+### 15.4 A failed lookup may no longer be reported as an empty calendar
+
+**The bug behind the report.** Reproduced live: asked "What do I have on Friday August
+28?" the agent built a *correct* range, `queryTasks` returned
+`{"ok": false, "error": "misconfigured"}`, and the reply was
+*"I don't see anything on your schedule for Friday, August 28."*
+
+Note what is NOT wrong here — the range, the timezone arithmetic, and the backend filter
+were all verified correct. The failure is entirely in how a dead lookup was phrased.
+
+The prompt made it worse. Section 9 said: *`If your tools cannot answer, say "I don't have
+that in your data."`* That sentence is indistinguishable from a real empty result.
+
+Three layers now stop it, because any one alone can be defeated:
+
+1. **Tool payload** — every failure return in all eleven tools carries an
+   `agent_directive` spelling out that the call returned no data and that an absence claim
+   is forbidden. A 401/403 gets a distinct directive naming the expired session.
+2. **Prompt** — Section 9's sentence is replaced; the `ok: false` rule points at
+   `agent_directive`; FINAL CHECK gains items 10 (no absence after a failed read) and 11
+   (account for every row returned).
+3. **`FailedLookupGuard`** — server-side, the sibling of `FabricatedActionGuard`. It reads
+   the tool's own envelope rather than the call status, because a tool that reaches our
+   API and gets a 401 returns HTTP 200 carrying `{"ok": false}` — Langflow calls that a
+   success and the call is recorded `executed`. It emits a `lookup_failed` error frame,
+   and withholds the prose **only when no other tool succeeded** (a failed read alongside a
+   real `createTask` keeps its receipt).
+
+**`text_reset` is now emitted, for the first time on this server.** Both guards
+withheld the answer from the *database* while leaving the retracted sentence on the
+user's *screen* — tokens go out live, so "I don't see anything on your schedule" was
+already rendered by the time either guard could judge the turn, and the error frame
+landed directly beneath it. The client has handled `text_reset` since the frontend
+shipped (`lib/ai/draft.ts`) and its contract note says the server "retracts it rather
+than leaving the guess standing next to the correction" — but nothing on this server
+ever sent one. `FabricatedActionGuard` gains the same fix for free.
+
+It does **not** read the prose. Deciding whether a sentence asserts absence is a language
+problem in two languages and the product ships Arabic; the structural question — "was the
+agent handed a failure?" — has one answer regardless of phrasing.
+
+**Tried and reverted:** refusing the whole run when no bearer token is present. It turns
+`"hi"` into a 500, and a greeting calls no tools. The missing token is logged instead
+(`ai.no_tool_token`), and the guard handles the answer.
+
+### 15.5 Also in this change, not divergences
+
+- `queryTasks` gains `due_on=YYYY-MM-DD`, expanding to that whole **local** day using a
+  server-injected `utc_offset` (never model-visible, same channel as `access_token`).
+  The agent was already building correct ranges by hand; this removes the boundary
+  decisions from the model for the commonest question the product answers.
+- The `limit` help text stopped claiming "at most 15 rows come back" — the endpoint
+  clamps 1–200, fallback 50. The false cap pushed the model to over-narrow filters.
+- Per-tool outcome logging (`ai.tool`, `ai.lookup_failed`). There was **no server-side
+  trace of tool outcomes at all**: a `queryTasks` returning `{"ok": false}` looked
+  identical in the logs to one returning the user's whole list. Names and statuses only —
+  arguments and results carry the user's matters.
+
+### How to revert
+
+Restore `ListForPromptAsync` to `.Sort(Sort.Ascending(DueAt).Descending(CreatedAt))`;
+drop the `timezone` argument from `TaskGrounding.BuildTaskBlock` and return
+`JsIsoDateTimeConverter.ToIso(dueAt)`; delete `WeekdayAnchors` from `DateGrounding`;
+delete `FailedLookupGuard.cs` and its call site in `RunTurnAsync`; restore `langflow/planning-agent.v4.json` from git AND re-import it into Langflow (see below). Doing so restores a
+server whose agent cannot see any future matter it has more than twenty undated ones, and
+which reports a broken lookup as an empty day.

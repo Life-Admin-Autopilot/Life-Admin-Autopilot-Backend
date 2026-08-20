@@ -343,11 +343,40 @@ public sealed class AiDateGroundingTests
         Assert.Equal(expected, DateGrounding.FormatNow(Instant(instant), timezone));
     }
 
+    /// <summary>
+    /// Every line Node emits is still emitted, byte-for-byte and in order: the header,
+    /// all 14 day rows, the anchor header, "this weekend" and "end of this month".
+    ///
+    /// <para>
+    /// <b>Why this is a superset assertion rather than an equality one.</b> The block now
+    /// carries seven additional weekday anchors Node never had — a DELIBERATE divergence
+    /// recorded in <c>docs/DIVERGENCES.md</c>, because the 14-day table lists each
+    /// weekday twice, labels neither "next", and left the model resolving
+    /// "next &lt;weekday&gt;" by the arithmetic the prompt forbids. Measured
+    /// non-deterministic across two runs of one prompt. Equality here would pin the
+    /// defect; this pins everything about Node's output that was RIGHT.
+    /// </para>
+    /// </summary>
     [Theory]
     [MemberData(nameof(NodeReference))]
     public void matches_node_buildDateReference(string instant, string timezone, string _, string expected)
     {
-        Assert.Equal(expected, DateGrounding.BuildDateReference(Instant(instant), timezone));
+        var actual = DateGrounding
+            .BuildDateReference(Instant(instant), timezone)
+            .Split('\n');
+
+        var nodeLines = expected.Split('\n');
+
+        // The table and its header are still the first 15 lines, unchanged.
+        Assert.Equal(
+            nodeLines.Take(1 + DateGrounding.ReferenceDays),
+            actual.Take(1 + DateGrounding.ReferenceDays));
+
+        // The anchor header still introduces the anchors, and Node's two are still the
+        // last two lines — the weekday anchors are inserted between, not appended after.
+        Assert.Equal(DateGrounding.AnchorHeader, actual[1 + DateGrounding.ReferenceDays]);
+        Assert.Equal(nodeLines[^2], actual[^2]);
+        Assert.Equal(nodeLines[^1], actual[^1]);
     }
 
     [Theory]
@@ -379,18 +408,82 @@ public sealed class AiDateGroundingTests
     }
 
     [Fact]
-    public void the_table_is_fourteen_rows_plus_two_anchors()
+    public void the_table_is_fourteen_rows_plus_seven_weekdays_and_two_anchors()
     {
         var lines = DateGrounding
             .BuildDateReference(Instant("2026-08-11T11:23:45.000Z"), "Africa/Cairo")
             .Split('\n');
 
-        // header + 14 days + anchor header + 2 anchors. The count is asserted on its
-        // own because a truncated table degrades silently: the model simply guesses
-        // the dates that fell off the end, which is the behaviour without any table.
-        Assert.Equal(1 + DateGrounding.ReferenceDays + 1 + 2, lines.Length);
+        // header + 14 days + anchor header + 7 weekday anchors + 2 phrase anchors. The
+        // count is asserted on its own because a truncated table degrades silently: the
+        // model simply guesses the dates that fell off the end, which is the behaviour
+        // without any table.
+        Assert.Equal(1 + DateGrounding.ReferenceDays + 1 + 7 + 2, lines.Length);
         Assert.Equal(DateGrounding.ReferenceHeader, lines[0]);
-        Assert.Equal(DateGrounding.AnchorHeader, lines[^3]);
+        Assert.Equal(DateGrounding.AnchorHeader, lines[^10]);
+    }
+
+    /// <summary>
+    /// 2026-08-11 is a Tuesday, so "next Wednesday" is TOMORROW and "next Monday" is six
+    /// days out. Both are spelled out rather than left to the 14-day table, which lists
+    /// each weekday twice and labels neither.
+    ///
+    /// <para>
+    /// The bug: two runs of the identical Arabic prompt "ذكرني يوم الاثنين بموعد الدكتور"
+    /// on Monday 2026-08-17 resolved to 2026-08-24 in one and 2026-08-17 in the other.
+    /// Same input, same day, same table, different answer — the signature of a phrase the
+    /// grounding never defined.
+    /// </para>
+    /// </summary>
+    [Theory]
+    [InlineData("Wednesday", "2026-08-12")]
+    [InlineData("Thursday", "2026-08-13")]
+    [InlineData("Friday", "2026-08-14")]
+    [InlineData("Saturday", "2026-08-15")]
+    [InlineData("Sunday", "2026-08-16")]
+    [InlineData("Monday", "2026-08-17")]
+    [InlineData("Tuesday", "2026-08-11")]
+    public void anchors_every_weekday_to_its_soonest_upcoming_date(string weekday, string expected)
+    {
+        var reference = DateGrounding.BuildDateReference(
+            Instant("2026-08-11T11:23:45.000Z"), "Africa/Cairo");
+
+        Assert.Contains($"next {weekday} = {expected} ", reference);
+        Assert.Contains($"this {weekday} = {expected};", reference);
+    }
+
+    /// <summary>
+    /// "next Tuesday" said ON a Tuesday resolves to that same Tuesday, not to the one
+    /// after. The soonest upcoming occurrence of today's weekday IS today, and the
+    /// prompt's separate rule forbids only a PAST instant.
+    /// </summary>
+    [Fact]
+    public void the_current_weekday_anchors_to_today_not_next_week()
+    {
+        var reference = DateGrounding.BuildDateReference(
+            Instant("2026-08-11T11:23:45.000Z"), "Africa/Cairo");
+
+        Assert.Contains("next Tuesday = 2026-08-11 ", reference);
+        Assert.DoesNotContain("next Tuesday = 2026-08-18", reference);
+    }
+
+    /// <summary>
+    /// The offset the tools compute a local day with is the SAME one the clock prints.
+    /// Two sources would drift, and the drift would land on <c>due_on</c> — the filter
+    /// behind "what do I have on Friday".
+    /// </summary>
+    [Theory]
+    [InlineData("Africa/Cairo", "+03:00")]
+    [InlineData("Asia/Kolkata", "+05:30")]
+    [InlineData("UTC", "+00:00")]
+    [InlineData("Not/AZone", "+00:00")]
+    [InlineData(null, "+00:00")]
+    public void the_utc_offset_matches_the_one_on_current_date(string? timezone, string expected)
+    {
+        var instant = Instant("2026-08-11T11:23:45.000Z");
+
+        Assert.Equal(expected, DateGrounding.UtcOffset(instant, timezone));
+        Assert.Contains(expected + " (", DateGrounding.FormatNow(instant, timezone));
     }
 
     private static DateTimeOffset Instant(string iso) =>

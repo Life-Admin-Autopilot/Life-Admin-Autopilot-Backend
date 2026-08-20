@@ -7,6 +7,8 @@ using Life_Admin_Autopilot.BLL.Kernel.Telemetry;
 using Life_Admin_Autopilot.DAL.Features.Ai;
 using Life_Admin_Autopilot.DAL.Kernel.Errors;
 using Life_Admin_Autopilot.DAL.Kernel.Telemetry;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 using MongoDB.Bson;
 
 namespace Life_Admin_Autopilot.BLL.Features.Ai.Langflow;
@@ -56,11 +58,13 @@ public sealed class LangflowAiProvider : IAiProvider
     private readonly AiGroundingRepository _grounding;
     private readonly TimeProvider _time;
     private readonly IAiUsageRecorder _usage;
+    private readonly ILogger<LangflowAiProvider> _logger;
 
     /// <summary>
-    /// <paramref name="usage"/> is optional so the two hand-built construction sites
-    /// in the test suite keep compiling unchanged; DI always supplies one, because
-    /// <see cref="NullAiUsageRecorder"/> is registered unconditionally.
+    /// <paramref name="usage"/> and <paramref name="logger"/> are optional so the
+    /// hand-built construction sites in the test suite keep compiling unchanged; DI
+    /// always supplies both, because <see cref="NullAiUsageRecorder"/> is registered
+    /// unconditionally and logging is part of the host.
     /// </summary>
     public LangflowAiProvider(
         IHttpClientFactory clients,
@@ -69,7 +73,8 @@ public sealed class LangflowAiProvider : IAiProvider
         AiConversationRepository conversations,
         AiGroundingRepository grounding,
         TimeProvider? time = null,
-        IAiUsageRecorder? usage = null)
+        IAiUsageRecorder? usage = null,
+        ILogger<LangflowAiProvider>? logger = null)
     {
         _clients = clients;
         _options = options;
@@ -78,6 +83,7 @@ public sealed class LangflowAiProvider : IAiProvider
         _grounding = grounding;
         _time = time ?? TimeProvider.System;
         _usage = usage ?? new NullAiUsageRecorder();
+        _logger = logger ?? NullLogger<LangflowAiProvider>.Instance;
     }
 
     /// <summary>
@@ -257,7 +263,21 @@ public sealed class LangflowAiProvider : IAiProvider
         // other surface will ever contradict.
         var fabricated = FabricatedActionGuard.FirstUnaccounted(translator.Claims, translator.ToolCalls);
 
-        if (fabricated is null)
+        // Did a read lookup fail? See FailedLookupGuard. Checked BEFORE the fabrication
+        // branch writes anything, but reported AFTER it, because the two are not
+        // exclusive: a turn can both invent a filing and answer over a dead query, and
+        // the fabrication is the more serious of the two.
+        var lookupFailure = FailedLookupGuard.FirstFailedLookup(translator.ToolCalls);
+
+        LogToolOutcomes(userId, sessionId, translator.ToolCalls, lookupFailure);
+
+        // Withhold when the answer is unaccounted work, or when a dead lookup left it
+        // with nothing true to rest on. A lookup failure alongside REAL work keeps its
+        // prose — the user still needs the receipt for what actually happened — and
+        // gets the error frame anyway.
+        var withhold = fabricated is not null || lookupFailure is { WithholdAnswer: true };
+
+        if (!withhold)
         {
             await AppendAsync(
                     userId,
@@ -272,6 +292,12 @@ public sealed class LangflowAiProvider : IAiProvider
         {
             translator.WithholdAnswer();
 
+            // Withholding from the DATABASE is only half of it: the sentence went out
+            // token by token and is already on screen. Without this the retracted claim
+            // sits directly above the error correcting it. The client has handled this
+            // frame since it shipped; nothing on this server ever sent one.
+            yield return AiStreamEvents.TextReset();
+
             // The prose is dropped; the tool calls are NOT. Whatever really ran is
             // true and has to stay — dropping a pending_confirmation record here
             // would 404 the confirm button on a card the user is looking at. A turn
@@ -283,15 +309,113 @@ public sealed class LangflowAiProvider : IAiProvider
                         userId, conversationId, "assistant", string.Empty, translator.ToolCalls, cancellationToken)
                     .ConfigureAwait(false);
             }
+        }
 
+        if (fabricated is not null)
+        {
             yield return AiStreamEvents.Error(
                 FabricatedActionGuard.ErrorCode,
                 FabricatedActionGuard.ErrorMessage);
         }
 
+        // Both frames can fire on one turn. They describe different lies and the client
+        // renders each on its own row; collapsing them would hide one.
+        if (lookupFailure is not null)
+        {
+            yield return AiStreamEvents.Error(
+                FailedLookupGuard.ErrorCode,
+                FailedLookupGuard.ErrorMessage);
+        }
+
         foreach (var tail in translator.Complete())
         {
             yield return tail;
+        }
+    }
+
+    /// <summary>
+    /// One line per tool call, so a turn that answered over a dead lookup can be found
+    /// afterwards.
+    ///
+    /// <para>
+    /// <b>There was no server-side trace of tool outcomes at all before this.</b> A
+    /// <c>queryTasks</c> that returned <c>{"ok": false}</c> looked identical in the logs
+    /// to one that returned the user's whole list, and the only record was the tool-call
+    /// document on the conversation — which is not somewhere anyone looks until a user
+    /// complains. Diagnosing the masked-failure bug took a database dig that a log line
+    /// would have answered.
+    /// </para>
+    ///
+    /// <para>
+    /// Names and outcomes only. Tool ARGUMENTS carry task titles and free text, and
+    /// results carry the user's whole matter list; neither belongs in a log.
+    /// </para>
+    /// </summary>
+    /// <summary>
+    /// A turn dispatched without a bearer token gives every tool in the flow a blank
+    /// <c>access_token</c>, and every tool then answers
+    /// <c>{"ok": false, "error": "misconfigured"}</c>. The agent was measured turning
+    /// that into "I don't see anything on your schedule for Friday, August 28".
+    ///
+    /// <para>
+    /// It is a warning rather than a refusal because a greeting turn calls no tools and
+    /// is perfectly answerable without one — failing the run would turn "hi" into a 500.
+    /// <see cref="FailedLookupGuard"/> is what stops the bad ANSWER; this is what makes
+    /// the cause findable.
+    /// </para>
+    /// </summary>
+    private void WarnIfToolsCannotAuthenticate(ObjectId userId, string sessionId, string? accessToken)
+    {
+        if (!string.IsNullOrEmpty(accessToken))
+        {
+            return;
+        }
+
+        _logger.LogWarning(
+            "ai.no_tool_token user={UserId} session={SessionId} — every tool in this run will "
+            + "answer 'misconfigured'; any lookup this turn is dead",
+            userId,
+            sessionId);
+    }
+
+    private void LogToolOutcomes(
+        ObjectId userId,
+        string sessionId,
+        IReadOnlyList<TranslatedToolCall> calls,
+        FailedLookupGuard.Verdict? lookupFailure)
+    {
+        if (calls.Count == 0)
+        {
+            return;
+        }
+
+        foreach (var call in calls)
+        {
+            var ok = call.Result is { } result
+                     && result.ValueKind == JsonValueKind.Object
+                     && result.TryGetProperty("ok", out var flag)
+                ? flag.ValueKind != JsonValueKind.False
+                : (bool?)null;
+
+            _logger.LogInformation(
+                "ai.tool user={UserId} session={SessionId} tool={Tool} status={Status} ok={Ok}",
+                userId,
+                sessionId,
+                call.Name,
+                call.Status,
+                ok);
+        }
+
+        if (lookupFailure is { } failure)
+        {
+            _logger.LogWarning(
+                "ai.lookup_failed user={UserId} session={SessionId} tool={Tool} withheld={Withheld} — "
+                + "the agent was asked about the user's matters after {Tool} failed",
+                userId,
+                sessionId,
+                failure.ToolName,
+                failure.WithholdAnswer,
+                failure.ToolName);
         }
     }
 
@@ -403,8 +527,10 @@ public sealed class LangflowAiProvider : IAiProvider
             .ListForPromptAsync(userId, TaskGrounding.PromptStatuses, TaskGrounding.TaskCap, cancellationToken)
             .ConfigureAwait(false);
 
+        WarnIfToolsCannotAuthenticate(userId, sessionId, accessToken);
+
         using var request = BuildRequest(
-            sessionId, prompt, accessToken, timezone, mode, TaskGrounding.BuildTaskBlock(tasks));
+            sessionId, prompt, accessToken, timezone, mode, TaskGrounding.BuildTaskBlock(tasks, timezone));
 
         HttpResponseMessage response;
         try

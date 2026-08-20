@@ -1,5 +1,6 @@
+using System.Globalization;
 using System.Text;
-using Life_Admin_Autopilot.BLL.Kernel.Json;
+using Life_Admin_Autopilot.BLL.Kernel.Integrations;
 using Life_Admin_Autopilot.DAL.Kernel.Documents;
 
 namespace Life_Admin_Autopilot.BLL.Features.Ai.Grounding;
@@ -50,8 +51,15 @@ public static class TaskGrounding
     /// Render the block body. Callers supply an ALREADY-CAPPED, already-sorted list —
     /// the cap belongs in the query, so a 142-matter account never materialises 142
     /// documents to throw 122 away.
+    ///
+    /// <para>
+    /// <paramref name="timezone"/> is the caller's IANA zone, used only to render
+    /// <c>dueAt</c>. Absent or unrecognised falls back to UTC, matching
+    /// <see cref="DateGrounding"/>'s own fallback so the two blocks never disagree
+    /// about what hour it is.
+    /// </para>
     /// </summary>
-    public static string BuildTaskBlock(IReadOnlyList<TaskDocument> tasks)
+    public static string BuildTaskBlock(IReadOnlyList<TaskDocument> tasks, string? timezone = null)
     {
         if (tasks.Count == 0)
         {
@@ -67,22 +75,67 @@ public static class TaskGrounding
                 block.Append('\n');
             }
 
-            AppendTask(block, task);
+            AppendTask(block, task, timezone);
         }
 
         return block.ToString();
     }
 
-    private static void AppendTask(StringBuilder block, TaskDocument task)
+    /// <summary>
+    /// <c>dueAt</c> in the user's own zone with an explicit offset —
+    /// <c>2026-08-28T12:00:00+03:00</c> — rather than the stored UTC instant.
+    ///
+    /// <para>
+    /// <b>Why this changed.</b> Every <c>dueAt</c> the agent could see, here and in tool
+    /// results, was a <c>Z</c> instant, while <c>CURRENT DATE</c> beside it carried the
+    /// user's offset. Nothing in the flow's prompt tells the agent to convert one into
+    /// the other before reading an hour back to the user. It usually manages anyway —
+    /// verified live: given three matters at <c>09:00Z</c>, <c>14:00Z</c> and
+    /// <c>18:30Z</c> for a Cairo user it answered 12:00 PM, 5:00 PM and 9:30 PM, all
+    /// correct — but "usually manages" is not a guarantee, and the one transcript where
+    /// it read a time back perfectly turned out to be reading it off its OWN earlier
+    /// sentence in the same thread, not off the data. A pre-existing matter has no such
+    /// sentence to lean on.
+    /// </para>
+    ///
+    /// <para>
+    /// Rendering the offset removes the conversion from the model's job entirely. It is
+    /// the same reasoning <see cref="DateGrounding.FormatNow"/> already records for the
+    /// clock: hand the agent a bare instant and it invents an offset rather than
+    /// complaining.
+    /// </para>
+    ///
+    /// <para>
+    /// <b>Deliberate divergence from the Node reference</b>, which prints
+    /// <c>toISOString()</c>. Recorded in <c>docs/DIVERGENCES.md</c>.
+    /// </para>
+    /// </summary>
+    public static string FormatDue(DateTime dueAt, string? timezone)
+    {
+        var utc = DateTime.SpecifyKind(dueAt, DateTimeKind.Utc);
+
+        if (!ImportedTimeResolver.IsValidTimeZone(timezone))
+        {
+            // Same fallback as DateGrounding: self-consistent UTC, offset still
+            // explicit, never a bare instant.
+            return new DateTimeOffset(utc)
+                .ToString("yyyy-MM-dd'T'HH:mm:sszzz", CultureInfo.InvariantCulture);
+        }
+
+        var zone = TimeZoneInfo.FindSystemTimeZoneById(timezone!);
+
+        return TimeZoneInfo
+            .ConvertTime(new DateTimeOffset(utc), zone)
+            .ToString("yyyy-MM-dd'T'HH:mm:sszzz", CultureInfo.InvariantCulture);
+    }
+
+    private static void AppendTask(StringBuilder block, TaskDocument task, string? timezone)
     {
         block.Append("[task:").Append(task.Id).Append("] ").Append(task.Title);
 
         if (task.DueAt is { } dueAt)
         {
-            // Date#toISOString() — three fractional digits and a literal Z. The
-            // parity converter owns that format; re-typing it here is how the two
-            // eventually disagree.
-            block.Append(" — due ").Append(JsIsoDateTimeConverter.ToIso(dueAt));
+            block.Append(" — due ").Append(FormatDue(dueAt, timezone));
         }
 
         block.Append(" — ").Append(task.Domain);

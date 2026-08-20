@@ -183,9 +183,16 @@ public sealed class LangflowProviderTests
             ["Ai:Langflow:InputNode"] = "PlanningInput-v4",
         });
 
-        // An absent token stays absent rather than being sent as "": the tool reports
-        // "access_token is empty" either way, and an empty tweak would also overwrite a
-        // value an operator had pinned on the node.
+        // An absent token stays absent rather than being sent as "": an empty tweak
+        // would also overwrite a value an operator had pinned on the node.
+        //
+        // What such a run PRODUCES is no longer the tool's problem to phrase. Every tool
+        // answers "access_token is empty", and the agent was measured turning that into
+        // "I don't see anything on your schedule for Friday, August 28" — a dead lookup
+        // rendered as an empty calendar. FailedLookupGuard now refuses to let that stand
+        // (see AiFailedLookupTests), and the provider logs the missing token so the
+        // cause is findable. Refusing the whole run here was tried and reverted: a
+        // greeting calls no tools, and turning "hi" into a 500 is a worse bug.
         await DrainAsync(provider, accessToken: null);
 
         var tweaks = JsonDocument.Parse(handler.LastRequestBody!).RootElement.GetProperty("tweaks");
@@ -592,6 +599,61 @@ public sealed class LangflowProviderTests
         Assert.DoesNotContain(
             events,
             e => e.Kind == AiStreamEvents.ToolResultKind && (string)e.Payload["callId"]! == "c-gated");
+    }
+
+    /// <summary>
+    /// The measured bug, replayed end to end through the real translator and guards.
+    ///
+    /// <para>
+    /// Captured live: <c>queryTasks</c> answered
+    /// <c>{"ok": false, "error": "misconfigured"}</c> — HTTP 200, so Langflow calls the
+    /// call a SUCCESS — and the agent said "I don't see anything on your schedule for
+    /// Friday, August 28." The turn must now end with the prose retracted and the
+    /// failure named.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public async Task a_dead_lookup_retracts_the_prose_and_names_the_failure()
+    {
+        var handler = Handler(Ndjson(
+            """{"event":"tool_call","data":{"callId":"c-q","name":"queryTasks","args":{"due_on":"2026-08-28"}}}""",
+            """{"event":"tool_result","data":{"callId":"c-q","result":{"content":"{\"value\": \"{\\\"ok\\\": false, \\\"error\\\": \\\"misconfigured\\\"}\"}"}}}""",
+            """{"event":"token","data":{"chunk":"{\"mode\":\"chat\",\"reply\":\"I don't see anything"}}""",
+            """{"event":"token","data":{"chunk":" on your schedule.\",\"tasks\":[],\"clarifications\":[]}"}}""",
+            """{"event":"end","data":{}}"""));
+
+        var events = await DrainAsync(Provider(handler), ObjectId.GenerateNewId());
+
+        // The sentence already streamed, so withholding it from the database is not
+        // enough — it has to come off the screen too.
+        Assert.Contains(events, e => e.Kind == AiStreamEvents.TextResetKind);
+
+        var error = Assert.Single(events, e => e.Kind == AiStreamEvents.ErrorKind);
+        Assert.Equal(FailedLookupGuard.ErrorCode, (string)error.Payload["code"]!);
+
+        // The message must not itself be readable as "you have nothing".
+        var message = (string)error.Payload["message"]!;
+        Assert.Contains("not an empty list", message);
+    }
+
+    /// <summary>
+    /// The other half: a lookup that RAN and found nothing is a real answer. If this
+    /// ever trips, every genuinely empty day becomes an error and the guard is worse
+    /// than the bug it replaced.
+    /// </summary>
+    [Fact]
+    public async Task a_lookup_that_answered_zero_rows_is_left_alone()
+    {
+        var handler = Handler(Ndjson(
+            """{"event":"tool_call","data":{"callId":"c-q","name":"queryTasks","args":{"due_on":"2026-08-28"}}}""",
+            """{"event":"tool_result","data":{"callId":"c-q","result":{"content":"{\"value\": \"{\\\"ok\\\": true, \\\"count\\\": 0, \\\"tasks\\\": []}\"}"}}}""",
+            """{"event":"token","data":{"chunk":"{\"mode\":\"chat\",\"reply\":\"Nothing on the 28th.\",\"tasks\":[],\"clarifications\":[]}"}}""",
+            """{"event":"end","data":{}}"""));
+
+        var events = await DrainAsync(Provider(handler), ObjectId.GenerateNewId());
+
+        Assert.DoesNotContain(events, e => e.Kind == AiStreamEvents.ErrorKind);
+        Assert.DoesNotContain(events, e => e.Kind == AiStreamEvents.TextResetKind);
     }
 
     [Fact]

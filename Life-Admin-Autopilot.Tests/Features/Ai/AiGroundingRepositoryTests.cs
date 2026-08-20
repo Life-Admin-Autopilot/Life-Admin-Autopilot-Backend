@@ -28,8 +28,23 @@ namespace Life_Admin_Autopilot.Tests.Features.Ai;
 /// </summary>
 public sealed class AiGroundingRepositoryTests
 {
+    /// <summary>
+    /// Dated matters lead, soonest first; the dateless backlog sorts LAST.
+    ///
+    /// <para>
+    /// <b>A DELIBERATE divergence from the reference</b>, recorded in
+    /// <c>docs/DIVERGENCES.md</c>. Node sorts <c>dueAt: 1</c>, and Mongo orders missing
+    /// fields BEFORE every value, so the reference's order is "undated backlog, then the
+    /// soonest deadlines" — with the cap truncating from the far end. Measured on the
+    /// seeded demo account (143 open matters): the twenty rows handed to the agent were
+    /// 14 undated plus 6 dated, and every one of those 6 was in the PAST — 2026-06-09
+    /// through 2026-08-05 against a clock reading 2026-08-20. Not one upcoming matter
+    /// could reach the prompt. An agent asked "what do I have on Friday" was
+    /// structurally incapable of answering from its own grounding.
+    /// </para>
+    /// </summary>
     [Fact]
-    public async Task undated_matters_lead_and_the_soonest_deadline_follows()
+    public async Task dated_matters_lead_and_the_undated_backlog_sorts_last()
     {
         var database = TryGetDatabase();
         if (database is null)
@@ -48,10 +63,37 @@ public sealed class AiGroundingRepositoryTests
 
         var tasks = await repository.ListForPromptAsync(userId, TaskGrounding.PromptStatuses, TaskGrounding.TaskCap);
 
-        // A missing dueAt sorts BEFORE any date in Mongo's BSON ordering, so the
-        // dateless backlog leads. That is the reference's order and the cap then
-        // truncates it, so it decides what the agent can see at all.
-        Assert.Equal(["undated", "sooner", "later"], tasks.Select(task => task.Title));
+        Assert.Equal(["sooner", "later", "undated"], tasks.Select(task => task.Title));
+    }
+
+    /// <summary>
+    /// The regression that started this: enough undated matters to fill the cap must not
+    /// be able to hide every dated one. This is the shape of the demo account, shrunk to
+    /// a cap of 3.
+    /// </summary>
+    [Fact]
+    public async Task an_undated_backlog_cannot_crowd_out_the_dated_matters()
+    {
+        var database = TryGetDatabase();
+        if (database is null)
+        {
+            return;
+        }
+
+        var userId = ObjectId.GenerateNewId();
+        var repository = new AiGroundingRepository(database);
+
+        for (var i = 0; i < 5; i++)
+        {
+            await InsertAsync(database, userId, $"undated-{i}");
+        }
+
+        await InsertAsync(database, userId, "upcoming", dueAt: new DateTime(2026, 8, 28, 9, 0, 0, DateTimeKind.Utc));
+
+        var tasks = await repository.ListForPromptAsync(userId, TaskGrounding.PromptStatuses, limit: 3);
+
+        Assert.Equal("upcoming", tasks[0].Title);
+        Assert.Equal(3, tasks.Count);
     }
 
     [Fact]

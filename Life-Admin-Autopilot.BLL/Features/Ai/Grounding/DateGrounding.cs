@@ -72,6 +72,20 @@ public static class DateGrounding
     }
 
     /// <summary>
+    /// The caller's offset from UTC at <paramref name="now"/>, as <c>+03:00</c> /
+    /// <c>-05:00</c>.
+    ///
+    /// <para>
+    /// The same offset <see cref="FormatNow"/> prints, from the same conversion, so the
+    /// clock the agent reads and the offset its <c>due_on</c> filter computes with
+    /// cannot drift apart. An absent or unusable zone is <c>+00:00</c>, matching this
+    /// type's UTC fallback.
+    /// </para>
+    /// </summary>
+    public static string UtcOffset(DateTimeOffset now, string? timezone) =>
+        ToLocal(now, timezone).ToString("zzz", CultureInfo.InvariantCulture);
+
+    /// <summary>
     /// <c>buildDateReference()</c> — the 14-day weekday→date table plus the phrase
     /// anchors, anchored to the local calendar date in <paramref name="timezone"/>.
     ///
@@ -132,10 +146,58 @@ public static class DateGrounding
             .AddDays(-1);
 
         lines.Add(AnchorHeader);
+
+        // One row per weekday, resolving BOTH phrasings. See WeekdayAnchors for why
+        // the 14-day table above is not enough on its own.
+        foreach (var weekday in WeekdayAnchors(anchor))
+        {
+            lines.Add(weekday);
+        }
+
         lines.Add($"this weekend = Sat {Iso(saturday)} & Sun {Iso(sunday)}");
         lines.Add($"end of this month = {Iso(endOfMonth)}");
 
         return string.Join("\n", lines);
+    }
+
+    /// <summary>
+    /// <c>next &lt;weekday&gt;</c> and <c>this &lt;weekday&gt;</c> for all seven days,
+    /// resolved to literal dates.
+    ///
+    /// <para>
+    /// <b>The table above hands the model two of every weekday and labels neither.</b>
+    /// On Thursday 2026-08-20 it contains <c>Friday 2026-08-21 (tomorrow)</c> and
+    /// <c>Friday 2026-08-28 (in 8 days)</c>, and "next Friday" appears nowhere — so the
+    /// instruction to "resolve phrases by FINDING them here" has nothing to find, and
+    /// the model falls back to the weekday arithmetic the very next line forbids.
+    /// </para>
+    ///
+    /// <para>
+    /// <b>Measured, not theorised.</b> Two runs of the identical Arabic prompt
+    /// "ذكرني يوم الاثنين بموعد الدكتور" on Monday 2026-08-17 resolved to 2026-08-24 in
+    /// one and 2026-08-17 in the other — same input, same day, same table, different
+    /// answer. That is the signature of an under-specified phrase, and no deterministic
+    /// defect can produce it. Both transcripts are in the seeded <c>aiconversations</c>.
+    /// </para>
+    ///
+    /// <para>
+    /// <b>Both phrasings are emitted because they collide.</b> English speakers split
+    /// on whether "next Friday" means the coming one or the one after; the product rule
+    /// is the SOONEST UPCOMING occurrence, and stating "this Friday" alongside it makes
+    /// that rule visible rather than implied. A weekday that IS today resolves to today
+    /// for "this" and to the same day for "next": the prompt separately forbids emitting
+    /// a past instant, and today is not past.
+    /// </para>
+    /// </summary>
+    private static IEnumerable<string> WeekdayAnchors(DateTime anchor)
+    {
+        for (var step = 0; step < 7; step++)
+        {
+            var day = anchor.AddDays(step);
+            var name = Weekday(day);
+
+            yield return $"next {name} = {Iso(day)} (this {name} = {Iso(day)}; the soonest upcoming {name})";
+        }
     }
 
     /// <summary>

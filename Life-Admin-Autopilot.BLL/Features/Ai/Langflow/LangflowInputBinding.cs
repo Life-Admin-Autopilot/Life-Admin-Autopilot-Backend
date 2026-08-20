@@ -116,6 +116,19 @@ public sealed class LangflowInputBinding
     public const string ToolAccessTokenField = "access_token";
 
     /// <summary>
+    /// The caller's UTC offset, injected into <c>queryTasks</c> so its <c>due_on</c>
+    /// filter can expand a bare <c>YYYY-MM-DD</c> into that whole LOCAL day.
+    ///
+    /// <para>
+    /// <b>Server-injected rather than asked of the model</b>, for the same reason the
+    /// access token is: the point of <c>due_on</c> is to take the timezone conversion
+    /// off the agent, and sourcing the offset from the agent would hand it straight
+    /// back. It is not in the tool's exposed arg schema.
+    /// </para>
+    /// </summary>
+    public const string ToolUtcOffsetField = "utc_offset";
+
+    /// <summary>
     /// The eleven tool components of <c>planning-agent.v4</c>, which each need the
     /// caller's bearer to call this API back as that user.
     ///
@@ -266,11 +279,29 @@ public sealed class LangflowInputBinding
             // agent used to carry it and could drop it, and a dropped token is a failed
             // tool call the user sees. Sent on every turn and in every mode, because
             // every mode can call tools.
+            //
+            // An absent token stays absent rather than being sent as "": an empty tweak
+            // would overwrite a value an operator had pinned on the node, and a token
+            // this layer does not have is not one it can invent.
+            //
+            // <b>It is no longer silent, though.</b> Every tool in such a run answers
+            // `{"ok": false, "error": "misconfigured"}`, and the agent was measured
+            // reporting that to the user as "I don't see anything on your schedule" — a
+            // dead lookup rendered as an empty calendar. Two things now stop that
+            // reaching the user as fact: the caller logs the missing token
+            // (<c>LangflowAiProvider.WarnIfToolsCannotAuthenticate</c>), and
+            // <see cref="FailedLookupGuard"/> refuses to let an absence claim stand on
+            // top of a failed read. Refusing the whole run here was tried and reverted —
+            // it turns "hi" into a 500, and a greeting needs no tools.
             if (!string.IsNullOrEmpty(accessToken))
             {
+                var utcOffset = DateGrounding.UtcOffset(now, timezone);
+
                 foreach (var node in ToolNodes)
                 {
-                    Target(tweaks, node)[ToolAccessTokenField] = accessToken;
+                    var tool = Target(tweaks, node);
+                    tool[ToolAccessTokenField] = accessToken;
+                    tool[ToolUtcOffsetField] = utcOffset;
                 }
             }
 
