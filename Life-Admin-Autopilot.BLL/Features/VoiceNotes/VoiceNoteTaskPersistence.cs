@@ -58,11 +58,19 @@ public sealed class VoiceNoteTaskPersistence : IVoiceNoteTaskPersistence
 {
     private readonly IMongoCollection<TaskDocument> _tasks;
     private readonly IMongoCollection<BsonDocument> _rawTasks;
+    private readonly Kernel.Reminders.ReminderPlanner? _reminders;
 
-    public VoiceNoteTaskPersistence(IMongoDatabase database)
+    /// <summary>
+    /// <paramref name="reminders"/> is optional so the existing tests that build
+    /// this from a bare database keep compiling. Without it a matter dictated into
+    /// a voice note is stored with an empty <c>reminders</c> array and never fires
+    /// — see the note on <c>TaskWriteService</c>'s constructor.
+    /// </summary>
+    public VoiceNoteTaskPersistence(IMongoDatabase database, Kernel.Reminders.ReminderPlanner? reminders = null)
     {
         _tasks = database.GetCollection<TaskDocument>(MongoCollections.Tasks);
         _rawTasks = database.GetCollection<BsonDocument>(MongoCollections.Tasks);
+        _reminders = reminders;
     }
 
     public async Task<IReadOnlyList<TaskDocument>> PersistAsync(
@@ -103,6 +111,25 @@ public sealed class VoiceNoteTaskPersistence : IVoiceNoteTaskPersistence
             .Where(t => t.SourceTaskKey is not null)
             .GroupBy(t => t.SourceTaskKey!)
             .ToDictionary(g => g.Key, g => g.First(), StringComparer.Ordinal);
+
+        // Schedule only what has never been scheduled.
+        //
+        // The write above is an idempotent upsert keyed on sourceTaskKey, so a
+        // re-run of the same voice note returns rows that already exist — and
+        // SetRulesRemindersAsync clears firedAt, so replanning one of those would
+        // fire a reminder the user has already had. An empty reminders array is the
+        // reliable "never planned" signal, because the planner always writes at
+        // least the at-due entry for a dated reminder.
+        if (_reminders is not null)
+        {
+            foreach (var task in found)
+            {
+                if (task.Kind == "reminder" && task.DueAt.HasValue && task.Reminders.Count == 0)
+                {
+                    await _reminders.SetRulesRemindersAsync(task, now, cancellationToken).ConfigureAwait(false);
+                }
+            }
+        }
 
         return items
             .Select(i => byKey.TryGetValue(i.Key, out var task) ? task : null)

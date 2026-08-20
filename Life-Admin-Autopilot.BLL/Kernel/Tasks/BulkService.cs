@@ -33,12 +33,29 @@ public sealed class BulkService
     private readonly IMongoCollection<TaskDocument> _tasks;
     private readonly IMongoCollection<TaskBulkOpDocument> _ops;
     private readonly ClarificationCascade _cascade;
+    private readonly Reminders.ReminderPlanner? _reminders;
 
-    public BulkService(IMongoDatabase database, ClarificationCascade cascade)
+    /// <summary>
+    /// <paramref name="reminders"/> is optional so the existing tests that build
+    /// this by hand keep compiling.
+    ///
+    /// <para>
+    /// It is used for SNOOZE only. None of the other actions here touch
+    /// <c>dueAt</c> or <c>kind</c>, and running the rules table over a task whose
+    /// deadline has not moved would clear <c>firedAt</c> and re-fire reminders that
+    /// already went out — so this deliberately does NOT call
+    /// <c>SetRulesRemindersAsync</c>.
+    /// </para>
+    /// </summary>
+    public BulkService(
+        IMongoDatabase database,
+        ClarificationCascade cascade,
+        Reminders.ReminderPlanner? reminders = null)
     {
         _tasks = database.GetCollection<TaskDocument>(MongoCollections.Tasks);
         _ops = database.GetCollection<TaskBulkOpDocument>(MongoCollections.TaskBulkOps);
         _cascade = cascade;
+        _reminders = reminders;
     }
 
     /// <summary>
@@ -284,6 +301,25 @@ public sealed class BulkService
                     new BsonDocumentUpdateDefinition<TaskDocument>(ToMongoOps(e.Next)))),
                 cancellationToken: cancellationToken)
             .ConfigureAwait(false);
+
+        // A snoozed matter fires ONCE, at the snooze moment — that is the point of
+        // snooze, and it is the only action here that changes when a reminder is
+        // due. Without this the bulk path moves the badge and the list position
+        // while the ORIGINAL schedule stays armed, so the phone still buzzes at the
+        // old time for something the user just pushed away.
+        //
+        // SnoozedUntil is assigned in memory rather than re-read: the bulk write
+        // above already committed this exact value, and the planner needs only that
+        // and the id.
+        if (_reminders is not null && input is BulkActionInput.Snooze snoozed)
+        {
+            var touched = entries.Select(e => e.TaskId).ToHashSet();
+            foreach (var task in tasks.Where(t => touched.Contains(t.Id)))
+            {
+                task.SnoozedUntil = snoozed.Until;
+                await _reminders.SetSnoozeReminderAsync(task, cancellationToken).ConfigureAwait(false);
+            }
+        }
 
         // A question is ABOUT a task. Delete the task and the question is moot —
         // leaving it open strands a prompt the user can no longer answer, which is

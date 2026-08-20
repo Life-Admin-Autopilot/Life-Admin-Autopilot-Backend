@@ -1,3 +1,4 @@
+using Life_Admin_Autopilot.BLL.Kernel.Reminders;
 using Life_Admin_Autopilot.BLL.Kernel.Tasks;
 using Life_Admin_Autopilot.DAL.Features.Tasks;
 using Life_Admin_Autopilot.DAL.Kernel.Documents;
@@ -49,6 +50,7 @@ public sealed class TaskWriteService
 {
     private readonly TaskRepository _tasks;
     private readonly Knowledge.KnowledgeService? _knowledge;
+    private readonly ReminderPlanner? _reminders;
 
     /// <summary>
     /// <paramref name="knowledge"/> is optional so this slice still stands up when
@@ -57,12 +59,41 @@ public sealed class TaskWriteService
     /// create and patch re-indexes the task for RAG ("every task is embedded, not
     /// just documents" — the ai_flow diagram). Ingest swallows its own failures, so
     /// this can never turn a task write into an error.
+    ///
+    /// <para>
+    /// <paramref name="reminders"/> is optional for the same reason. Without it a
+    /// task created here is stored with an EMPTY <c>reminders</c> array, and
+    /// <c>ReminderWorker</c> only ever fires entries from that array — so every
+    /// matter filed through the app or the chat agent is silently never reminded
+    /// about. That is the state this repo was in (see docs/DIVERGENCES.md §14,
+    /// "How to revert"), and it presents as a working product: the task appears,
+    /// the deadline is right, and nothing arrives.
+    /// </para>
     /// </summary>
-    public TaskWriteService(TaskRepository tasks, Knowledge.KnowledgeService? knowledge = null)
+    public TaskWriteService(
+        TaskRepository tasks,
+        Knowledge.KnowledgeService? knowledge = null,
+        ReminderPlanner? reminders = null)
     {
         _tasks = tasks;
         _knowledge = knowledge;
+        _reminders = reminders;
     }
+
+    /// <summary>
+    /// Write the lead-time schedule for a matter that fires.
+    ///
+    /// <para>
+    /// Guarded on kind/dueAt rather than left to <c>ComputeRules</c> (which already
+    /// returns nothing for a list item) purely to save a round trip per dateless
+    /// task. <c>SetRulesRemindersAsync</c> never throws — a scheduling hiccup must
+    /// not fail the write that triggered it.
+    /// </para>
+    /// </summary>
+    private Task PlanRemindersAsync(TaskDocument? task, DateTime now, CancellationToken cancellationToken) =>
+        _reminders is null || task is null || task.Kind != "reminder" || !task.DueAt.HasValue
+            ? Task.CompletedTask
+            : _reminders.SetRulesRemindersAsync(task, now, cancellationToken);
 
     /// <summary>Title plus notes — what a user would search for.</summary>
     private static string IndexableText(TaskDocument task) =>
@@ -117,6 +148,12 @@ public sealed class TaskWriteService
         EnforceReminderHasDue(task);
 
         await _tasks.InsertAsync(task, cancellationToken).ConfigureAwait(false);
+
+        // AFTER the insert: the planner writes the schedule with an UpdateOne keyed
+        // on the task's own _id, so the row has to exist. It also assigns
+        // task.Reminders in place, which is what makes the returned document carry
+        // the schedule the caller just earned.
+        await PlanRemindersAsync(task, now, cancellationToken).ConfigureAwait(false);
         await IndexAsync(task, cancellationToken).ConfigureAwait(false);
         return task;
     }
@@ -174,6 +211,31 @@ public sealed class TaskWriteService
         }
 
         var updated = await _tasks.UpdateLiveAsync(userId, id, ops, cancellationToken).ConfigureAwait(false);
+
+        // Reschedule ONLY when the thing the schedule is derived from moved.
+        //
+        // SetRulesRemindersAsync overwrites `reminders` wholesale and clears
+        // `firedAt`, so calling it on an unrelated edit (a title fix, a priority
+        // bump, a completion) re-arms reminders that have ALREADY gone out and the
+        // user is notified a second time. Hence the narrow guard rather than
+        // "replan on every patch".
+        //
+        // Snooze is checked first and is deliberately a different call: a snoozed
+        // matter fires ONCE, at the snooze moment. Running the rules table over it
+        // instead would resurrect the original lead-time schedule — the opposite of
+        // what snoozing asked for. This is the path the notification action button
+        // takes (status: 'snoozed' + snoozedUntil, see useNotificationActions.ts).
+        if (updated is not null && _reminders is not null)
+        {
+            if (patch.Contains("snoozedUntil") && updated.SnoozedUntil.HasValue)
+            {
+                await _reminders.SetSnoozeReminderAsync(updated, cancellationToken).ConfigureAwait(false);
+            }
+            else if (patch.Contains("dueAt") || patch.Contains("kind"))
+            {
+                await PlanRemindersAsync(updated, now, cancellationToken).ConfigureAwait(false);
+            }
+        }
 
         // Re-index on the way out, not just on create.
         //

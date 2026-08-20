@@ -48,11 +48,19 @@ public sealed class DocumentScanReviewService : IDocumentScanReviewService
 {
     private readonly IMongoCollection<TaskDocument> _tasks;
     private readonly IMongoCollection<BsonDocument> _rawTasks;
+    private readonly Kernel.Reminders.ReminderPlanner? _reminders;
 
-    public DocumentScanReviewService(IMongoDatabase database)
+    /// <summary>
+    /// <paramref name="reminders"/> is optional so the existing tests that build
+    /// this from a bare database keep compiling. Without it a deadline read off a
+    /// scanned bill is stored with an empty <c>reminders</c> array and never fires
+    /// — see the note on <c>TaskWriteService</c>'s constructor.
+    /// </summary>
+    public DocumentScanReviewService(IMongoDatabase database, Kernel.Reminders.ReminderPlanner? reminders = null)
     {
         _tasks = database.GetCollection<TaskDocument>(MongoCollections.Tasks);
         _rawTasks = database.GetCollection<BsonDocument>(MongoCollections.Tasks);
+        _reminders = reminders;
     }
 
     public async Task<IReadOnlyList<TaskDocument>> PersistAsync(
@@ -93,6 +101,20 @@ public sealed class DocumentScanReviewService : IDocumentScanReviewService
             .Where(t => t.SourceTaskKey is not null)
             .GroupBy(t => t.SourceTaskKey!)
             .ToDictionary(g => g.Key, g => g.First(), StringComparer.Ordinal);
+
+        // Schedule only what has never been scheduled — same upsert reasoning as
+        // VoiceNoteTaskPersistence: accepting the same review card twice must not
+        // clear firedAt and re-fire a reminder that already went out.
+        if (_reminders is not null)
+        {
+            foreach (var task in found)
+            {
+                if (task.Kind == "reminder" && task.DueAt.HasValue && task.Reminders.Count == 0)
+                {
+                    await _reminders.SetRulesRemindersAsync(task, now, cancellationToken).ConfigureAwait(false);
+                }
+            }
+        }
 
         // Returned in the order the caller accepted them, not in Mongo's order —
         // the response's `tasks` array lines up with the review card.
