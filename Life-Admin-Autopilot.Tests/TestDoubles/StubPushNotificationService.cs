@@ -15,6 +15,10 @@ namespace Life_Admin_Autopilot.Tests.TestDoubles
 
         public List<PushNotificationRequest> Requests { get; } = new();
 
+        // A stub exists to stand in for a WORKING sender, so it reports configured unless a
+        // test is specifically exercising the unconfigured path.
+        public bool IsConfigured { get; init; } = true;
+
         public Task<Result<PushNotificationResult>> SendAsync(
             PushNotificationRequest request,
             CancellationToken cancellationToken = default)

@@ -36,6 +36,20 @@ namespace Life_Admin_Autopilot.DAL.Push
             _logger = logger;
         }
 
+        /// <inheritdoc />
+        /// <remarks>
+        /// Deliberately the SAME two checks <see cref="SendAsync"/> makes before it builds
+        /// a request, read through one property so the answer given to the client cannot
+        /// drift from the answer the send path would give.
+        /// </remarks>
+        public bool IsConfigured =>
+            _accessTokenProvider.IsConfigured && !string.IsNullOrWhiteSpace(ResolvedProjectId);
+
+        // Configuration wins over the credential's own project id, so a deployment can
+        // point a key at a different project without reissuing it.
+        private string? ResolvedProjectId =>
+            _options.ProjectId is { Length: > 0 } ? _options.ProjectId : _accessTokenProvider.ProjectId;
+
         public async Task<Result<PushNotificationResult>> SendAsync(
             PushNotificationRequest request,
             CancellationToken cancellationToken = default)
@@ -47,9 +61,7 @@ namespace Life_Admin_Autopilot.DAL.Push
                 return Fail(PushErrorCodes.InvalidArgument, "The device token is empty.", maskedToken);
             }
 
-            var projectId = _options.ProjectId is { Length: > 0 }
-                ? _options.ProjectId
-                : _accessTokenProvider.ProjectId;
+            var projectId = ResolvedProjectId;
 
             if (string.IsNullOrWhiteSpace(projectId))
             {

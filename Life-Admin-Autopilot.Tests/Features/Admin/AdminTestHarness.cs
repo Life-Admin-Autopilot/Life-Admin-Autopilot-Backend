@@ -31,6 +31,8 @@ namespace Life_Admin_Autopilot.Tests.Features.Admin;
 /// </summary>
 public sealed class RecordingPushService : IPushNotificationService
 {
+    public bool IsConfigured { get; init; } = true;
+
     public List<PushNotificationRequest> Sent { get; } = new();
 
     /// <summary>Set per test. Null means every send succeeds.</summary>

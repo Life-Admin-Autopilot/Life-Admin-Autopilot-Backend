@@ -4,7 +4,11 @@ namespace Life_Admin_Autopilot.BLL.Interfaces
 {
     public interface INotificationService
     {
-        Task<RegisteredDeviceResponse> RegisterDeviceAsync(string userId, RegisterDeviceRequest request);
+        Task<DeviceRegistrationResponse> RegisterDeviceAsync(string userId, RegisterDeviceRequest request);
+
+        // Whether this deployment can send push at all. Surfaced to the client at
+        // registration so it knows whether to keep its own local schedule running.
+        bool PushDeliveryConfigured { get; }
 
         Task<bool> UnregisterDeviceAsync(string userId, string token);
 

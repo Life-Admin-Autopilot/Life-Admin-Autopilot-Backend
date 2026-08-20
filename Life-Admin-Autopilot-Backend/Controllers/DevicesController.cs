@@ -43,11 +43,13 @@ namespace Life_Admin_Autopilot_Backend.Controllers
             if (!Enum.IsDefined(platform))
                 return BadRequest("Platform must be 'Ios' or 'Android'.");
 
-            var device = await _notificationService.RegisterDeviceAsync(
+            var registration = await _notificationService.RegisterDeviceAsync(
                 CurrentUserId,
                 request with { Platform = platform });
 
-            return Ok(device);
+            // Carries `serverDelivers`, which the app uses to decide whether to keep its own
+            // local reminder schedule running. See DeviceRegistrationResponse.
+            return Ok(registration);
         }
 
         [HttpGet]

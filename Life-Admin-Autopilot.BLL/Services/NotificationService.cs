@@ -24,7 +24,10 @@ namespace Life_Admin_Autopilot.BLL.Services
             _logger = logger;
         }
 
-        public async Task<RegisteredDeviceResponse> RegisterDeviceAsync(string userId, RegisterDeviceRequest request)
+        /// <inheritdoc />
+        public bool PushDeliveryConfigured => _pushNotificationService.IsConfigured;
+
+        public async Task<DeviceRegistrationResponse> RegisterDeviceAsync(string userId, RegisterDeviceRequest request)
         {
             var stored = await _deviceTokenRepository.UpsertAsync(new DeviceToken
             {
@@ -40,7 +43,19 @@ namespace Life_Admin_Autopilot.BLL.Services
                 PushTokenMask.Mask(stored.Token),
                 userId);
 
-            return ToResponse(stored);
+            // Logged at registration rather than only at send time: this is the moment a
+            // device is told to stand down, so it is the moment worth being able to find
+            // in a log when someone reports getting no reminders.
+            if (!PushDeliveryConfigured)
+            {
+                _logger.LogWarning(
+                    "Device {DeviceToken} registered for user {UserId}, but push is NOT configured on this server - "
+                    + "the client will keep delivering reminders locally. Set FCM_SERVICE_ACCOUNT_JSON or FCM_SERVICE_ACCOUNT_FILE.",
+                    PushTokenMask.Mask(stored.Token),
+                    userId);
+            }
+
+            return new DeviceRegistrationResponse(ToResponse(stored), PushDeliveryConfigured);
         }
 
         public Task<bool> UnregisterDeviceAsync(string userId, string token) =>

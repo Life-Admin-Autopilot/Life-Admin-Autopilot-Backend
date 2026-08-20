@@ -20,8 +20,25 @@ namespace Life_Admin_Autopilot.DAL.Extensions
                 {
                     // The service account is a private key - it comes from env vars in real
                     // deployments and user-secrets locally, never from appsettings.json.
-                    options.ServiceAccountJson = configuration["FCM_SERVICE_ACCOUNT_JSON"] ?? string.Empty;
-                    options.ServiceAccountFilePath = configuration["FCM_SERVICE_ACCOUNT_FILE"] ?? string.Empty;
+                    //
+                    // ONLY when actually supplied. These two assignments used to be
+                    // unconditional, with `?? string.Empty` - and because PostConfigure runs
+                    // AFTER Bind, that silently erased anything bound from the
+                    // PushNotifications section. tools/dev/stack.sh configures push by
+                    // exporting PushNotifications__ServiceAccountFilePath, so the documented
+                    // way to switch delivery on was wiped a moment later, reported
+                    // PUSH_NOT_CONFIGURED, and looked for all the world like a bad key.
+                    var json = configuration["FCM_SERVICE_ACCOUNT_JSON"];
+                    if (!string.IsNullOrWhiteSpace(json))
+                    {
+                        options.ServiceAccountJson = json;
+                    }
+
+                    var file = configuration["FCM_SERVICE_ACCOUNT_FILE"];
+                    if (!string.IsNullOrWhiteSpace(file))
+                    {
+                        options.ServiceAccountFilePath = file;
+                    }
                 });
 
             // Singleton so the OAuth2 access token is minted once and reused until it

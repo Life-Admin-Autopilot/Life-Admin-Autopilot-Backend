@@ -1,6 +1,7 @@
 using Life_Admin_Autopilot.BLL;
 using Life_Admin_Autopilot.DAL;
 using Life_Admin_Autopilot.DAL.Extensions;
+using Life_Admin_Autopilot.DAL.Push;
 using Life_Admin_Autopilot_Backend.Extensions;
 using Life_Admin_Autopilot_Backend.Kernel;
 
@@ -72,7 +73,44 @@ namespace Life_Admin_Autopilot_Backend
 
             app.MapControllers();
 
+            WarnIfPushIsUnconfigured(app);
+
             return app;
+        }
+
+        /// <summary>
+        /// Say out loud, once, at boot, when this deployment cannot send push.
+        ///
+        /// <para>
+        /// Every other symptom of a missing FCM credential is silent. The reminder tick
+        /// still claims its entries and still writes its notification rows, so it reports
+        /// a healthy run; the only trace is one warning per device per send, buried in a
+        /// log nobody reads when nothing appears to be wrong. A total delivery blackout
+        /// and a quiet week look identical from the outside — which is exactly how one
+        /// went unnoticed.
+        /// </para>
+        ///
+        /// <para>
+        /// Not fatal. A dev box without a service account is a legitimate, supported
+        /// setup: the app falls back to scheduling reminders on the device itself
+        /// (DeviceRegistrationResponse), so everything still works, just locally.
+        /// </para>
+        /// </summary>
+        private static void WarnIfPushIsUnconfigured(WebApplication app)
+        {
+            var push = app.Services.GetRequiredService<IPushNotificationService>();
+            if (push.IsConfigured)
+            {
+                return;
+            }
+
+            app.Services
+                .GetRequiredService<ILoggerFactory>()
+                .CreateLogger("Push")
+                .LogWarning(
+                    "PUSH IS NOT CONFIGURED - no FCM service account, so no notification will ever reach a phone "
+                    + "from this server. Clients fall back to scheduling reminders locally. "
+                    + "Set FCM_SERVICE_ACCOUNT_FILE or FCM_SERVICE_ACCOUNT_JSON to enable delivery.");
         }
     }
 }
