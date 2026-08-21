@@ -1,4 +1,4 @@
-using Life_Admin_Autopilot.DAL.Kernel.Documents;
+﻿using Life_Admin_Autopilot.DAL.Kernel.Documents;
 using Life_Admin_Autopilot.DAL.Kernel.Mongo;
 using MongoDB.Bson;
 using MongoDB.Driver;
@@ -158,6 +158,39 @@ public sealed class ClarificationRepository : MongoRepositoryBase<ClarificationD
     /// current patched fields. Both halves are ported literally.
     /// </para>
     /// </summary>
+    /// <summary>
+    /// Drop the bell rows that pointed at these questions.
+    ///
+    /// <para>
+    /// A notification whose question has been answered is a broken link, and it was
+    /// the most confusing thing about this flow: the row stayed in the bell forever,
+    /// tapping it landed on the card stack's "All clear" celebration, and the user
+    /// reasonably read that as the feature failing rather than as a stale row.
+    /// Nothing cleared it — the row was written once by the voice worker and never
+    /// touched again.
+    /// </para>
+    ///
+    /// <para>
+    /// Deleted rather than marked read: read/unread controls the bell's COUNT, not
+    /// whether the row is listed, so marking it read would leave the same dead link
+    /// sitting there quietly. This is a deliberate divergence from the reference,
+    /// which never removes a notification — see docs/DIVERGENCES.md.
+    /// </para>
+    /// </summary>
+    public Task ClearNotificationsAsync(
+        IReadOnlyCollection<ObjectId> clarificationIds,
+        CancellationToken cancellationToken = default) =>
+        clarificationIds.Count == 0
+            ? Task.CompletedTask
+            : Database
+                .GetCollection<NotificationDocument>(MongoCollections.Notifications)
+                .DeleteManyAsync(
+                    // Nullable on the document: most notifications carry no question.
+                    Builders<NotificationDocument>.Filter.In(
+                        n => n.ClarificationId,
+                        clarificationIds.Select(id => (ObjectId?)id)),
+                    cancellationToken);
+
     public async Task CloseOutAsync(
         ClarificationDocument doc,
         ClarificationPatch patch,
@@ -195,6 +228,19 @@ public sealed class ClarificationRepository : MongoRepositoryBase<ClarificationD
                 new BsonDocumentUpdateDefinition<ClarificationDocument>(new BsonDocument("$set", set)),
                 cancellationToken: cancellationToken)
             .ConfigureAwait(false);
+
+        // The bell row exists to lead the user to this question. Once the question
+        // is closed it leads nowhere: tapping it opens the card stack, which shows
+        // "All clear" because there is nothing left to answer. So it goes with the
+        // question it was pointing at.
+        //
+        // Only on a TERMINAL status. `CloseOutAsync` is also how Skip defers a
+        // question — status stays open, the row stays open with it, and the bell is
+        // exactly where the user should find it again.
+        if (patch.Status is ClarificationVocabulary.Resolved or ClarificationVocabulary.Dropped)
+        {
+            await ClearNotificationsAsync(new[] { doc.Id }, cancellationToken).ConfigureAwait(false);
+        }
 
         // `doc.set(patch)` — the patch fields only. UpdatedAt is left alone ON PURPOSE.
         if (patch.Status is not null)

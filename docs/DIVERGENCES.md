@@ -1107,6 +1107,32 @@ Pinned by `ConflictScanTests`: a pair is reported once rather than from both end
 `until` bound is honoured, an undated matter clashes with nothing, and the side offered
 to move is the one the urgency rule chose.
 
+### 13.2 A closed question takes its notification with it
+
+The voice worker writes one `uncertainty` notification per question it raises, and
+the reference never removes a notification once written. Here they are deleted when
+the question reaches a terminal status — answered, kept, dropped, or settled by the
+user giving the matter a date directly.
+
+**Why the divergence is worth it.** The row's only job is to lead the user to the
+question. Once the question is closed it leads nowhere: tapping it opens the card
+stack, which renders its "All clear" celebration because there is nothing left to
+answer. Reported as the feature being broken, which is a fair reading — a bell that
+lists something, and takes you somewhere that says there is nothing, is lying about
+one of the two.
+
+**Deleted rather than marked read**, because read/unread controls the bell's COUNT
+and not whether a row is listed. Marking it read leaves the same dead link in place,
+quietly.
+
+**Deferred questions are deliberately untouched.** "Skip" goes through the same
+close-out with a `deferredUntil` and no status change; the question is still open and
+the bell is exactly where the user should meet it again.
+
+Cleared in `ClarificationRepository.CloseOutAsync` for the routes, and in
+`ClarificationCascade.SettleDateQuestionsAsync` for the date-set path — which reads
+the ids before its update, because `UpdateMany` does not report what it touched.
+
 ### A pre-existing behaviour left alone
 
 `SlotSuggester` walks each day from the start of the matter's part of day rather than

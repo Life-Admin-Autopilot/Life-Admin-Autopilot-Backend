@@ -1,4 +1,4 @@
-using Life_Admin_Autopilot.BLL.Kernel.Reminders;
+﻿using Life_Admin_Autopilot.BLL.Kernel.Reminders;
 using Life_Admin_Autopilot.BLL.Kernel.Tasks;
 using Life_Admin_Autopilot.DAL.Features.Tasks;
 using Life_Admin_Autopilot.DAL.Kernel.Documents;
@@ -70,14 +70,22 @@ public sealed class TaskWriteService
     /// the deadline is right, and nothing arrives.
     /// </para>
     /// </summary>
+    /// <summary>
+    /// Optional, like the two above: a caller that does not construct one simply
+    /// does not settle questions, and every existing construction keeps compiling.
+    /// </summary>
+    private readonly Kernel.Tasks.ClarificationCascade? _clarifications;
+
     public TaskWriteService(
         TaskRepository tasks,
         Knowledge.KnowledgeService? knowledge = null,
-        ReminderPlanner? reminders = null)
+        ReminderPlanner? reminders = null,
+        Kernel.Tasks.ClarificationCascade? clarifications = null)
     {
         _tasks = tasks;
         _knowledge = knowledge;
         _reminders = reminders;
+        _clarifications = clarifications;
     }
 
     /// <summary>
@@ -235,6 +243,26 @@ public sealed class TaskWriteService
             {
                 await PlanRemindersAsync(updated, now, cancellationToken).ConfigureAwait(false);
             }
+        }
+
+        // Giving a matter a date ANSWERS the question that was asking for one.
+        //
+        // The undated-matter pop-up sends the user to the matter rather than
+        // answering in place, so the answer arrives here as an ordinary edit with
+        // nothing to say it settled anything. Without this the question stands until
+        // the seven-day stale settler reaches it, and the app spends a week asking
+        // for a date it already has. See ClarificationCascade.SettleDateQuestionsAsync.
+        //
+        // Guarded on the date actually being SET: a patch clearing dueAt back to null
+        // leaves the question open, which is correct — it is unanswered again.
+        if (updated is not null
+            && _clarifications is not null
+            && patch.Contains("dueAt")
+            && updated.DueAt.HasValue)
+        {
+            await _clarifications
+                .SettleDateQuestionsAsync(userId, updated.Id, now, cancellationToken)
+                .ConfigureAwait(false);
         }
 
         // Re-index on the way out, not just on create.

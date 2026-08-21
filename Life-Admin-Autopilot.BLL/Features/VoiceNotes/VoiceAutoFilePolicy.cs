@@ -1,4 +1,4 @@
-using Life_Admin_Autopilot.BLL.Features.Clarifications;
+﻿using Life_Admin_Autopilot.BLL.Features.Clarifications;
 using Life_Admin_Autopilot.BLL.Features.Knowledge;
 using Life_Admin_Autopilot.BLL.Features.Planning;
 using Life_Admin_Autopilot.BLL.Kernel.Integrations;
@@ -131,6 +131,7 @@ public static class VoiceAutoFilePolicy
             : draft.TimeAssumed && draft.DueAt.HasValue ? AskForTheTime(draft, timezone)
             : duplicate is not null ? AskAboutTheDuplicate(draft, duplicate)
             : unsure ? AskWhetherItIsReal(draft)
+            : NeedsADate(draft) ? AskWhenItIsDue(draft, timezone)
             : null;
 
         return new DraftVoiceItem(
@@ -143,7 +144,7 @@ public static class VoiceAutoFilePolicy
             // describe the item honestly instead of steering it. An item with no
             // question is by definition one nothing was flagged on.
             Confidence: clarification is null ? "high" : "low",
-            ReviewReason: ReviewReasonFor(clarification, clash ?? duplicate, unsure),
+            ReviewReason: ReviewReasonFor(clarification, clash ?? duplicate, unsure, NeedsADate(draft)),
             Reasons: draft.Conflicts.Select(c => c.Reason).ToList(),
             EstimateMinMinutes: null,
             EstimateMaxMinutes: null,
@@ -291,6 +292,75 @@ public static class VoiceAutoFilePolicy
             CostOfWrong(draft),
             new[] { new DraftClarifyOption("Yes, that is right", draft.DueAt) });
 
+    /// <summary>
+    /// Filed with no date, so nothing will ever bring it back.
+    ///
+    /// <para>
+    /// <b>This asks about EVERY undated item, and that is a deliberate reversal.</b>
+    /// The note further up argues that "buy milk" has no date because there is no
+    /// date, and that asking manufactures uncertainty. The counter-argument, and the
+    /// one the product owner took: an undated matter is filed into a list the user
+    /// has to remember to open, which is the habit the app exists to replace. Asking
+    /// once, cheaply, is better than a matter that quietly never surfaces.
+    /// </para>
+    ///
+    /// <para>
+    /// <b>It was tried the narrow way first and the signal does not exist.</b> The
+    /// gate keyed on <c>Kind == "reminder" &amp;&amp; DueAt is null</c>, on the reading that
+    /// <c>kind</c> carried the model's judgement about whether a matter must happen by
+    /// a deadline. It does not: <c>PlanningService</c>'s prompt says <i>"use 'reminder'
+    /// only when a time is known, otherwise 'list' with dueAt null"</i>, which makes
+    /// <c>kind</c> a restatement of <c>dueAt</c> and that pair unreachable. Measured on
+    /// real notes — "renew my car insurance" came back <c>list</c>, and no question was
+    /// ever raised. Do not reinstate that gate without changing the prompt first, and
+    /// note the prompt is shared with chat.
+    /// </para>
+    ///
+    /// <para>
+    /// The cost is carried by the answer rather than the question: option zero is
+    /// "No date needed", one tap, and it leaves the matter exactly as it was.
+    /// </para>
+    /// </summary>
+    private static bool NeedsADate(TaskDraft draft) => draft.DueAt is null;
+
+    /// <summary>
+    /// They named no day. Offer two ordinary ones, and the answer that leaves it
+    /// alone.
+    ///
+    /// <para>
+    /// <b>Option ZERO carries a null date, and that is load-bearing</b> for the same
+    /// reason it is in <see cref="AskForTheTime"/>: <see cref="VoiceClarificationStaging"/>
+    /// files the task at <c>Options[0].DueAt</c>. The reading this item was filed
+    /// under is UNDATED, so anything else in that slot would quietly give a date to a
+    /// matter the user never dated — while the card claimed to be offering them the
+    /// choice.
+    /// </para>
+    ///
+    /// <para>
+    /// Anchored on now rather than on the draft, because there is no <c>DueAt</c> to
+    /// anchor on — that absence is the whole question.
+    /// </para>
+    /// </summary>
+    private static DraftClarification AskWhenItIsDue(TaskDraft draft, string? timezone)
+    {
+        var localNow = ToLocal(DateTime.UtcNow, timezone);
+        var hour = TimeChoices[0].Hour;
+
+        var tomorrow = AtLocalHour(localNow.AddDays(1), hour, timezone);
+        var nextWeek = AtLocalHour(localNow.AddDays(7), hour, timezone);
+
+        return new DraftClarification(
+            $"When is \"{draft.Title}\" due?",
+            "date",
+            CostOfWrong(draft),
+            new[]
+            {
+                new DraftClarifyOption("No date needed"),
+                new DraftClarifyOption($"Tomorrow — {Clock(tomorrow.Local)}", tomorrow.Utc),
+                new DraftClarifyOption($"{Day(nextWeek.Local)} — {Clock(nextWeek.Local)}", nextWeek.Utc),
+            });
+    }
+
     // ---- supporting judgements ----------------------------------------------
 
     /// <summary>
@@ -322,7 +392,8 @@ public static class VoiceAutoFilePolicy
     private static string ReviewReasonFor(
         DraftClarification? clarification,
         PlanningConflict? conflict,
-        bool unsure) =>
+        bool unsure,
+        bool needsADate) =>
         clarification is null ? "clear"
         // The two conflict kinds are now told apart. Every clash used to report
         // itself as a possible duplicate, which is a different claim about the
@@ -330,6 +401,10 @@ public static class VoiceAutoFilePolicy
         : conflict is not null
             ? IsDuplicate(conflict) ? "maybe_duplicate" : "time_clash"
         : unsure ? "ambiguous_intent"
+        // INCOMPLETE, not vague. Nothing about a date was unclear here, because no
+        // date was given at all — "vague_date" would claim the user said something
+        // ambiguous when they said nothing.
+        : needsADate ? "incomplete"
         : "vague_date";
 
     /// <summary>

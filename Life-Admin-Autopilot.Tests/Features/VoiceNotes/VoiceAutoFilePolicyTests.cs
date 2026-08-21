@@ -1,4 +1,4 @@
-using System.Text;
+﻿using System.Text;
 using Life_Admin_Autopilot.BLL.Features.Knowledge;
 using Life_Admin_Autopilot.BLL.Features.Planning;
 using Life_Admin_Autopilot.BLL.Features.VoiceNotes;
@@ -34,16 +34,22 @@ public sealed class VoiceAutoFilePolicyTests
     }
 
     [Fact]
-    public void files_an_undated_matter_without_inventing_a_question()
+    public void files_an_undated_matter_and_asks_when_it_is_due()
     {
-        // "Buy milk". The written rule says a settled draft has a user-given date,
-        // which read strictly would ask "when?" here — manufacturing uncertainty
-        // rather than surfacing it. Nothing was assumed, so there is nothing to
-        // confirm, and a list matter with no due date is the complete answer.
+        // REVERSED, deliberately. This test used to assert the opposite — "buy milk"
+        // has no date because there is no date, so asking manufactures uncertainty
+        // rather than surfacing it. That reasoning is still on the record in
+        // VoiceAutoFilePolicy; the product decision went the other way, because an
+        // undated matter is filed into a list the user has to remember to open, and
+        // remembering is the job the app took on.
+        //
+        // What has NOT changed is that the matter is filed either way, and files
+        // UNDATED: the question is a question, not a condition of saving.
         var item = VoiceAutoFilePolicy.Apply(Draft(dueAt: null, timeAssumed: false), Zone);
 
-        Assert.Null(item.Clarification);
         Assert.Null(item.DueAt);
+        Assert.NotNull(item.Clarification);
+        Assert.Equal("date", item.Clarification!.Kind);
     }
 
     [Fact]
@@ -248,6 +254,67 @@ public sealed class VoiceAutoFilePolicyTests
         // Still asks, still files — the times are simply read as UTC.
         Assert.NotNull(item.Clarification);
         Assert.Equal("06:00", item.Clarification!.Options[0].Label);
+    }
+
+    // ---- an item with no date ----------------------------------------------
+    //
+    // Every undated item is asked, including the ones that are undated on purpose.
+    // That is the product decision, taken after the narrow version — gated on the
+    // extractor's `kind` — turned out to key on a field the prompt defines as a
+    // mirror of `dueAt`, and so could never fire. See NeedsADate.
+
+    [Fact]
+    public void asks_when_an_item_arrives_with_no_date()
+    {
+        var item = VoiceAutoFilePolicy.Apply(Draft(null, timeAssumed: false), Zone);
+
+        Assert.NotNull(item.Clarification);
+        Assert.Equal("date", item.Clarification!.Kind);
+        Assert.Equal("incomplete", item.ReviewReason);
+    }
+
+    [Fact]
+    public void asks_whatever_the_extractor_called_it()
+    {
+        // The `kind` the extractor returns is not consulted, and this pins that:
+        // the prompt ties it to `dueAt`, so gating on it silently asked nothing.
+        foreach (var kind in new[] { "list", "reminder", null })
+        {
+            var item = VoiceAutoFilePolicy.Apply(Draft(null, timeAssumed: false) with { Kind = kind }, Zone);
+            Assert.NotNull(item.Clarification);
+        }
+    }
+
+    [Fact]
+    public void the_first_option_leaves_the_matter_undated()
+    {
+        // VoiceClarificationStaging files the task at Options[0].DueAt, so a
+        // non-null first option would silently date a matter the user never dated
+        // while the card claimed to be offering them the choice.
+        var item = VoiceAutoFilePolicy.Apply(Draft(null, timeAssumed: false), Zone);
+
+        Assert.Null(item.Clarification!.Options[0].DueAt);
+        Assert.All(item.Clarification.Options.Skip(1), o => Assert.NotNull(o.DueAt));
+    }
+
+    [Fact]
+    public void a_low_confidence_undated_item_is_asked_whether_it_is_real_first()
+    {
+        // Ordering: below the floor the model is unsure the item was requested at
+        // all, and asking WHEN presumes it exists.
+        var item = VoiceAutoFilePolicy.Apply(Draft(null, timeAssumed: false, confidence: 0.2), Zone);
+
+        Assert.Equal("ambiguous_intent", item.ReviewReason);
+    }
+
+    [Fact]
+    public void a_dated_item_is_still_left_alone()
+    {
+        var item = VoiceAutoFilePolicy.Apply(
+            Draft(new DateTime(2026, 8, 25, 9, 0, 0, DateTimeKind.Utc), timeAssumed: false), Zone);
+
+        Assert.Null(item.Clarification);
+        Assert.Equal("clear", item.ReviewReason);
     }
 
     private static TaskDraft Draft(DateTime? dueAt, bool timeAssumed, double confidence = 0.9) => new(
