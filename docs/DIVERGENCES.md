@@ -1073,8 +1073,39 @@ before it is clever.
   that day" offer from it; that offer keeps its previous size through
   `MatterWindow.SuggestedShift`, deliberately decoupled so a detection change cannot
   silently move a UI affordance.
-- **No parity row, no contract operation.** Node answers its HTML 404 for all three
+- **No parity row, no contract operation.** Node answers its HTML 404 for all four
   routes.
+
+### 13.1 `GET /me/conflicts` — the list, added later
+
+The three routes above all answer a question about ONE matter, so a clash was only
+ever discoverable by the surface that happened to create or edit it: a chat card, a
+voice pop-up, a warning in the create sheet. Every one of those is a moment, and a
+moment can be missed — the pop-up fades, the card scrolls away. Nothing answered
+"what is clashing right now?", so there was no second place to find it.
+
+`GET /me/conflicts` is that place. It calls `KnowledgeAgentService.ScanAsync` with no
+date bound; the daily briefing calls the same method bounded to the end of the user's
+today. The scan was **extracted from `BriefAsync`, not copied** — it is the pair-dedupe
+and the `TimeClash` filter that the briefing already ran, and a second copy of a rule
+four surfaces depend on is exactly what this section exists to prevent.
+
+**It is derived, never stored.** There is no conflicts collection, no row written when
+voice or chat or a scan causes an overlap, and therefore no eraser and no index. A
+conflict is two saved matters wanting the same time, so asking again is what keeps the
+answer true — which is also why a clash resolved on any surface disappears from every
+other one for free, and why the list covers sources it has never heard of.
+
+**It reports the PAIR.** `MatterConflict` names only the matter that was run into,
+because every existing caller already knows which matter it is asking about. A list has
+no such context and either side may be the one the user moves, so the response carries
+`a`, `b` and `yieldsTaskId` — the last read off `MatterConflict.Yields`, which is stated
+from the scanned matter's point of view and is mapped in exactly one place
+(`MatterClash.YieldsTaskId`).
+
+Pinned by `ConflictScanTests`: a pair is reported once rather than from both ends, the
+`until` bound is honoured, an undated matter clashes with nothing, and the side offered
+to move is the one the urgency rule chose.
 
 ### A pre-existing behaviour left alone
 

@@ -1,4 +1,4 @@
-using System.Text.Json.Serialization;
+﻿using System.Text.Json.Serialization;
 using Life_Admin_Autopilot.BLL.Features.Knowledge;
 using Life_Admin_Autopilot.DAL.Features.Knowledge;
 using Life_Admin_Autopilot.DAL.Features.Tasks;
@@ -147,6 +147,45 @@ public static class KnowledgeEndpoints
             {
                 taskId = task.Id.ToString(),
                 conflicts = conflicts.Select(Conflict),
+            });
+        })
+        .RequireAuthorization();
+
+        // ---- GET /me/conflicts — every clash in the account --------------------
+        //
+        // The three routes around this one all answer a question about ONE matter,
+        // which means a clash is only ever discovered by the surface that happened to
+        // create or edit it. Nothing answered "what is clashing right now?", so a
+        // clash the user dismissed at the moment of capture — a pop-up they let fade,
+        // a chat card scrolled past — had no second home to be found in.
+        //
+        // Deliberately derived rather than stored. A conflict is a fact about two
+        // saved matters overlapping, not an event some source emitted, so asking
+        // again is what keeps the answer true and every source is covered without
+        // knowing any of them exist. See KnowledgeAgentService.ScanAsync.
+        endpoints.MapGet("/me/conflicts", async (
+            HttpContext context,
+            KnowledgeAgentService agent,
+            CancellationToken cancellationToken) =>
+        {
+            var caller = context.RequireUser();
+
+            // No date bound and no timezone: this is the whole account, so there is
+            // no "today" to resolve and nothing for a zone to disagree about.
+            var clashes = await agent.ScanAsync(caller.Id, cancellationToken: cancellationToken)
+                .ConfigureAwait(false);
+
+            return Results.Ok(new
+            {
+                conflicts = clashes.Select(c => new
+                {
+                    // Both sides, in the order the scan met them. The client decides
+                    // which to offer first from `yieldsTaskId`, not from position.
+                    a = new { taskId = c.TaskId.ToString(), title = c.Title, dueAt = c.DueAt },
+                    b = new { taskId = c.Other.TaskId.ToString(), title = c.Other.Title, dueAt = c.Other.DueAt },
+                    reason = c.Other.Reason,
+                    yieldsTaskId = c.YieldsTaskId.ToString(),
+                }),
             });
         })
         .RequireAuthorization();

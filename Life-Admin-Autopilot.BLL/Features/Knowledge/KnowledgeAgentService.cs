@@ -1,4 +1,4 @@
-using System.Net.Http.Json;
+﻿using System.Net.Http.Json;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Life_Admin_Autopilot.BLL.Features.Planning;
@@ -18,6 +18,33 @@ public sealed record DailyBriefing(
     bool Phrased);
 
 public sealed record BriefingItem(ObjectId TaskId, string Title, string Domain, DateTime? DueAt, bool Overdue);
+
+/// <summary>
+/// One clash with BOTH sides named.
+///
+/// <para>
+/// <see cref="MatterConflict"/> on its own describes only the matter that was run
+/// INTO — which is all a read-only banner needs, because the surface showing it
+/// already knows which matter it is about. A list of every clash in the account has
+/// no such context: nothing on that screen says which matter the row belongs to, and
+/// either side may be the one the user moves. So the scan reports the pair.
+/// </para>
+/// </summary>
+/// <param name="Other">The matter <paramref name="TaskId"/> ran into.</param>
+public sealed record MatterClash(ObjectId TaskId, string Title, DateTime? DueAt, MatterConflict Other)
+{
+    /// <summary>
+    /// The side that should move — the lower urgency of the two.
+    ///
+    /// <para>
+    /// <see cref="MatterConflict.Yields"/> is stated from the scanned matter's point
+    /// of view ("the candidate is the one that should move"), so reading it here is
+    /// the only place that mapping is made and callers never have to remember which
+    /// side "candidate" meant.
+    /// </para>
+    /// </summary>
+    public ObjectId YieldsTaskId => Other.Yields ? TaskId : Other.TaskId;
+}
 
 /// <summary>
 /// The Knowledge Agent — background work only, exactly as <c>ai_flow_V4</c> scopes
@@ -101,34 +128,17 @@ public sealed class KnowledgeAgentService
                 t.DueAt is { } d && d < now))
             .ToList();
 
-        // Only clashes among what is actually on today's plate are worth surfacing.
+        // Only clashes among what is actually on today's plate are worth surfacing,
+        // which is what the `until` bound expresses. The scan itself is shared with
+        // GET /me/conflicts, which passes no bound and therefore sees the account.
         //
-        // Driven off the source documents rather than the briefing items: a conflict
-        // check needs the priority and estimate that decide how long a matter runs
-        // and which side yields, and BriefingItem deliberately carries neither.
-        var byId = open.ToDictionary(t => t.Id);
-        var conflicts = new List<MatterConflict>();
-        var seen = new HashSet<(ObjectId, ObjectId)>();
-        foreach (var item in items.Where(i => i.DueAt is not null))
-        {
-            var found = await _conflicts
-                .CheckAsync(
-                    userId,
-                    ConflictService.MatterCandidate.From(byId[item.TaskId]),
-                    item.DueAt,
-                    open,
-                    excludeTaskId: item.TaskId,
-                    now: now,
-                    cancellationToken: cancellationToken)
-                .ConfigureAwait(false);
-
-            foreach (var c in found.Where(c => c.Kind == MatterConflict.TimeClash))
-            {
-                // A clashes with B is the same fact as B clashes with A.
-                var key = item.TaskId < c.TaskId ? (item.TaskId, c.TaskId) : (c.TaskId, item.TaskId);
-                if (seen.Add(key)) conflicts.Add(c);
-            }
-        }
+        // Flattened back to one side per clash: the briefing's response shape and the
+        // phrasing prompt both predate the pair, and on a screen that already says
+        // "today" the matter run INTO is the only half that carries information.
+        var conflicts = (await ScanAsync(userId, endOfDay, open, now, cancellationToken)
+                .ConfigureAwait(false))
+            .Select(c => c.Other)
+            .ToList();
 
         var overdue = items.Count(i => i.Overdue);
         var fallback = DeterministicSummary(items.Count, overdue, conflicts.Count);
@@ -142,6 +152,77 @@ public sealed class KnowledgeAgentService
             items,
             conflicts,
             phrased is not null);
+    }
+
+    // ---- Account-wide scan ------------------------------------------------
+
+    /// <summary>
+    /// Every clash between the user's open matters, each reported once.
+    ///
+    /// <para>
+    /// <b>A conflict is a fact about the data, not an event.</b> Nothing records that
+    /// voice, chat, a manual create or a document scan produced one — a clash simply
+    /// IS two saved matters whose windows overlap, so asking the question again is
+    /// what makes the answer current. That is why there is no conflict collection to
+    /// keep in step, and why a clash resolved on any surface disappears from every
+    /// other one.
+    /// </para>
+    ///
+    /// <para>
+    /// Driven off the task documents rather than any projection of them: the check
+    /// needs the priority and estimate that decide how long a matter runs and which
+    /// side yields, and every lighter shape in this file deliberately drops both.
+    /// </para>
+    /// </summary>
+    /// <param name="until">
+    /// Latest due date to scan, or null for all of them. The briefing passes the end
+    /// of the user's today; the conflicts list passes nothing.
+    /// </param>
+    public async Task<IReadOnlyList<MatterClash>> ScanAsync(
+        ObjectId userId,
+        DateTime? until = null,
+        IReadOnlyList<TaskDocument>? pool = null,
+        DateTime? at = null,
+        CancellationToken cancellationToken = default)
+    {
+        var now = at ?? DateTime.UtcNow;
+        var open = pool ?? await _conflicts.OpenMattersAsync(userId, cancellationToken).ConfigureAwait(false);
+
+        // Undated matters cannot clash with anything — they occupy no span — so they
+        // are not scanned. They still belong to the pool, which is what every other
+        // caller of CheckAsync passes.
+        var candidates = open
+            .Where(t => t.DueAt is { } due && (until is null || due <= until))
+            .OrderBy(t => t.DueAt)
+            .ToList();
+
+        var clashes = new List<MatterClash>();
+        var seen = new HashSet<(ObjectId, ObjectId)>();
+
+        foreach (var task in candidates)
+        {
+            var found = await _conflicts
+                .CheckAsync(
+                    userId,
+                    ConflictService.MatterCandidate.From(task),
+                    task.DueAt,
+                    open,
+                    excludeTaskId: task.Id,
+                    now: now,
+                    cancellationToken: cancellationToken)
+                .ConfigureAwait(false);
+
+            foreach (var c in found.Where(c => c.Kind == MatterConflict.TimeClash))
+            {
+                // "A clashes with B" is the same fact as "B clashes with A", and the
+                // walk meets it from both ends. Ordering the pair by id gives the two
+                // encounters one key, so the second is dropped.
+                var key = task.Id < c.TaskId ? (task.Id, c.TaskId) : (c.TaskId, task.Id);
+                if (seen.Add(key)) clashes.Add(new MatterClash(task.Id, task.Title, task.DueAt, c));
+            }
+        }
+
+        return clashes;
     }
 
     private static string Headline(int total, int overdue) =>
