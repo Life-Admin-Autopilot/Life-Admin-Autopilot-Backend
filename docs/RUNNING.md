@@ -67,6 +67,7 @@ mysteriously:
 | `GOOGLE_CLIENT_ID` / `SECRET` | Google integration reports `available:false` |
 | `INTEGRATION_ENCRYPTION_KEY` | Same — it is required *with* Google, not instead |
 | `FCM_SERVICE_ACCOUNT_FILE` | Reminders still fire in-app, but never reach a phone |
+| `AZURE_STORAGE_CONNECTION_STRING` | Uploads go to `./uploads` on local disk instead of Azure Blob — fully working, and the right choice for a clone |
 
 `.env.example` says where to obtain each one.
 

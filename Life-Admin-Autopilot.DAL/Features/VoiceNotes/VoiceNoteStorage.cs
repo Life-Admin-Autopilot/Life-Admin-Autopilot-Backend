@@ -1,3 +1,5 @@
+using Life_Admin_Autopilot.DAL.Kernel.Storage;
+
 namespace Life_Admin_Autopilot.DAL.Features.VoiceNotes;
 
 /// <summary>
@@ -85,4 +87,34 @@ public sealed class LocalDiskVoiceNoteStorage : IVoiceNoteStorage
 
         return Path.Combine(_root, key.Replace('/', Path.DirectorySeparatorChar));
     }
+}
+
+/// <summary>
+/// The Azure Blob store, in its own container rather than sharing the documents
+/// one: audio and scanned paperwork have different retention and different
+/// access needs, and a shared container makes that impossible to express later.
+///
+/// <para>
+/// Key layout is unchanged — <c>{userId}/{noteId}.m4a</c>, still hard-coded to
+/// <c>.m4a</c> regardless of the upload's content type, because both servers
+/// have to agree on the path for the same note.
+/// </para>
+/// </summary>
+public sealed class AzureBlobVoiceNoteStorage : IVoiceNoteStorage
+{
+    private readonly AzureBlobStore _blobs;
+
+    public AzureBlobVoiceNoteStorage(string connectionString, string containerName)
+    {
+        _blobs = new AzureBlobStore(connectionString, containerName);
+    }
+
+    public Task PutAsync(string key, byte[] bytes, CancellationToken cancellationToken = default) =>
+        _blobs.PutAsync(key, bytes, cancellationToken);
+
+    public Task<byte[]> GetAsync(string key, CancellationToken cancellationToken = default) =>
+        _blobs.GetAsync(key, cancellationToken);
+
+    public Task RemoveAsync(string key, CancellationToken cancellationToken = default) =>
+        _blobs.RemoveAsync(key, cancellationToken);
 }
