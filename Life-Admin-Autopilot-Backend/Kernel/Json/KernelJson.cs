@@ -1,6 +1,7 @@
 using System.Text.Encodings.Web;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using System.Text.Json.Serialization.Metadata;
 using Life_Admin_Autopilot.BLL.Kernel.Json;
 
 namespace Life_Admin_Autopilot_Backend.Kernel.Json;
@@ -73,6 +74,19 @@ public static class KernelJson
 
         options.Converters.Add(new JsIsoDateTimeConverter());
         options.Converters.Add(new JsIsoNullableDateTimeConverter());
+
+        // GIVE IT A RESOLVER NOW, rather than letting the first serialize install
+        // one. `TypeInfoResolver` is null on fresh options, and `GetTypeInfo` —
+        // which KernelBody's strict path calls to list a DTO's known keys —
+        // throws NotSupportedException against a null resolver rather than
+        // falling back to reflection. Only Serialize/Deserialize install the
+        // default, so the failure needs a strict-bodied request to be the FIRST
+        // JSON work the process ever does: reachable in a test host, where one
+        // filtered test can be exactly that, and reachable in production on a
+        // cold start whose first request is a strict POST. It reads as a 500 on
+        // a perfectly valid body, once, and never again.
+        options.TypeInfoResolver = new DefaultJsonTypeInfoResolver();
+
         return options;
     }
 }
