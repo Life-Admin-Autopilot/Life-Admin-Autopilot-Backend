@@ -46,7 +46,12 @@ PATTERNS = {
     'mongodb+srv URI'    : re.compile(rb'mongodb\+srv://[^\s"\'<]+'),
     'azure AccountKey'   : re.compile(rb'AccountKey=[A-Za-z0-9+/=]{20,}'),
     'huggingface token'  : re.compile(rb'hf_[A-Za-z0-9]{20,}'),
-    'sk- style key'      : re.compile(rb'sk-[A-Za-z0-9_-]{20,}'),
+    # \b, or every hyphenated identifier ending in "task" is a finding: the tail
+    # of "updateTask-refuses-a-clashing-time" is a literal sk- followed by 20+
+    # characters in the class. Three eval fixtures tripped it, the scanner
+    # exited 1 on a clean tree, and a scanner that always fails is a scanner
+    # nobody runs. A real key never begins mid-word.
+    'sk- style key'      : re.compile(rb'\bsk-[A-Za-z0-9_-]{20,}'),
     'AWS access key id'  : re.compile(rb'AKIA[0-9A-Z]{16}'),
     'private key block'  : re.compile(rb'-----BEGIN [A-Z ]*PRIVATE KEY-----'),
     'high-entropy token' : re.compile(rb'(?<![A-Za-z0-9])[A-Za-z0-9]{32}(?![A-Za-z0-9])'),
