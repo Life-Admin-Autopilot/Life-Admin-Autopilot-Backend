@@ -378,6 +378,14 @@ public sealed class LangflowAiProvider : IAiProvider
             sessionId);
     }
 
+    /// <summary>One string off a tool's result bag, or "-" when it carried none.</summary>
+    private static string Field(JsonElement result, string name) =>
+        result.ValueKind == JsonValueKind.Object
+        && result.TryGetProperty(name, out var value)
+        && value.ValueKind == JsonValueKind.String
+            ? value.GetString() ?? "-"
+            : "-";
+
     private void LogToolOutcomes(
         ObjectId userId,
         string sessionId,
@@ -404,6 +412,27 @@ public sealed class LangflowAiProvider : IAiProvider
                 call.Name,
                 call.Status,
                 ok);
+
+            // A FAILURE SAYS WHY. The line above records that a tool answered
+            // ok:false and stops there, which is where a real incident died: on
+            // 2026-08-22 holdForClarification failed twice on one account, the chat
+            // told the user "I couldn't record your request", and the only trace in
+            // the log was `ok=False`. The tools all carry `error` and `message` on
+            // the way out — every decline path in them sets both — so the reason was
+            // in the payload the whole time and simply never reached the log.
+            //
+            // Second only, rather than folding it into the line above: the common
+            // case is a success, and an `error=` on every one of those is noise that
+            // makes the failures harder to find rather than easier.
+            if (ok == false && call.Result is { } declined)
+            {
+                _logger.LogWarning(
+                    "ai.tool_failed user={UserId} tool={Tool} error={Error} message={Message}",
+                    userId,
+                    call.Name,
+                    Field(declined, "error"),
+                    Field(declined, "message"));
+            }
         }
 
         if (lookupFailure is { } failure)
