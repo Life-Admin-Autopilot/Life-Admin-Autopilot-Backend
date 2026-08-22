@@ -218,6 +218,26 @@ public sealed class PlanningService
             + "task. Use \"reminder\" only when a time is known, otherwise \"list\" with "
             + "dueAt null. Never invent a time that was not implied. confidence reflects "
             + "how sure you are the task was actually requested.\n"
+            // priority was a listed enum with no rule for choosing it, so every voice
+            // item came back "normal" — the same defect the chat prompt had. It is not
+            // cosmetic here either: VoiceAutoFilePolicy.CostOfWrong reads high/urgent,
+            // and ReminderUrgency scores on it. This rubric is a WORD-FOR-WORD PEER of
+            // the one in the chat prompt's HOW TO HOLD section; the two lanes must
+            // agree or the same sentence gets a different priority depending on
+            // whether it was typed or spoken. Change one, change the other.
+            + "priority is a JUDGEMENT about what the matter costs if it slips, never a "
+            + "default:\n"
+            + "  \"urgent\" — a hard external deadline with a penalty, or health and "
+            + "safety: a court date, a visa or passport expiring, an overdue bill, a "
+            + "flight, a medical appointment, medication, a car inspection now due.\n"
+            + "  \"high\" — a fixed commitment involving someone else's time, or money "
+            + "moving by a date: an appointment, rent, an instalment, a fee, an exam, a "
+            + "booking already made, anything a person is waiting on.\n"
+            + "  \"normal\" — an ordinary dated errand with no penalty for being a day "
+            + "late: a haircut, groceries, a chore with a day on it.\n"
+            + "  \"low\" — nothing happens if it slips: buy bread, tidy the garage, text "
+            + "mom back, an undated someday-wish.\n"
+            + "Read the MATTER, not the words. Domain is a hint and not the answer.\n"
             // duePrecision is the whole point of the schema change: without somewhere to
             // SAY "they gave me a day but no clock time", a model asked for one ISO
             // instant has to invent 09:00 and cannot report that it did.

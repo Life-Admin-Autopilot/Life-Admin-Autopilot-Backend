@@ -44,6 +44,12 @@ public static class ClarificationsFeature
         // creating it up front is that it shows up in Matters like everything else.
         services.TryAddScoped<ClarificationHoldService>();
 
+        // Its sibling for the other order: hold creates the task WITH the question,
+        // this asks about a task that already exists. POST /me/tasks resolves it, so
+        // it is registered here beside the service it mirrors rather than in the
+        // Matters slice, where the reason the two exist would not be visible.
+        services.TryAddScoped<MatterGapService>();
+
         // This slice owns the clarifications surface, so it owns the erasure. Node
         // deletes the same rows in routes/me.ts's hand-maintained list; nothing had
         // registered it on the .NET side yet.

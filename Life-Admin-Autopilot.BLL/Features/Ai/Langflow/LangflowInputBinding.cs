@@ -129,6 +129,20 @@ public sealed class LangflowInputBinding
     public const string ToolUtcOffsetField = "utc_offset";
 
     /// <summary>
+    /// The turn's mode as the TOOLS see it — the same value <see cref="ModeField"/>
+    /// carries to the prompt, injected separately because a tool cannot read the
+    /// prompt's inputs.
+    ///
+    /// <para>
+    /// Server-injected, never a model argument: which surface the user is on is not
+    /// something the agent should be able to claim. Only <c>createTask</c> declares
+    /// an input by this name today; Langflow discards a tweak for a field a node
+    /// does not have, so the other ten are unaffected.
+    /// </para>
+    /// </summary>
+    public const string ToolModeField = "mode";
+
+    /// <summary>
     /// The eleven tool components of <c>planning-agent.v4</c>, which each need the
     /// caller's bearer to call this API back as that user.
     ///
@@ -302,6 +316,23 @@ public sealed class LangflowInputBinding
                     var tool = Target(tweaks, node);
                     tool[ToolAccessTokenField] = accessToken;
                     tool[ToolUtcOffsetField] = utcOffset;
+
+                    // The turn's mode, to the TOOLS as well as to the prompt.
+                    //
+                    // `createTask` asks the server to raise a question about any
+                    // gap it can see in what was just filed, and that is a CHAT
+                    // behaviour: a person is present and can answer. The same tool
+                    // serves transcript and document runs, where nobody is there —
+                    // a question raised then is a card nobody asked for, about a
+                    // matter read out of a file.
+                    //
+                    // INSIDE the token block, with the rest. A tokenless run sends
+                    // NO tool tweaks at all (LangflowProviderTests pins that: an
+                    // empty tweak would overwrite a value an operator pinned on the
+                    // node), and it costs nothing here — every tool in such a run
+                    // answers "misconfigured" and writes nothing, so there is no
+                    // matter for a mode to decide anything about.
+                    tool[ToolModeField] = mode;
                 }
             }
 

@@ -183,6 +183,8 @@ public static class KernelMappers
             DueAt = doc.Draft.DueAt,
         },
         Question = doc.Question,
+        QuestionKey = doc.QuestionKey,
+        QuestionParams = doc.QuestionParams,
         Kind = doc.Kind,
         CostOfWrong = doc.CostOfWrong,
         Options = doc.Options
@@ -192,6 +194,8 @@ public static class KernelMappers
                 DueAt = o.DueAt,
                 Title = o.Title,
                 Notes = o.Notes,
+                LabelKey = o.LabelKey,
+                LabelParams = o.LabelParams,
             })
             .ToList(),
         SourceText = doc.SourceText,

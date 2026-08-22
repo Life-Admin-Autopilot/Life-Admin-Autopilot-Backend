@@ -74,7 +74,10 @@ public sealed class VoiceClarificationStaging : IVoiceClarificationStaging
 
         foreach (var item in note.ClarifyItems)
         {
-            var guess = item.Options.Count > 0 ? item.Options[0].DueAt : null;
+            // Option zero is the reading the item was filed under, for every date
+            // question. A question with no options — "how much is this?" — falls
+            // back to the item's own date, or the matter loses a day the user gave.
+            var guess = item.Options.Count > 0 ? item.Options[0].DueAt : item.DueAt;
 
             var created = await _tasks
                 .PersistAsync(
@@ -211,6 +214,15 @@ public sealed class VoiceClarificationStaging : IVoiceClarificationStaging
             ["__v"] = 0,
         };
 
+        // Rendered in place of `question` by a client holding the catalogue.
+        // `question` itself stays as the English fallback, for anything that is not
+        // one: an older build, and the admin console's read-only views.
+        if (item.QuestionKey is { Length: > 0 })
+        {
+            seed["questionKey"] = item.QuestionKey;
+            seed["questionParams"] = ParamsOf(item.QuestionParams);
+        }
+
         // The WHOLE transcript, not a per-item slice: extraction returns titles and
         // questions, never the span of speech each one came from, and a guessed
         // slice would quote the user saying something they did not.
@@ -240,6 +252,30 @@ public sealed class VoiceClarificationStaging : IVoiceClarificationStaging
         if (option.DueAt is not null)
         {
             document["dueAt"] = option.DueAt.Value;
+        }
+
+        if (option.LabelKey is { Length: > 0 })
+        {
+            document["labelKey"] = option.LabelKey;
+            document["labelParams"] = ParamsOf(option.LabelParams);
+        }
+
+        return document;
+    }
+
+    /// <summary>
+    /// i18n values as a BSON sub-document, always present beside a key even when
+    /// empty. A key with no params (<c>chip.keepBoth</c>) and a key whose params
+    /// failed to stage look identical otherwise, and the client would have to guess
+    /// which it is holding.
+    /// </summary>
+    private static BsonDocument ParamsOf(IReadOnlyDictionary<string, string>? values)
+    {
+        var document = new BsonDocument();
+
+        foreach (var (key, value) in values ?? new Dictionary<string, string>())
+        {
+            document[key] = value;
         }
 
         return document;

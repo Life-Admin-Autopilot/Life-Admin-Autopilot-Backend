@@ -1,4 +1,5 @@
 using System.Text.Json;
+using Life_Admin_Autopilot.BLL.Features.Clarifications;
 using Life_Admin_Autopilot.BLL.Features.Tasks;
 using Life_Admin_Autopilot.BLL.Kernel.Mappers;
 using Life_Admin_Autopilot.BLL.Kernel.Tasks;
@@ -20,6 +21,7 @@ internal static class TaskCrudEndpoints
         endpoints.MapPost("/me/tasks", async (
             HttpContext ctx,
             TaskWriteService writes,
+            MatterGapService gaps,
             CancellationToken ct) =>
         {
             var user = ctx.RequireUser();
@@ -39,6 +41,9 @@ internal static class TaskCrudEndpoints
             var estimate = TaskFieldReaders.Estimate(f, body.Estimate);
             var amount = TaskFieldReaders.Amount(f, body.Amount);
             var sourceVoiceNoteId = TaskFieldReaders.ObjectIdString(f, body.SourceVoiceNoteId, "sourceVoiceNoteId");
+            var askAboutGaps = f.Bool(body.AskAboutGaps, "askAboutGaps") ?? false;
+            var timeAssumed = f.Bool(body.TimeAssumed, "timeAssumed") ?? false;
+            var timezone = f.TrimmedString(body.Timezone, "timezone", min: 1, max: 64, required: false);
 
             f.ThrowIfInvalid("invalid_body", "Invalid task payload.");
 
@@ -59,7 +64,33 @@ internal static class TaskCrudEndpoints
                     cancellationToken: ct)
                 .ConfigureAwait(false);
 
-            return Results.Created((string?)null, new { task = task.ToDto() });
+            // SAVED, THEN ASKED — in that order, and never the other way.
+            //
+            // The matter is written above and is on the user's list from this line
+            // onwards. Anything the gap check does after it is an EDIT to a row that
+            // already exists, which is what makes it safe to run at all: if it finds
+            // nothing, raises nothing, or throws, the user still has their matter.
+            // The failure this replaced did the opposite — the agent's hold tool
+            // both created the task and asked the question, so one bad tool call
+            // lost both and the chat said "I couldn't record your request".
+            var raised = askAboutGaps
+                ? await gaps
+                    .FileGapsAsync(user.Id, task, timezone, timeAssumed, DateTime.UtcNow, ct)
+                    .ConfigureAwait(false)
+                : Array.Empty<ClarificationDocument>();
+
+            // The key is omitted entirely when nothing was asked, so the app's own
+            // create path sees byte-for-byte the response it always saw.
+            if (raised.Count == 0)
+            {
+                return Results.Created((string?)null, new { task = task.ToDto() });
+            }
+
+            return Results.Created((string?)null, new
+            {
+                task = task.ToDto(),
+                clarifications = raised.Select(row => row.ToDto()).ToList(),
+            });
         }).RequireAuthorization();
 
         endpoints.MapGet("/me/tasks/{id}", async (

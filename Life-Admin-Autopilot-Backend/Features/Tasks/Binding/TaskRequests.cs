@@ -38,6 +38,40 @@ public sealed class CreateTaskBody
     public JsonElement Amount { get; set; }
 
     public JsonElement SourceVoiceNoteId { get; set; }
+
+    /// <summary>
+    /// "Check this matter for gaps and ask about them" — sent by the planning
+    /// agent's <c>createTask</c> tool, and by nothing else.
+    ///
+    /// <para>
+    /// <b>Why it is opt-in rather than always-on.</b> The same route serves the
+    /// app's own Add-a-matter sheet, where a user who left the date empty made that
+    /// choice in a form that showed them the field. Asking them about it afterwards
+    /// would be the app arguing with a decision it just watched them take. Through
+    /// the agent there was no form and no field — the gap is something nobody
+    /// mentioned, which is a different thing entirely.
+    /// </para>
+    /// </summary>
+    public JsonElement AskAboutGaps { get; set; }
+
+    /// <summary>
+    /// True when the CLOCK TIME on <c>dueAt</c> was chosen by the agent rather than
+    /// said by the user. Only meaningful alongside <see cref="AskAboutGaps"/>.
+    ///
+    /// <para>
+    /// Unknowable from the saved row — a 09:00 the user asked for and a 09:00 the
+    /// model reached for are the same instant — so the caller reports it, exactly as
+    /// the voice extractor reports <c>timeAssumed</c> on its own drafts.
+    /// </para>
+    /// </summary>
+    public JsonElement TimeAssumed { get; set; }
+
+    /// <summary>
+    /// The caller's IANA zone, used ONLY to compose the option chips on a gap
+    /// question ("Tomorrow — 09:00"). It does not affect <c>dueAt</c>, which is an
+    /// absolute instant by the time it reaches here.
+    /// </summary>
+    public JsonElement Timezone { get; set; }
 }
 
 /// <summary>

@@ -68,6 +68,17 @@ public sealed class ClarificationOptionDocument
     public string? Title { get; set; }
 
     public string? Notes { get; set; }
+
+    /// <summary>
+    /// i18n key for <see cref="Label"/> when the SERVER composed it. Always null on
+    /// the chat lane, where the model writes chips in the user's own language, and
+    /// on every row written before this existed.
+    /// </summary>
+    [BsonIgnoreIfNull]
+    public string? LabelKey { get; set; }
+
+    [BsonIgnoreIfNull]
+    public Dictionary<string, string>? LabelParams { get; set; }
 }
 
 public sealed class ClarificationDraftDocument
@@ -123,6 +134,18 @@ public sealed class ClarificationDocument
     public ClarificationDraftDocument Draft { get; set; } = new();
 
     public string Question { get; set; } = string.Empty;
+
+    /// <summary>
+    /// i18n key for <see cref="Question"/> when the SERVER composed it — the voice
+    /// lane, where the AI never asks and the sentence was therefore written in
+    /// English regardless of what the user speaks. Null on the chat lane, whose
+    /// questions come from the model already in the user's language.
+    /// </summary>
+    [BsonIgnoreIfNull]
+    public string? QuestionKey { get; set; }
+
+    [BsonIgnoreIfNull]
+    public Dictionary<string, string>? QuestionParams { get; set; }
 
     public string Kind { get; set; } = "date";
 

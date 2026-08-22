@@ -4,6 +4,7 @@ using System.Net.Http.Json;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Life_Admin_Autopilot.BLL.Features.Planning;
+using Life_Admin_Autopilot.BLL.Kernel.Integrations;
 using Life_Admin_Autopilot.DAL.Kernel.Documents;
 using Life_Admin_Autopilot.DAL.Kernel.Errors;
 using Life_Admin_Autopilot.DAL.Kernel.Time;
@@ -151,7 +152,9 @@ public sealed class CustomAnswerInterpreter
             "You interpret a user's typed answer to a clarifying question about a task "
             + "they already filed. Call updateTask with ONLY the fields the answer "
             + "settles. Keep the title in the user's language. dueAt is ISO 8601 in "
-            + "the user's local time. When the question asked what something COSTS, "
+            + "the user's local time, WITH their UTC offset written out exactly as the "
+            + "NOW line below writes it — never a 'Z', which would move the time by "
+            + "their whole offset. When the question asked what something COSTS, "
             + "the answer is a figure: send amount as digits in MAJOR units and "
             + "currency as an ISO 4217 code. A figure spelled in words counts, in any "
             + "language, and so do Arabic-Indic digits. 'pounds' and the Egyptian "
@@ -258,6 +261,50 @@ public sealed class CustomAnswerInterpreter
     }
 
     /// <summary>
+    /// A trailing <c>Z</c> from THIS model is a formatting slip, not a claim about
+    /// UTC — so it is dropped and the wall clock is read as the user's local time.
+    ///
+    /// <para>
+    /// <b>The bug this fixes.</b> The system prompt above says "dueAt is ISO 8601 in
+    /// the user's local time" and hands it a NOW anchor written <c>…+03:00</c>. The
+    /// model mostly answers <c>2026-08-25T16:00:00</c>, which
+    /// <see cref="HoldTimeNormalizer"/> then reads in the caller's zone and stores
+    /// correctly. Sometimes it answers <c>2026-08-25T16:00:00Z</c> — the same wall
+    /// clock with a suffix it was never asked for — and an explicit offset is
+    /// unambiguous by definition, so the normaliser passes it straight through and
+    /// 4pm in Cairo is filed as 7pm. Measured 2026-08-22: the same answer, typed
+    /// twice, landed once each way. That intermittency is the whole signature of the
+    /// "+3 hours, sometimes" report.
+    /// </para>
+    ///
+    /// <para>
+    /// <b>A real offset is left alone.</b> <c>+03:00</c> means the model did what it
+    /// was asked and the value is already right; only <c>Z</c> is treated as noise,
+    /// and only when the caller's zone is something other than UTC — where the two
+    /// readings are the same instant anyway, so the rule costs nothing to apply.
+    /// </para>
+    /// </summary>
+    /// <remarks>
+    /// Public because it is a RULE, not a detail: it decides what a model's date
+    /// means, it exists because getting it wrong filed 4pm as 7pm, and a rule with
+    /// an incident behind it should be nameable in a test.
+    /// </remarks>
+    public static string LocalWallClock(string iso, string? timezone)
+    {
+        if (!iso.EndsWith('Z') || !ImportedTimeResolver.IsValidTimeZone(timezone))
+        {
+            return iso;
+        }
+
+        var naive = iso[..^1];
+
+        // Only if it still reads as a datetime. A value this cannot re-validate is
+        // handed back untouched rather than mangled — the caller has already checked
+        // the original, and a half-stripped string would fail there instead.
+        return HoldTimeNormalizer.IsStrictIso(naive) ? naive : iso;
+    }
+
+    /// <summary>
     /// The truthy five-field subset, hard-validated. Enum misses and a malformed
     /// dueAt are Node's <c>400 invalid_tool_args</c> — reject, never clamp.
     /// </summary>
@@ -284,7 +331,9 @@ public sealed class CustomAnswerInterpreter
                 $"The interpreted answer failed validation: {string.Join(", ", issues)}.");
         }
 
-        var dueAt = dueAtIso is null ? (DateTime?)null : HoldTimeNormalizer.Normalize(dueAtIso, timezone);
+        var dueAt = dueAtIso is null
+            ? (DateTime?)null
+            : HoldTimeNormalizer.Normalize(LocalWallClock(dueAtIso, timezone), timezone);
 
         return new ClarificationTaskPatch(
             Title: title,

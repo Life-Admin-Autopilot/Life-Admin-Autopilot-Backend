@@ -3,8 +3,22 @@ using MongoDB.Bson;
 
 namespace Life_Admin_Autopilot.BLL.Features.VoiceNotes;
 
-/// <summary>One pre-resolved answer the extractor proposed for a clarifiable item.</summary>
-public sealed record DraftClarifyOption(string Label, DateTime? DueAt = null);
+/// <summary>
+/// One pre-resolved answer the extractor proposed for a clarifiable item.
+/// </summary>
+/// <param name="Label">
+/// English, and a FALLBACK only. See <paramref name="LabelKey"/>.
+/// </param>
+/// <param name="LabelKey">
+/// An i18n key into the client's <c>uncertainty</c> catalogue, with
+/// <paramref name="LabelParams"/> as its values. Null on a chip whose text is
+/// already the user's own words, and on every row written before this existed.
+/// </param>
+public sealed record DraftClarifyOption(
+    string Label,
+    DateTime? DueAt = null,
+    string? LabelKey = null,
+    IReadOnlyDictionary<string, string>? LabelParams = null);
 
 /// <summary>
 /// A clarifiable hold the extractor surfaced: the question to ask plus
@@ -15,11 +29,28 @@ public sealed record DraftClarifyOption(string Label, DateTime? DueAt = null);
 /// bill, a flight, a court date). Decides whether the task staged alongside the
 /// question gets a live reminder or a withheld one.
 /// </param>
+/// <param name="Question">
+/// English, and a FALLBACK only. See <paramref name="QuestionKey"/>.
+/// </param>
+/// <param name="QuestionKey">
+/// <b>Why a key and not a sentence.</b> Unlike the chat lane, where the model
+/// writes the question in the language of the message it is answering, these
+/// sentences are composed by the SERVER — voice is fire-and-forget and the AI
+/// never asks during the interaction (<c>VoiceAutoFilePolicy</c>). Composed
+/// server-side they were composed in English, so an Arabic note produced an
+/// English card sitting inside Arabic chrome. Sending a key instead lets the
+/// card render in whatever language the app is in AT READING TIME, which also
+/// survives the user switching language after the question was raised, and lets
+/// the dates inside it be formatted by the client's own locale-aware formatters
+/// rather than <c>ToString("dddd d MMMM")</c>.
+/// </param>
 public sealed record DraftClarification(
     string Question,
     string Kind,
     string CostOfWrong,
-    IReadOnlyList<DraftClarifyOption> Options);
+    IReadOnlyList<DraftClarifyOption> Options,
+    string? QuestionKey = null,
+    IReadOnlyDictionary<string, string>? QuestionParams = null);
 
 /// <summary>
 /// A hardened item the extractor returns — domain validated, date resolved. NO KEY

@@ -157,11 +157,20 @@ public sealed class VoiceExtractionCommit : IVoiceExtractionCommit
             Domain = keyed.Item.Domain,
             Priority = keyed.Item.Priority,
             Question = clarification.Question,
+            QuestionKey = clarification.QuestionKey,
+            QuestionParams = clarification.QuestionParams is { } qp ? new Dictionary<string, string>(qp) : null,
             Kind = clarification.Kind,
             CostOfWrong = clarification.CostOfWrong,
             Options = clarification.Options
-                .Select(o => new VoiceClarifyOptionDocument { Label = o.Label, DueAt = o.DueAt })
+                .Select(o => new VoiceClarifyOptionDocument
+                {
+                    Label = o.Label,
+                    DueAt = o.DueAt,
+                    LabelKey = o.LabelKey,
+                    LabelParams = o.LabelParams is { } lp ? new Dictionary<string, string>(lp) : null,
+                })
                 .ToList(),
+            DueAt = keyed.Item.DueAt,
             Notes = keyed.Item.Notes,
         };
     }

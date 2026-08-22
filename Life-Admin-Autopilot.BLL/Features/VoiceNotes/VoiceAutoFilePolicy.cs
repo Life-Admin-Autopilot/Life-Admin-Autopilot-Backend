@@ -1,7 +1,9 @@
 ﻿using Life_Admin_Autopilot.BLL.Features.Clarifications;
 using Life_Admin_Autopilot.BLL.Features.Knowledge;
 using Life_Admin_Autopilot.BLL.Features.Planning;
+using System.Text.RegularExpressions;
 using Life_Admin_Autopilot.BLL.Kernel.Integrations;
+using Life_Admin_Autopilot.BLL.Kernel.Reminders;
 using Life_Admin_Autopilot.DAL.Kernel.Documents;
 
 namespace Life_Admin_Autopilot.BLL.Features.VoiceNotes;
@@ -126,8 +128,18 @@ public static class VoiceAutoFilePolicy
         // whose options are real times, so answering it settles the assumed time in
         // the same tap. Only the wording differs, and the clash's wording is the one
         // that explains why it is being asked.
+        // A MISSING FIGURE OUTRANKS A GUESSED HOUR, by the same test the paragraph
+        // above applies to the clash: which mistake can the user find on their own?
+        // A wrong hour is written on the matter and visible the moment they look at
+        // it. A missing amount is visible nowhere — the matter reads complete and
+        // the money tab just quietly under-reports, because it totals `task.amount`
+        // and this one has none. It does NOT outrank a missing DATE: an undated
+        // matter never resurfaces at all, so `NeedsADate` still gets the question
+        // and the figure goes unasked. One item carries one question, and that is
+        // the tie-break.
         var clarification =
             clash is not null ? AskAboutTheClash(draft, clash, timezone, freeSlots)
+            : NeedsAnAmount(draft) && draft.DueAt.HasValue ? AskForTheAmount(draft)
             : draft.TimeAssumed && draft.DueAt.HasValue ? AskForTheTime(draft, timezone)
             : duplicate is not null ? AskAboutTheDuplicate(draft, duplicate)
             : unsure ? AskWhetherItIsReal(draft)
@@ -144,7 +156,8 @@ public static class VoiceAutoFilePolicy
             // describe the item honestly instead of steering it. An item with no
             // question is by definition one nothing was flagged on.
             Confidence: clarification is null ? "high" : "low",
-            ReviewReason: ReviewReasonFor(clarification, clash ?? duplicate, unsure, NeedsADate(draft)),
+            ReviewReason: ReviewReasonFor(
+                clarification, clash ?? duplicate, unsure, NeedsADate(draft), NeedsAnAmount(draft)),
             Reasons: draft.Conflicts.Select(c => c.Reason).ToList(),
             EstimateMinMinutes: null,
             EstimateMaxMinutes: null,
@@ -152,6 +165,72 @@ public static class VoiceAutoFilePolicy
             DueAt: draft.DueAt,
             Notes: draft.Notes,
             Clarification: clarification);
+    }
+
+    /// <summary>
+    /// The gaps in a matter that is ALREADY SAVED — the CHAT lane's entry into the
+    /// very same questions the voice lane asks.
+    ///
+    /// <para>
+    /// <b>Why chat needs this at all.</b> Chat's questions are model-authored: the
+    /// prompt tells the agent to call <c>holdForClarification</c> when a matter has
+    /// no date, and for most sentences it does. For some it does not — measured
+    /// 2026-08-22, "اشتري لبن" was held every time and "تعلم سباحة" was filed
+    /// silently every time, because the model reads the second as an aspiration
+    /// rather than a to-do and reasons its way past the instruction. No wording
+    /// fixes that reliably; a matter with no date is a FACT about the saved row, and
+    /// facts belong on the server. This is what makes the question unconditional.
+    /// </para>
+    ///
+    /// <para>
+    /// <b>Deliberately the same functions <see cref="Apply"/> calls.</b> Two lanes
+    /// asking a user the same thing in two different sentences is the bug this
+    /// avoids by construction — not by two implementations kept in step. Nothing
+    /// about <see cref="Apply"/> changes: voice still asks ONE question per item and
+    /// still ranks a clash and a duplicate above these, neither of which is knowable
+    /// here anyway (chat checks clashes on its own, at save, in the tool).
+    /// </para>
+    ///
+    /// <para>
+    /// <b>Chat may ask BOTH, where voice asks one.</b> Voice items are auto-filed in
+    /// bulk from one utterance and each carries a single question; chat holds one
+    /// matter at a time and the card stack answers them independently. So a renewal
+    /// with neither a date nor a figure gets both gaps here, where voice would ask
+    /// the date and let the money go — the tie-break in <see cref="Apply"/> that
+    /// exists because one item carries one question.
+    /// </para>
+    /// </summary>
+    /// <param name="timeAssumed">
+    /// True when the HOUR on <paramref name="draft"/> was picked by the agent rather
+    /// than said by the user. There is no way to infer this from the saved row — a
+    /// 09:00 the user asked for and a 09:00 the model reached for are the same
+    /// instant — so it is reported by the caller, exactly as
+    /// <see cref="TaskDraft.TimeAssumed"/> is reported by the voice extractor.
+    /// </param>
+    public static IReadOnlyList<DraftClarification> GapsFor(
+        TaskDraft draft,
+        string? timezone,
+        bool timeAssumed)
+    {
+        var gaps = new List<DraftClarification>(2);
+
+        // No date, or a date whose hour we invented — never both, because the first
+        // question already asks for the day AND the time.
+        if (NeedsADate(draft))
+        {
+            gaps.Add(AskWhenItIsDue(draft, timezone));
+        }
+        else if (timeAssumed && draft.DueAt.HasValue)
+        {
+            gaps.Add(AskForTheTime(draft, timezone));
+        }
+
+        if (NeedsAnAmount(draft))
+        {
+            gaps.Add(AskForTheAmount(draft));
+        }
+
+        return gaps;
     }
 
     /// <summary>
@@ -191,7 +270,7 @@ public static class VoiceAutoFilePolicy
 
         var options = new List<DraftClarifyOption>
         {
-            new(Clock(local), guess),
+            new(Clock(local), guess, "chip.at", At(guess)),
         };
 
         foreach (var (hour, label) in TimeChoices)
@@ -202,14 +281,20 @@ public static class VoiceAutoFilePolicy
             }
 
             var at = AtLocalHour(local, hour, timezone);
-            options.Add(new DraftClarifyOption($"{label} — {Clock(at.Local)}", at.Utc));
+            options.Add(new DraftClarifyOption(
+                $"{label} — {Clock(at.Local)}",
+                at.Utc,
+                $"chip.{label.ToLowerInvariant()}",
+                At(at.Utc)));
         }
 
         return new DraftClarification(
             $"What time on {Day(local)}?",
             "date",
             CostOfWrong(draft),
-            options);
+            options,
+            "ask.whatTimeOn",
+            At(guess));
     }
 
     /// <summary>
@@ -225,7 +310,10 @@ public static class VoiceAutoFilePolicy
     {
         var guess = draft.DueAt;
 
-        var options = new List<DraftClarifyOption> { new("Keep this time", guess) };
+        var options = new List<DraftClarifyOption>
+        {
+            new("Keep this time", guess, "chip.keepThisTime"),
+        };
 
         // Real free slots when the caller found any, and nothing when it did not.
         //
@@ -241,14 +329,20 @@ public static class VoiceAutoFilePolicy
         // one gets tapped without being read.
         foreach (var slot in (freeSlots ?? Array.Empty<DateTime>()).Take(MaxSuggestedSlots))
         {
-            options.Add(new DraftClarifyOption(SlotLabel(slot, guess, timezone), slot));
+            options.Add(new DraftClarifyOption(
+                SlotLabel(slot, guess, timezone),
+                slot,
+                SameLocalDay(slot, guess, timezone) ? "chip.laterThatDay" : "chip.dayAt",
+                At(slot)));
         }
 
         return new DraftClarification(
             $"This is close to \"{clash.Title}\". Keep both?",
             "date",
             ClarificationVocabulary.CostHigh,
-            options);
+            options,
+            "ask.closeTo",
+            new Dictionary<string, string> { ["title"] = clash.Title });
     }
 
     /// <summary>
@@ -260,13 +354,20 @@ public static class VoiceAutoFilePolicy
     {
         var local = ToLocal(slot, timezone);
 
-        if (from is { } origin && ToLocal(origin, timezone).Date == local.Date)
+        if (SameLocalDay(slot, from, timezone))
         {
             return $"Later that day — {Clock(local)}";
         }
 
         return $"{Day(local)} — {Clock(local)}";
     }
+
+    /// <summary>
+    /// Whether two instants land on the same day for the user. Extracted so the
+    /// English label and its i18n key cannot drift onto different branches.
+    /// </summary>
+    private static bool SameLocalDay(DateTime slot, DateTime? from, string? timezone) =>
+        from is { } origin && ToLocal(origin, timezone).Date == ToLocal(slot, timezone).Date;
 
     /// <summary>
     /// It reads as something they already have. Nothing about the DATE is in doubt,
@@ -278,7 +379,9 @@ public static class VoiceAutoFilePolicy
             $"You already have \"{duplicate.Title}\". File this one as well?",
             "confirm",
             ClarificationVocabulary.CostHigh,
-            new[] { new DraftClarifyOption("Keep both", draft.DueAt) });
+            new[] { new DraftClarifyOption("Keep both", draft.DueAt, "chip.keepBoth") },
+            "ask.alreadyHave",
+            new Dictionary<string, string> { ["title"] = duplicate.Title });
 
     /// <summary>
     /// The model is not sure the sentence asked for anything. One affirming option;
@@ -290,7 +393,9 @@ public static class VoiceAutoFilePolicy
             $"Did you mean to file \"{draft.Title}\"?",
             "confirm",
             CostOfWrong(draft),
-            new[] { new DraftClarifyOption("Yes, that is right", draft.DueAt) });
+            new[] { new DraftClarifyOption("Yes, that is right", draft.DueAt, "chip.yesThatIsRight") },
+            "ask.didYouMean",
+            new Dictionary<string, string> { ["title"] = draft.Title });
 
     /// <summary>
     /// Filed with no date, so nothing will ever bring it back.
@@ -355,11 +460,86 @@ public static class VoiceAutoFilePolicy
             CostOfWrong(draft),
             new[]
             {
-                new DraftClarifyOption("No date needed"),
-                new DraftClarifyOption($"Tomorrow — {Clock(tomorrow.Local)}", tomorrow.Utc),
-                new DraftClarifyOption($"{Day(nextWeek.Local)} — {Clock(nextWeek.Local)}", nextWeek.Utc),
-            });
+                new DraftClarifyOption("No date needed", null, "chip.noDateNeeded"),
+                new DraftClarifyOption(
+                    $"Tomorrow — {Clock(tomorrow.Local)}", tomorrow.Utc, "chip.tomorrowAt", At(tomorrow.Utc)),
+                new DraftClarifyOption(
+                    $"{Day(nextWeek.Local)} — {Clock(nextWeek.Local)}", nextWeek.Utc, "chip.dayAt", At(nextWeek.Utc)),
+            },
+            "ask.whenDue",
+            new Dictionary<string, string> { ["title"] = draft.Title });
     }
+
+    /// <summary>
+    /// A matter about money moving, with no figure on it.
+    ///
+    /// <para>
+    /// <b>Domain is the first signal and it is not enough on its own.</b> The
+    /// extractor classifies, and where it says <c>finance</c> that judgement is
+    /// already made and worth trusting. But it is not stable: measured 2026-08-22,
+    /// the one sentence "لازم أدفع فاتورة الكهرباء يوم الخميس" came back
+    /// <c>finance</c> through chat and <c>home</c> through the voice extractor,
+    /// which run different prompts. Keying only on the domain meant the commonest
+    /// money matter there is — a utility bill — was asked nothing.
+    /// </para>
+    ///
+    /// <para>
+    /// <b>So the title is read too, in both languages.</b>
+    /// <see cref="ReminderLeadTime.MatchKeyword"/> is the existing precedent for a
+    /// regex table over matter titles and it already names Bill, Subscription, Tax
+    /// and Insurance — but every pattern in it is English, so on an Arabic title it
+    /// matches nothing and falls through to the domain default. That is worth fixing
+    /// there; it is not worth coupling this to it in the meantime, because the
+    /// question being asked here is narrower ("is money moving?") than the question
+    /// asked there ("how far ahead should this nudge?").
+    /// </para>
+    /// </summary>
+    private static bool NeedsAnAmount(TaskDraft draft) =>
+        draft.Amount is null
+        && (string.Equals(draft.Domain, "finance", StringComparison.Ordinal)
+            || MoneyWords.IsMatch(draft.Title));
+
+    /// <summary>
+    /// Money moving, named in the title. Deliberately short: a false positive costs
+    /// one answerable question the user can skip, a false negative costs a figure
+    /// that never reaches the money tab, so the list leans towards asking.
+    ///
+    /// <para>
+    /// <b>Renewals are in the list, and they are the reason it is not domain-only.</b>
+    /// "هجدد رخصة العربية" classifies as <c>car</c>, not <c>finance</c> — correctly,
+    /// it IS about the car — and a licence renewal costs money every single time.
+    /// The same holds for an insurance renewal, a subscription, a permit. Keying on
+    /// the domain asked nothing for the whole category.
+    /// </para>
+    /// </summary>
+    private static readonly Regex MoneyWords = new(
+        @"\bbill\b|\brent\b|invoice|payment|\bpay\b|instal?ment|mortgage|utilit|subscription|\bfees?\b|\btax(es)?\b|\bfine\b"
+        + @"|\brenew(al|als|ing)?\b"
+        + @"|فاتور|إيجار|ايجار|قسط|أقساط|اقساط|رسوم|اشتراك|ضريب|غرامة|أدفع|ادفع|يدفع|سدد|تسديد"
+        + @"|تجديد|أجدد|اجدد|هجدد|يجدد|نجدد|جدّد|جدد",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+    /// <summary>
+    /// The figure, typed. No options: an amount is not a short list, and a chip
+    /// offering one would be the app inventing what a bill costs — which
+    /// <c>NEVER INVENT ONE</c> in the chat prompt forbids for the same reason.
+    ///
+    /// <para>
+    /// The task keeps the date it was filed under. Every other question here is a
+    /// date question whose option zero carries that date, so <c>staging</c> reads
+    /// the guess off the options; this one has none, and
+    /// <see cref="VoiceClarifyItemDocument.DueAt"/> is what stops the matter losing
+    /// a date the user did give.
+    /// </para>
+    /// </summary>
+    private static DraftClarification AskForTheAmount(TaskDraft draft) =>
+        new(
+            $"How much is \"{draft.Title}\"?",
+            "detail",
+            ClarificationVocabulary.CostHigh,
+            Array.Empty<DraftClarifyOption>(),
+            "ask.howMuch",
+            new Dictionary<string, string> { ["title"] = draft.Title });
 
     // ---- supporting judgements ----------------------------------------------
 
@@ -393,7 +573,8 @@ public static class VoiceAutoFilePolicy
         DraftClarification? clarification,
         PlanningConflict? conflict,
         bool unsure,
-        bool needsADate) =>
+        bool needsADate,
+        bool needsAnAmount) =>
         clarification is null ? "clear"
         // The two conflict kinds are now told apart. Every clash used to report
         // itself as a possible duplicate, which is a different claim about the
@@ -405,6 +586,9 @@ public static class VoiceAutoFilePolicy
         // date was given at all — "vague_date" would claim the user said something
         // ambiguous when they said nothing.
         : needsADate ? "incomplete"
+        // Same claim as a missing date, and for the same reason: a figure was never
+        // given, so nothing the user said was unclear.
+        : needsAnAmount ? "incomplete"
         : "vague_date";
 
     /// <summary>
@@ -455,4 +639,21 @@ public static class VoiceAutoFilePolicy
     private static string Clock(DateTime local) => local.ToString("HH:mm");
 
     private static string Day(DateTime local) => local.ToString("dddd d MMMM");
+
+    /// <summary>
+    /// The one i18n parameter every dated string here needs: the instant itself,
+    /// as round-trip UTC.
+    ///
+    /// <para>
+    /// <b>Not the formatted day or clock time.</b> Those are what
+    /// <see cref="Day"/> and <see cref="Clock"/> produce for the English fallback,
+    /// and they are baked in the invariant culture with a 24-hour clock. Handing
+    /// the client the instant instead lets it use the formatters it already has
+    /// for every other date on screen, so a chip reads ٩:٠٠ ص beside an Arabic
+    /// question and 9:00 AM beside an English one — matching the rest of the card
+    /// rather than the server's locale.
+    /// </para>
+    /// </summary>
+    private static Dictionary<string, string> At(DateTime utc) =>
+        new() { ["at"] = utc.ToUniversalTime().ToString("o") };
 }

@@ -117,6 +117,16 @@ public sealed class VoiceClarifyOptionDocument
     public string Label { get; set; } = string.Empty;
 
     public DateTime? DueAt { get; set; }
+
+    /// <summary>
+    /// i18n key for <see cref="Label"/>, which is an English fallback. Null on rows
+    /// staged before this existed, and on chips whose text is the user's own words.
+    /// </summary>
+    [BsonIgnoreIfNull]
+    public string? LabelKey { get; set; }
+
+    [BsonIgnoreIfNull]
+    public Dictionary<string, string>? LabelParams { get; set; }
 }
 
 /// <summary>
@@ -143,6 +153,17 @@ public sealed class VoiceClarifyItemDocument
 
     public string Question { get; set; } = string.Empty;
 
+    /// <summary>
+    /// i18n key for <see cref="Question"/>, which is an English fallback. The voice
+    /// lane composes its own questions server-side, so unlike the chat lane they
+    /// are not already in the user's language — see <c>DraftClarification</c>.
+    /// </summary>
+    [BsonIgnoreIfNull]
+    public string? QuestionKey { get; set; }
+
+    [BsonIgnoreIfNull]
+    public Dictionary<string, string>? QuestionParams { get; set; }
+
     public string Kind { get; set; } = "date";
 
     /// <summary>
@@ -152,6 +173,20 @@ public sealed class VoiceClarifyItemDocument
     public string CostOfWrong { get; set; } = "high";
 
     public List<VoiceClarifyOptionDocument> Options { get; set; } = new();
+
+    /// <summary>
+    /// The date the draft was read as having, independent of the options.
+    ///
+    /// <para>
+    /// Staging files the task at <c>Options[0].DueAt</c>, which works for the date
+    /// questions — their first option IS the reading the item was filed under. A
+    /// question with NO options had no such carrier, so an amount question on a
+    /// dated matter filed it with no date at all and silently lost the day the user
+    /// gave. This is the fallback that stops it.
+    /// </para>
+    /// </summary>
+    [BsonIgnoreIfNull]
+    public DateTime? DueAt { get; set; }
 
     public string? Notes { get; set; }
 }
