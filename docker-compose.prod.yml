@@ -1,0 +1,132 @@
+# The deployed stack. A SEPARATE file from docker-compose.yml, not an override.
+#
+# The dev file exists to give a developer's `dotnet run` something to talk to:
+# it publishes Mongo and Langflow on the host, runs Langflow with no login, and
+# carries a second Mongo purely for the test suite. Every one of those is wrong
+# on a public box. Layering an override on top would mean the production shape
+# is whatever survives the merge, which is the kind of thing that quietly
+# republishes a database to the internet. This file says what runs, in full.
+#
+#   docker compose -f docker-compose.prod.yml up -d --build
+#   docker compose -f docker-compose.prod.yml logs -f api
+#   docker compose -f docker-compose.prod.yml down          (keeps the data)
+#
+# NOTHING here publishes a port except Caddy. Mongo, Langflow, the API and the
+# console are reachable only on the compose network, by service name — which is
+# also why the API's LANGFLOW_BASE_URL is `http://langflow:7860` and needs no
+# TLS: that hop never leaves the host.
+
+services:
+  # The application database. Same image as dev, and the same data — migrated
+  # in with mongodump/mongorestore rather than started empty.
+  mongo:
+    image: mongo:7
+    container_name: kitto-mongo
+    restart: unless-stopped
+    # CAP THE CACHE. WiredTiger defaults to half of (RAM - 1 GB), which on this
+    # box is ~3.4 GB — it will take it, Langflow will ask for its own couple of
+    # gigabytes, and the kernel picks one of them to kill. The working set here
+    # is a few megabytes; 512 MB is generous and leaves the rest for everyone
+    # else. This is the single most important line in the file for stability.
+    command: ['--wiredTigerCacheSizeGB', '0.5']
+    volumes:
+      - mongo-data:/data/db
+      - mongo-config:/data/configdb
+    healthcheck:
+      test: ['CMD', 'mongosh', '--quiet', '--eval', 'db.adminCommand({ping:1}).ok']
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  # The chat agent. Still pinned — see the note in docker-compose.yml: a `latest`
+  # that moved refuses the exported flow outright.
+  langflow:
+    image: langflowai/langflow:1.11.3
+    container_name: kitto-langflow
+    restart: unless-stopped
+    environment:
+      # STILL auto-login, and that is deliberate rather than an oversight.
+      # Langflow is not published: it has no port mapping, it is not in the
+      # Caddyfile, and the only thing that can reach :7860 is a sibling
+      # container on this network. Turning auth on would add a credential to
+      # rotate and a login step for the import script to fake, protecting a
+      # surface that is not exposed. If Langflow is ever given ingress, this
+      # line has to change in the same commit.
+      LANGFLOW_AUTO_LOGIN: 'true'
+      LANGFLOW_SKIP_AUTH_AUTO_LOGIN: 'true'
+      DO_NOT_TRACK: 'true'
+    volumes:
+      - langflow-data:/app/langflow
+    healthcheck:
+      test: ['CMD-SHELL', 'python -c "import urllib.request;urllib.request.urlopen(\"http://localhost:7860/health\")"']
+      interval: 15s
+      timeout: 10s
+      retries: 20
+      start_period: 90s
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: kitto-api
+    restart: unless-stopped
+    # Everything secret comes from this file, which is NOT in the repo. It is
+    # the dev .env with the four host-shaped values overridden below.
+    env_file:
+      - .env.prod
+    environment:
+      # These four are the deployment, and they override whatever .env.prod
+      # inherited from a developer's machine. Compose applies `environment`
+      # after `env_file`, so this is the last word.
+      MongoDbSettings__ConnectionString: mongodb://mongo:27017
+      LANGFLOW_BASE_URL: http://langflow:7860
+      ASPNETCORE_URLS: http://[::]:4000
+      ASPNETCORE_ENVIRONMENT: Production
+    depends_on:
+      mongo:
+        condition: service_healthy
+      langflow:
+        condition: service_started
+
+  console:
+    build:
+      context: ../Kitto-Admin
+      dockerfile: Dockerfile
+    container_name: kitto-console
+    restart: unless-stopped
+    environment:
+      # Over the compose network, not the public URL. Sending the console out
+      # through Caddy and back would cost a TLS handshake and a round trip to
+      # reach a container one hop away, and would break if DNS ever lagged.
+      ADMIN_API_URL: http://api:4000
+      NODE_ENV: production
+    depends_on:
+      - api
+
+  # The only thing the internet can see. Terminates TLS with certificates it
+  # gets and renews from Let's Encrypt on its own — the reason the VM needed a
+  # real hostname rather than a bare IP.
+  caddy:
+    image: caddy:2-alpine
+    container_name: kitto-caddy
+    restart: unless-stopped
+    ports:
+      - '80:80'
+      - '443:443'
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      # Certificates live here. Lose this volume and every restart re-requests
+      # them, which is how a box walks into Let's Encrypt's rate limit and ends
+      # up serving a self-signed certificate the app refuses to talk to.
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      - api
+      - console
+
+volumes:
+  mongo-data:
+  mongo-config:
+  langflow-data:
+  caddy-data:
+  caddy-config:

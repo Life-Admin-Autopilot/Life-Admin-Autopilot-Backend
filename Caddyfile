@@ -1,0 +1,44 @@
+# TLS, and the split between the two things the internet can reach.
+#
+# Caddy gets and renews Let's Encrypt certificates by itself, which is the whole
+# reason the VM was given a DNS label: HTTP-01 validation needs a name that
+# resolves, and a bare IP cannot be certified. Port 80 stays open for the same
+# reason — it is the validation channel, not a way in. Caddy redirects it.
+
+# The API. This hostname is baked into the mobile build and the dashboard, so it
+# is the one that must not change.
+kitto-app.uaenorth.cloudapp.azure.com {
+	encode zstd gzip
+
+	# The chat stream is Server-Sent Events, and a proxy that buffers turns a
+	# live conversation into a long pause followed by the whole answer at once.
+	# `flush_interval -1` disables buffering for these two, and only these two.
+	@stream path /ai/ask /ai/voice/transcribe
+	reverse_proxy @stream api:4000 {
+		flush_interval -1
+	}
+
+	reverse_proxy api:4000
+
+	log {
+		output file /data/access.log {
+			roll_size 10MiB
+			roll_keep 3
+		}
+	}
+}
+
+# The admin console, on its own hostname.
+#
+# sslip.io resolves any name of this shape to the IP embedded in it, so this
+# needs no DNS record and no purchased domain — and because it is a distinct
+# hostname rather than a path, Next.js needs no basePath and its middleware and
+# route handlers work unmodified.
+#
+# A SEPARATE host, deliberately: putting the console on a path under the API's
+# domain would put an internal tool behind the same origin the mobile app
+# trusts, and any cookie scoped to that origin would be visible to both.
+admin.20-74-249-32.sslip.io {
+	encode zstd gzip
+	reverse_proxy console:3000
+}
