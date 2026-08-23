@@ -99,6 +99,19 @@ services:
       LANGFLOW_BASE_URL: http://langflow:7860
       ASPNETCORE_URLS: http://[::]:4000
       ASPNETCORE_ENVIRONMENT: Production
+      # The browsers allowed to call this API. It belongs here rather than in
+      # .env.prod for the same reason as the four above: it is a fact about the
+      # deployment, not about a developer's machine.
+      #
+      # It was in .env.prod, and that is how the dashboard broke — the origin
+      # was added by hand on the box, so the only record of it was one untracked
+      # file on one VM, with a backup beside it holding the pre-fix list.
+      # Restoring that backup, or rebuilding from the repo, would have silently
+      # returned a list missing dash. and failed every request from it.
+      #
+      # localhost stays: the Capacitor shell serves from https://localhost, so
+      # a native build is a cross-origin caller against this API.
+      Kernel__Cors__Origins: https://dash.20-74-249-32.sslip.io,https://app.20-74-249-32.sslip.io,https://admin.20-74-249-32.sslip.io,capacitor://localhost,https://localhost,http://localhost
     depends_on:
       mongo:
         condition: service_healthy

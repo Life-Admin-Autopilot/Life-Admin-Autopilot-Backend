@@ -38,5 +38,17 @@ langflow/planning-agent.v3.baseline.json
 .env
 .env.local
 
+# The deployed secrets, and any backup of them. This file lives on the VM next
+# to docker-compose.prod.yml and holds every production credential the API has.
+#
+# It is UNTRACKED BY DESIGN — the deploy job runs `git reset --hard origin/main`
+# in that directory and untracked files are what survive it. But untracked is
+# not the same as ignored: without a rule here the file sits in `git status` as
+# a staging candidate in a clone of a PUBLIC repository, one `git add -A` away
+# from being published. Ignoring it also means a future `git clean -fd` skips it
+# rather than deleting every production credential on the box.
+.env.prod
+.env.prod.*
+
 # Firebase service account for local push testing — never commit a key.
 secrets/
