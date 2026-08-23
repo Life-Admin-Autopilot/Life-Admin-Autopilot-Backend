@@ -174,7 +174,25 @@ jobs:
           set -euo pipefail
           cd "$KITTO_DIR"
           docker compose -f docker-compose.prod.yml pull api
-          docker compose -f docker-compose.prod.yml up -d --no-deps api
+          # --force-recreate because compose has decided "nothing changed" and
+          # left the old container running more than once here. A few seconds of
+          # restart is cheaper than a deploy that silently did nothing.
+          docker compose -f docker-compose.prod.yml up -d --no-deps --force-recreate api
+
+      # The health gate below cannot distinguish "the new image is healthy" from
+      # "the old image is still running and answering fine", so on its own it
+      # will certify a deploy that replaced nothing. Comparing the running
+      # container against the tag just pulled is what closes that gap.
+      - name: Assert the new image is running
+        run: |
+          set -euo pipefail
+          want=$(docker image inspect "$IMAGE:latest" --format '{{.Id}}')
+          got=$(docker inspect kitto-api --format '{{.Image}}')
+          if [ "$want" != "$got" ]; then
+            echo "::error::api is running $got but $IMAGE:latest is $want — the recreate did not take"
+            exit 1
+          fi
+          echo "api is running the image just pulled ($want)"
 
       - name: Health gate
         id: health
