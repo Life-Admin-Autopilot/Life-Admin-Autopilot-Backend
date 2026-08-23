@@ -82,11 +82,43 @@ public static class AuthFeature
     /// representation that round-trips a Guid unambiguously across drivers.
     /// </para>
     /// </summary>
+    /// <summary>
+    /// Guards <see cref="EnsureGuidSerializer"/>. Interlocked rather than a bool
+    /// because racing callers are the entire problem it exists for.
+    /// </summary>
+    private static int _guidSerializerRegistered;
+
     private static void EnsureGuidSerializer()
     {
-        BsonSerializer.TryRegisterSerializer(new GuidSerializer(GuidRepresentation.Standard));
-        BsonSerializer.TryRegisterSerializer(
-            new NullableSerializer<Guid>(new GuidSerializer(GuidRepresentation.Standard)));
+        // ONCE PER PROCESS, and it has to be. The driver's serializer registry is
+        // static, but this runs from AddServices — once per host build. A process
+        // builds one host in production, so the difference never showed there; the
+        // test suite builds a dozen WebApplicationFactory hosts in parallel against
+        // that one registry. Whichever host lost the race found a Guid serializer
+        // already present, TryRegisterSerializer threw instead of returning false
+        // because the two instances are not equal, and AddKernel died during
+        // startup — failing every test in that host, including the several hundred
+        // that never touch a Guid. Intermittently, which is worse than always: it
+        // reads as a bad commit rather than as a race.
+        if (Interlocked.Exchange(ref _guidSerializerRegistered, 1) == 1)
+        {
+            return;
+        }
+
+        try
+        {
+            BsonSerializer.TryRegisterSerializer(new GuidSerializer(GuidRepresentation.Standard));
+            BsonSerializer.TryRegisterSerializer(
+                new NullableSerializer<Guid>(new GuidSerializer(GuidRepresentation.Standard)));
+        }
+        catch (BsonSerializationException)
+        {
+            // Something asked the driver for a Guid serializer before this ran and
+            // it cached its own default. Exactly one representation is ever used
+            // here and it is registered from this method alone, so whatever landed
+            // first is the one to keep — and refusing to start over a serializer
+            // that is already present helps nobody.
+        }
     }
 }
 
