@@ -989,6 +989,45 @@ public sealed class ClarificationHoldTests : IClassFixture<ClarificationsWebAppl
     }
 
     [Fact]
+    public async Task the_server_does_not_ask_for_money_the_model_already_asked_for()
+    {
+        var db = TryGetDatabase();
+        if (db is null)
+        {
+            return;
+        }
+
+        var userId = await ResetAsync(db);
+
+        // The card from 2026-08-24: "ما هو مبلغ الفاتورة؟" from the model and
+        // "How much is …?" from the server, one above the other. The prompt still
+        // tells the agent to put the figure in secondary_question and it obeyed;
+        // adding ours on top asked the same gap twice, in two languages.
+        var json = await PostCreatedAsync(userId, """
+        {
+          "title": "دفع فاتورة النت",
+          "domain": "finance",
+          "question": "متى تود دفع فاتورة النت؟",
+          "kind": "date",
+          "questions": [
+            {"question": "متى تود دفع فاتورة النت؟", "kind": "date", "options": []},
+            {"question": "ما هو مبلغ الفاتورة؟", "kind": "detail", "options": []}
+          ]
+        }
+        """);
+
+        var rows = json.GetProperty("clarifications").EnumerateArray().ToList();
+
+        Assert.Equal(2, rows.Count);
+        Assert.DoesNotContain(rows, r =>
+            r.TryGetProperty("questionKey", out var k) && k.GetString() == "ask.howMuch");
+
+        // The date question still gets the chips it had nothing to tap without.
+        var date = rows.Single(r => r.GetProperty("kind").GetString() == "date");
+        Assert.NotEmpty(date.GetProperty("options").EnumerateArray());
+    }
+
+    [Fact]
     public async Task a_secondary_question_that_repeats_the_primary_is_rejected()
     {
         // One gap asked twice. The user answers the first card; the second can never be

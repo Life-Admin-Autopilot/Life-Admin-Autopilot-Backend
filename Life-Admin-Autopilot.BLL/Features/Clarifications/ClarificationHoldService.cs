@@ -4,6 +4,7 @@ using Life_Admin_Autopilot.BLL.Features.VoiceNotes;
 using Life_Admin_Autopilot.BLL.Kernel.Reminders;
 using Life_Admin_Autopilot.DAL.Features.Clarifications;
 using Life_Admin_Autopilot.DAL.Kernel.Documents;
+using System.Text.RegularExpressions;
 using MongoDB.Bson;
 
 namespace Life_Admin_Autopilot.BLL.Features.Clarifications;
@@ -405,14 +406,49 @@ public sealed class ClarificationHoldService
 
         // A bill has a figure. `NeedsAnAmount` keys on the domain AND the title, so a
         // renewal — "هجدد رخصة العربية" is `car`, never `finance` — is asked about
-        // too. The model volunteers this only when the sentence made it obvious.
-        if (amountGap is not null && !filled.Any(q => q.QuestionKey == AskHowMuchKey))
+        // too.
+        //
+        // Skipped when the model already asked. The prompt still tells it to put the
+        // figure in `secondary_question`, and it usually obeys: adding ours on top
+        // produced the card that had "ما هو مبلغ الفاتورة؟" and "How much is …?" one
+        // above the other, the same gap asked twice in two languages. Which of the
+        // two lands is not worth arbitrating — the model's is in the language of the
+        // message, so when it asks, it wins.
+        if (amountGap is not null && !filled.Any(AlreadyAsksForMoney))
         {
             filled.Add(ToHoldQuestion(amountGap));
         }
 
         return filled;
     }
+
+    /// <summary>
+    /// Whether this question is already asking what the matter costs.
+    ///
+    /// <para>
+    /// Read on <c>detail</c> questions only, and that is what makes it safe. The
+    /// money words also appear in the DATE question on the same matter — "متى تدفع
+    /// الفاتورة؟" carries فاتورة — and matching there would suppress the figure on
+    /// every bill that was asked when it is due. A date question is kind 'date'; the
+    /// figure is always kind 'detail' with no options, which is the shape the prompt
+    /// mandates for it.
+    /// </para>
+    ///
+    /// <para>
+    /// Deliberately NOT <c>VoiceAutoFilePolicy</c>'s <c>MoneyWords</c>. That answers
+    /// "is this matter about money", which is true of the whole card; this answers
+    /// "is this sentence asking for a figure", which is true of one row on it.
+    /// </para>
+    /// </summary>
+    private static bool AlreadyAsksForMoney(HoldQuestion question) =>
+        question.QuestionKey == AskHowMuchKey
+        || (string.Equals(question.Kind, "detail", StringComparison.Ordinal)
+            && MoneyQuestionWords.IsMatch(question.Question));
+
+    private static readonly Regex MoneyQuestionWords = new(
+        @"how much|\bamount\b|\bcost(s)?\b|\bprice\b|\btotal\b"
+        + @"|مبلغ|قيمة|تكلفة|سعر|بكام|كام",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
     private static HoldQuestion ToHoldQuestion(DraftClarification gap) =>
         new(
