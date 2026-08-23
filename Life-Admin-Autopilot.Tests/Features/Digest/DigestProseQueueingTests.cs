@@ -83,7 +83,7 @@ public sealed class DigestProseQueueingTests : IClassFixture<ProseEnabledDigestF
         }
 
         var userId = ObjectId.GenerateNewId();
-        await SeedTaskAsync(db, userId, "Renew the car insurance", DateTime.UtcNow.AddHours(3));
+        await SeedTaskAsync(db, userId, "Renew the car insurance", DueTodayInCairo());
 
         var digest = await GetDigestAsync(userId);
 
@@ -107,7 +107,7 @@ public sealed class DigestProseQueueingTests : IClassFixture<ProseEnabledDigestF
         }
 
         var userId = ObjectId.GenerateNewId();
-        await SeedTaskAsync(db, userId, "Chase the airline refund", DateTime.UtcNow.AddHours(3));
+        await SeedTaskAsync(db, userId, "Chase the airline refund", DueTodayInCairo());
 
         // First read builds and caches the row, and queues the miss-path job.
         var first = await GetDigestAsync(userId);
@@ -148,7 +148,7 @@ public sealed class DigestProseQueueingTests : IClassFixture<ProseEnabledDigestF
         }
 
         var userId = ObjectId.GenerateNewId();
-        await SeedTaskAsync(db, userId, "Order the new carrier", DateTime.UtcNow.AddHours(3));
+        await SeedTaskAsync(db, userId, "Order the new carrier", DueTodayInCairo());
 
         await GetDigestAsync(userId);
 
@@ -189,7 +189,7 @@ public sealed class DigestProseQueueingTests : IClassFixture<ProseEnabledDigestF
         const string Sentence = "Today you're renewing the car insurance and booking the tickets.";
 
         var userId = ObjectId.GenerateNewId();
-        await SeedTaskAsync(db, userId, "Renew the car insurance", DateTime.UtcNow.AddHours(3));
+        await SeedTaskAsync(db, userId, "Renew the car insurance", DueTodayInCairo());
 
         await GetDigestAsync(userId);
 
@@ -261,6 +261,35 @@ public sealed class DigestProseQueueingTests : IClassFixture<ProseEnabledDigestF
         }
 
         throw new InvalidOperationException("nothing was queued");
+    }
+
+    /// <summary>
+    /// A due time that lands inside TODAY in Cairo whatever the wall clock says when
+    /// the suite runs.
+    ///
+    /// <para>
+    /// This used to be <c>DateTime.UtcNow.AddHours(3)</c>, and that is a clock bomb.
+    /// Cairo is UTC+3, so it resolves to Cairo-now plus three hours — and from 21:00
+    /// Cairo onward it crosses midnight and the matter becomes due TOMORROW.
+    /// <c>dueToday</c> counts <c>[TodayStart, TomorrowStart)</c> in the user's zone,
+    /// so the count fell to zero, the headline flipped to "Nothing due today.", and
+    /// every test in this class that seeds a matter failed — for the three hours
+    /// between 18:00 and 21:00 UTC, every day, on code nobody had touched.
+    /// </para>
+    ///
+    /// <para>
+    /// Midday is safe from both ends of the day: still ahead at 00:05, still today at
+    /// 23:50. Whether the matter is past or future does not matter here — the facet
+    /// counts by local day, not by remaining time.
+    /// </para>
+    /// </summary>
+    private static DateTime DueTodayInCairo()
+    {
+        var zone = TimeZoneInfo.FindSystemTimeZoneById(Tz);
+        var middayToday = TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow, zone).Date.AddHours(12);
+        return TimeZoneInfo.ConvertTimeToUtc(
+            DateTime.SpecifyKind(middayToday, DateTimeKind.Unspecified),
+            zone);
     }
 
     private static async Task SeedTaskAsync(
