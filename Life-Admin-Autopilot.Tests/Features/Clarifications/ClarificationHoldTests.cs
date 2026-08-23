@@ -715,9 +715,15 @@ public sealed class ClarificationHoldTests : IClassFixture<ClarificationsWebAppl
         """);
 
         var rows = json.GetProperty("clarifications");
-        Assert.Equal(2, rows.GetArrayLength());
+
+        // Three, not two: "Renew the passport" matches MoneyWords, and a renewal
+        // costs money every time. The model asked about neither the office nor the
+        // figure in one breath, so the figure is the server's question — appended,
+        // which is why the two the model DID ask keep their order.
+        Assert.Equal(3, rows.GetArrayLength());
         Assert.Equal("Which office?", rows[0].GetProperty("question").GetString());
         Assert.Equal("Is it the 15th or the 18th?", rows[1].GetProperty("question").GetString());
+        Assert.Equal("ask.howMuch", rows[2].GetProperty("questionKey").GetString());
     }
 
     [Fact]
@@ -890,22 +896,34 @@ public sealed class ClarificationHoldTests : IClassFixture<ClarificationsWebAppl
     }
 
     [Fact]
-    public async Task a_date_question_with_nothing_to_tap_and_nothing_guessed_is_rejected()
+    public async Task a_date_question_with_nothing_to_tap_is_filed_with_chips_the_server_resolved()
     {
-        // The card this would draw is a bare "when?" with no chips and no date on the
-        // matter behind it. The 400 is worth more than the row: the tool hands the
-        // message back to the agent, which re-calls with options inside the same turn.
+        // The 2026-08-23 loss, and the reason this stopped being a 400. The binder
+        // used to reject this so the tool could hand the message back and the agent
+        // re-call with options. It usually did. When it did not, `Parse` threw before
+        // the service ran, no task was written, and the chat said "لم أتمكن من إضافة
+        // المهمة" about a matter that had never existed. Six dateless sentences,
+        // six losses. A missing date is a FACT about the matter, so the chips are
+        // generated here rather than demanded from a model that cannot be relied on
+        // to supply them.
         var response = await PostAsync(ObjectId.GenerateNewId(), """
         {
           "title": "T", "domain": "home", "question": "When?", "kind": "date"
         }
         """);
 
-        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal(HttpStatusCode.Created, response.StatusCode);
 
-        var fields = (await ReadJsonAsync(response)).GetProperty("error").GetProperty("details")
-            .GetProperty("fieldErrors");
-        Assert.Equal(HoldBinder.DateNeedsOptions, fields.GetProperty("options")[0].GetString());
+        var body = await ReadJsonAsync(response);
+        Assert.False(string.IsNullOrEmpty(body.GetProperty("task").GetProperty("id").GetString()));
+
+        var date = body.GetProperty("clarifications").EnumerateArray()
+            .Single(c => c.GetProperty("kind").GetString() == "date");
+
+        // The model keeps its own wording — it is in the language of the message it
+        // is answering. Only the answers are the server's.
+        Assert.Equal("When?", date.GetProperty("question").GetString());
+        Assert.NotEmpty(date.GetProperty("options").EnumerateArray());
     }
 
     [Fact]
@@ -924,10 +942,13 @@ public sealed class ClarificationHoldTests : IClassFixture<ClarificationsWebAppl
     }
 
     [Fact]
-    public async Task a_date_option_that_resolves_to_no_instant_is_rejected()
+    public async Task an_undated_chip_rides_along_rather_than_failing_the_whole_hold()
     {
-        // A chip with no dueAt sets nothing when tapped, so it is worse than not
-        // offering it — the user spends their one answer and the matter stays undated.
+        // This used to be a 400, on the reasoning that a chip with no dueAt sets
+        // nothing when tapped. But "No date needed" is an undated chip the SERVER's
+        // own generator emits — VoiceAutoFilePolicy.AskWhenItIsDue offers it first —
+        // so the shape is legitimate and the voice lane files it daily. Refusing the
+        // hold cost the user the matter to spare them one weak chip.
         var response = await PostAsync(ObjectId.GenerateNewId(), """
         {
           "title": "T", "domain": "home", "question": "When?", "kind": "date",
@@ -935,11 +956,36 @@ public sealed class ClarificationHoldTests : IClassFixture<ClarificationsWebAppl
         }
         """);
 
-        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal(HttpStatusCode.Created, response.StatusCode);
+    }
 
-        var fields = (await ReadJsonAsync(response)).GetProperty("error").GetProperty("details")
-            .GetProperty("fieldErrors");
-        Assert.Equal(HoldBinder.DateNeedsOptions, fields.GetProperty("options")[0].GetString());
+    [Fact]
+    public async Task a_bill_with_no_date_is_saved_and_asked_about_the_date_AND_the_money()
+    {
+        // "عايز ادفع فاتورة الغاز" — no date, no figure. The model holds for the date
+        // and volunteers nothing about money, because the sentence never named a
+        // number. Both questions are the server's to raise: NeedsAnAmount keys on the
+        // title as well as the domain, which is how a bill filed under `home` and a
+        // renewal filed under `car` are still asked what they cost.
+        var response = await PostAsync(ObjectId.GenerateNewId(), """
+        {
+          "title": "دفع فاتورة الغاز", "domain": "home", "question": "إمتى؟", "kind": "date"
+        }
+        """);
+
+        Assert.Equal(HttpStatusCode.Created, response.StatusCode);
+
+        var body = await ReadJsonAsync(response);
+        var rows = body.GetProperty("clarifications").EnumerateArray().ToList();
+        var kinds = rows.Select(c => c.GetProperty("kind").GetString()).ToList();
+
+        Assert.Contains("date", kinds);
+        Assert.Contains("detail", kinds);
+
+        // The money question is server-composed, so it travels as a key the client
+        // renders in its own language rather than the English written here.
+        var money = rows.Single(c => c.GetProperty("kind").GetString() == "detail");
+        Assert.Equal("ask.howMuch", money.GetProperty("questionKey").GetString());
     }
 
     [Fact]

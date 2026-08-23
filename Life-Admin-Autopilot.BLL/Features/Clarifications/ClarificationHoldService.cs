@@ -1,4 +1,6 @@
+using Life_Admin_Autopilot.BLL.Features.Planning;
 using Life_Admin_Autopilot.BLL.Features.Tasks;
+using Life_Admin_Autopilot.BLL.Features.VoiceNotes;
 using Life_Admin_Autopilot.BLL.Kernel.Reminders;
 using Life_Admin_Autopilot.DAL.Features.Clarifications;
 using Life_Admin_Autopilot.DAL.Kernel.Documents;
@@ -7,7 +9,17 @@ using MongoDB.Bson;
 namespace Life_Admin_Autopilot.BLL.Features.Clarifications;
 
 /// <summary>One pre-resolved suggested answer, dates already normalised.</summary>
-public readonly record struct HoldOption(string Label, DateTime? DueAt, string? Title, string? Notes);
+public readonly record struct HoldOption(
+    string Label,
+    DateTime? DueAt,
+    string? Title,
+    string? Notes,
+    /// <summary>
+    /// Set only on a chip this SERVER composed. A model-written chip is already in
+    /// the user's language and carries none.
+    /// </summary>
+    string? LabelKey = null,
+    IReadOnlyDictionary<string, string>? LabelParams = null);
 
 /// <summary>
 /// A validated <c>holdForClarificationArgs</c>. Dates arrive as the RAW strings the
@@ -164,6 +176,21 @@ public sealed class ClarificationHoldService
         // describe, so the two forms are the same code path from here down.
         var questions = BuildQuestions(input, options, costOfWrong);
 
+        // Whatever the model asked, the matter's real gaps get asked about too.
+        //
+        // This is the line that stops a chat-born matter being lost. The binder used
+        // to REJECT a date question that carried nothing to tap, on the reasoning
+        // that the tool hands the 400 back and the agent re-calls with options inside
+        // the same turn. It does — most of the time. When it does not, `Parse` threw
+        // before this method ran, no task was created, and the user was told "لم
+        // أتمكن من إضافة المهمة" about a matter the server had simply refused to
+        // write. Measured 2026-08-23: six dateless sentences in a row, six losses.
+        //
+        // A missing date is a FACT about the matter, not a modelling decision, so it
+        // is answered here — with the SAME generator the voice lane and POST /me/tasks
+        // already use, rather than a third implementation kept in step by hand.
+        questions = WithServerGaps(questions, input, dueAt, priority);
+
         // The reminder is withheld if ANY question is expensive to get wrong. The
         // guard exists to stop a GUESSED date firing, and a matter is only as safe
         // as its riskiest open gap — a 'low' sibling cannot license the guess.
@@ -259,6 +286,13 @@ public sealed class ClarificationHoldService
                 // differs between them is the question and the answers it offers.
                 Draft = NewDraft(),
                 Question = question.Question,
+
+                // Null on a model-written question, which is already in the language
+                // of the message it answers. Present on one this server composed, so
+                // the card renders in the app's language instead of the English the
+                // generator happens to be written in.
+                QuestionKey = question.QuestionKey,
+                QuestionParams = question.QuestionParams?.ToDictionary(e => e.Key, e => e.Value),
                 Kind = question.Kind,
                 CostOfWrong = question.CostOfWrong,
                 Options = question.Options
@@ -268,6 +302,8 @@ public sealed class ClarificationHoldService
                         DueAt = o.DueAt,
                         Title = o.Title,
                         Notes = o.Notes,
+                        LabelKey = o.LabelKey,
+                        LabelParams = o.LabelParams?.ToDictionary(e => e.Key, e => e.Value),
                     })
                     .ToList(),
                 SourceText = sourceText,
@@ -285,6 +321,112 @@ public sealed class ClarificationHoldService
 
         return new HoldOutcome(task, rows[0], QueueFull: false, rows);
     }
+
+    /// <summary><c>AskForTheAmount</c>'s key — how a money gap is recognised again.</summary>
+    private const string AskHowMuchKey = "ask.howMuch";
+
+    /// <summary>
+    /// The model's questions made answerable, plus the gaps it did not notice.
+    ///
+    /// <para>
+    /// <b>Deliberately <see cref="VoiceAutoFilePolicy.GapsFor"/> and not a fourth
+    /// implementation.</b> Voice asks these questions, <c>POST /me/tasks</c> asks them
+    /// through <see cref="MatterGapService"/>, and chat used to demand the model ask
+    /// them — which is why chat was the only lane that could lose a matter. One
+    /// generator means the three lanes cannot drift, and a chip added for voice shows
+    /// up in chat the same day.
+    /// </para>
+    ///
+    /// <para>
+    /// Nothing here can fail the hold. A gap that cannot be turned into a question is
+    /// simply not asked; the task is already on its way to being written either way.
+    /// </para>
+    /// </summary>
+    private static List<HoldQuestion> WithServerGaps(
+        List<HoldQuestion> questions,
+        HoldInput input,
+        DateTime? dueAt,
+        string priority)
+    {
+        // Confidence 1 and no conflicts: the gap tests read neither, and a hold has
+        // no score to report. Kind is unset for the same reason — it is decided
+        // above, from costOfWrong, and is not an input to which gaps exist.
+        var draft = new TaskDraft(
+            input.Title,
+            input.Domain,
+            priority,
+            Kind: null,
+            DueAt: dueAt,
+            input.Notes,
+            SourceType: "chat",
+            Confidence: 1,
+            Conflicts: Array.Empty<PlanningConflict>(),
+            TimeAssumed: false,
+            Amount: input.Amount);
+
+        var gaps = VoiceAutoFilePolicy.GapsFor(
+            draft,
+            VoiceAutoFilePolicy.ResolveZone(input.Timezone),
+            timeAssumed: false);
+
+        if (gaps.Count == 0)
+        {
+            return questions;
+        }
+
+        var dateGap = gaps.FirstOrDefault(g => string.Equals(g.Kind, "date", StringComparison.Ordinal));
+        var amountGap = gaps.FirstOrDefault(g => g.QuestionKey == AskHowMuchKey);
+
+        var filled = new List<HoldQuestion>(questions.Count + gaps.Count);
+        var askedForADate = false;
+
+        foreach (var question in questions)
+        {
+            var isDate = string.Equals(question.Kind, "date", StringComparison.Ordinal);
+            askedForADate |= isDate;
+
+            // A bare "when?" over a matter with no date. The model keeps its own
+            // wording — it is in the language of the message it is answering — and
+            // gets the server's pre-resolved chips, so a tap sets a real dueAt.
+            if (isDate && question.Options.Count == 0 && !dueAt.HasValue && dateGap is not null)
+            {
+                filled.Add(question with { Options = ToHoldOptions(dateGap.Options) });
+                continue;
+            }
+
+            filled.Add(question);
+        }
+
+        // Held for some other reason, with no date and nobody asking about it.
+        if (!askedForADate && dateGap is not null)
+        {
+            filled.Add(ToHoldQuestion(dateGap));
+        }
+
+        // A bill has a figure. `NeedsAnAmount` keys on the domain AND the title, so a
+        // renewal — "هجدد رخصة العربية" is `car`, never `finance` — is asked about
+        // too. The model volunteers this only when the sentence made it obvious.
+        if (amountGap is not null && !filled.Any(q => q.QuestionKey == AskHowMuchKey))
+        {
+            filled.Add(ToHoldQuestion(amountGap));
+        }
+
+        return filled;
+    }
+
+    private static HoldQuestion ToHoldQuestion(DraftClarification gap) =>
+        new(
+            gap.Question,
+            gap.Kind,
+            gap.CostOfWrong,
+            ToHoldOptions(gap.Options),
+            gap.QuestionKey,
+            gap.QuestionParams);
+
+    private static List<HoldOption> ToHoldOptions(IReadOnlyList<DraftClarifyOption> options) =>
+        options
+            .Select(o => new HoldOption(o.Label, o.DueAt, Title: null, Notes: null, o.LabelKey, o.LabelParams))
+            .ToList();
 
     /// <summary>
     /// The questions to raise, resolved against the top-level defaults.
@@ -397,4 +539,6 @@ internal readonly record struct HoldQuestion(
     string Question,
     string Kind,
     string CostOfWrong,
-    IReadOnlyList<HoldOption> Options);
+    IReadOnlyList<HoldOption> Options,
+    string? QuestionKey = null,
+    IReadOnlyDictionary<string, string>? QuestionParams = null);
