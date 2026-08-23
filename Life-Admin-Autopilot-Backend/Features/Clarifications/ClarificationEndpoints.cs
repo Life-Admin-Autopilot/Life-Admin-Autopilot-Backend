@@ -175,6 +175,7 @@ public static class ClarificationEndpoints
         endpoints.MapPost("/me/clarifications", async (
             HttpContext context,
             ClarificationHoldService holds,
+            ConflictService conflicts,
             CancellationToken cancellationToken) =>
         {
             var caller = context.RequireUser();
@@ -186,8 +187,10 @@ public static class ClarificationEndpoints
                     cancellationToken)
                 .ConfigureAwait(false);
 
+            var input = HoldBinder.Parse(body);
+
             var outcome = await holds
-                .HoldAsync(caller.Id, HoldBinder.Parse(body), cancellationToken: cancellationToken)
+                .HoldAsync(caller.Id, input, cancellationToken: cancellationToken)
                 .ConfigureAwait(false);
 
             // INVARIANT: a hold either raised a question, or says WHY it did not.
@@ -211,12 +214,27 @@ public static class ClarificationEndpoints
                     + "question, and renders the second as a question nobody was asked.");
             }
 
+            // Save first, then say what it landed on — the same order and the same
+            // helper the resolve path uses, and it cannot fail the request: a hold
+            // that files a matter is a success whether or not the check completes.
+            var clash = await RecheckAsync(
+                    conflicts,
+                    caller.Id,
+                    outcome.Task,
+                    outcome.Task.DueAt,
+                    input.Timezone,
+                    cancellationToken)
+                .ConfigureAwait(false);
+
             return Results.Created((string?)null, new ClarificationCreateResponse
             {
                 Clarification = outcome.Clarification?.ToDto(),
                 Clarifications = outcome.Rows.Select(row => row.ToDto()).ToList(),
                 Task = outcome.Task.ToDto(),
                 QueueFull = outcome.QueueFull,
+                Conflicts = clash.Conflicts,
+                Suggestions = clash.Suggestions,
+                SuggestionReason = clash.Reason,
             });
         })
         .RequireAuthorization();

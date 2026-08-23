@@ -89,6 +89,26 @@ public static class ChatGapText
     }
 
     /// <summary>
+    /// One replacement chip's label — "الاثنين 31 أغسطس الساعة 9:00 ص" — for a time
+    /// <see cref="ChipAvailability"/> found free after dropping one that was taken.
+    /// Same template and same clock as the chips it stands in for, so a refilled
+    /// question does not read as two features.
+    /// </summary>
+    public static string ChipLabelFor(DateTime instant, string title, string? timezone)
+    {
+        var arabic = LooksArabic(title);
+
+        return Render(
+            fallback: instant.ToString("u"),
+            key: "chip.dayAt",
+            parameters: new Dictionary<string, string> { ["at"] = instant.ToString("o") },
+            title: title,
+            timezone: timezone,
+            arabic: arabic,
+            culture: CultureFor(arabic));
+    }
+
+    /// <summary>
     /// <c>ar-EG</c> and <c>en-GB</c>, matching the two catalogues — with English's
     /// meridiem forced upper-case.
     ///

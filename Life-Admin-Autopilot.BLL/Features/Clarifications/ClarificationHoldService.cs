@@ -1,3 +1,4 @@
+using Life_Admin_Autopilot.BLL.Features.Knowledge;
 using Life_Admin_Autopilot.BLL.Features.Planning;
 using Life_Admin_Autopilot.BLL.Features.Tasks;
 using Life_Admin_Autopilot.BLL.Features.VoiceNotes;
@@ -138,15 +139,18 @@ public sealed class ClarificationHoldService
     private readonly TaskWriteService _tasks;
     private readonly ClarificationRepository _clarifications;
     private readonly ReminderPlanner _reminders;
+    private readonly ConflictService _conflicts;
 
     public ClarificationHoldService(
         TaskWriteService tasks,
         ClarificationRepository clarifications,
-        ReminderPlanner reminders)
+        ReminderPlanner reminders,
+        ConflictService conflicts)
     {
         _tasks = tasks;
         _clarifications = clarifications;
         _reminders = reminders;
+        _conflicts = conflicts;
     }
 
     public async Task<HoldOutcome> HoldAsync(
@@ -258,6 +262,12 @@ public sealed class ClarificationHoldService
 
         var asked = Prioritize(questions, capacity);
 
+        // No chip may point at a time this user is already busy at. Runs after the
+        // task is written, which is what lets the check exclude the matter being
+        // asked about. See ChipAvailability.
+        asked = await FreeChipsAsync(asked, userId, task, input.Timezone, cancellationToken)
+            .ConfigureAwait(false);
+
         // A FRESH draft per row rather than one shared instance: the documents are
         // mutable and independent from here on, and an alias between two of them is
         // the kind of thing that only shows up as a bug much later.
@@ -321,6 +331,47 @@ public sealed class ClarificationHoldService
         }
 
         return new HoldOutcome(task, rows[0], QueueFull: false, rows);
+    }
+
+    /// <summary>
+    /// Each date question's chips, with anything already occupied swapped for a
+    /// verified-free time. Only <c>date</c> questions carry instants, so nothing
+    /// else is touched.
+    /// </summary>
+    private async Task<List<HoldQuestion>> FreeChipsAsync(
+        List<HoldQuestion> questions,
+        ObjectId userId,
+        TaskDocument task,
+        string? timezone,
+        CancellationToken cancellationToken)
+    {
+        var checkedQuestions = new List<HoldQuestion>(questions.Count);
+
+        foreach (var question in questions)
+        {
+            if (question.Options.Count == 0)
+            {
+                checkedQuestions.Add(question);
+                continue;
+            }
+
+            var free = await ChipAvailability
+                .FreeOnlyAsync(
+                    _conflicts,
+                    userId,
+                    task,
+                    question.Options.Select(o => new ChipAvailability.Chip(o.Label, o.DueAt, o.Title, o.Notes)).ToList(),
+                    timezone,
+                    cancellationToken)
+                .ConfigureAwait(false);
+
+            checkedQuestions.Add(question with
+            {
+                Options = free.Select(c => new HoldOption(c.Label, c.DueAt, c.Title, c.Notes)).ToList(),
+            });
+        }
+
+        return checkedQuestions;
     }
 
     /// <summary><c>AskForTheAmount</c>'s key — how a money gap is recognised again.</summary>

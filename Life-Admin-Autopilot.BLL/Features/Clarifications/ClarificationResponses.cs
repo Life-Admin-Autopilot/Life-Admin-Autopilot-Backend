@@ -78,6 +78,30 @@ public sealed class ClarificationCreateResponse
     /// </summary>
     [JsonPropertyName("queueFull")]
     public bool QueueFull { get; init; }
+
+    /// <summary>
+    /// What the matter this hold just filed collides with, if anything.
+    ///
+    /// <para>
+    /// <b>The same three keys <c>createTask</c> answers with</b>, and that is the
+    /// point: the chat card branches on <c>task.id &amp;&amp; conflicts.length</c>
+    /// and renders the decision panel, so a hold reporting its clash the same way
+    /// needs no client change to start being shown. Without them a held matter that
+    /// landed on top of another said nothing in the conversation, and the clash was
+    /// first seen days later on the matter's own sheet — which is where it had been
+    /// all along, because <c>/me/tasks/{id}/conflicts</c> always found it.
+    /// </para>
+    /// </summary>
+    [JsonPropertyName("conflicts")]
+    public IReadOnlyList<ClarificationConflictDto> Conflicts { get; init; } =
+        Array.Empty<ClarificationConflictDto>();
+
+    /// <summary>Instants checked free against the same pool the clash was found in.</summary>
+    [JsonPropertyName("suggestions")]
+    public IReadOnlyList<DateTime> Suggestions { get; init; } = Array.Empty<DateTime>();
+
+    [JsonPropertyName("suggestionReason")]
+    public string SuggestionReason { get; init; } = string.Empty;
 }
 
 /// <summary>

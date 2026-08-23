@@ -1001,6 +1001,90 @@ public sealed class ClarificationHoldTests : IClassFixture<ClarificationsWebAppl
     }
 
     [Fact]
+    public async Task a_chip_is_never_offered_for_a_time_the_user_is_already_busy_at()
+    {
+        var db = TryGetDatabase();
+        if (db is null) return;
+
+        var userId = await ResetAsync(db);
+        var busy = TomorrowAtNineCairo();
+
+        // Exactly the instant the generator's "tomorrow" chip points at.
+        var seed = await AuthedClient(userId).PostAsync("/me/tasks", JsonBody($$"""
+        {
+          "title": "تجديد رخصة العربية", "domain": "car",
+          "dueAt": "{{busy:yyyy-MM-ddTHH:mm:ss.fffZ}}", "timezone": "Africa/Cairo"
+        }
+        """));
+        Assert.Equal(HttpStatusCode.Created, seed.StatusCode);
+
+        var json = await PostCreatedAsync(userId, """
+        {
+          "title": "خروجة", "domain": "family",
+          "question": "إمتى؟", "kind": "date", "timezone": "Africa/Cairo"
+        }
+        """);
+
+        var offered = json.GetProperty("clarification").GetProperty("options").EnumerateArray()
+            .Where(o => o.TryGetProperty("dueAt", out var d) && d.ValueKind == JsonValueKind.String)
+            .Select(o => o.GetProperty("dueAt").GetDateTime())
+            .ToList();
+
+        // Suggesting a slot and then objecting to it is worse than suggesting none.
+        Assert.DoesNotContain(busy, offered);
+
+        // And the question is refilled rather than emptied: dropping the only
+        // tappable answer would leave a card the user can do nothing with.
+        Assert.NotEmpty(offered);
+    }
+
+    [Fact]
+    public async Task a_hold_that_lands_on_a_clash_reports_it_in_its_own_response()
+    {
+        var db = TryGetDatabase();
+        if (db is null) return;
+
+        var userId = await ResetAsync(db);
+        var busy = TomorrowAtNineCairo();
+
+        var seed = await AuthedClient(userId).PostAsync("/me/tasks", JsonBody($$"""
+        {
+          "title": "تجديد رخصة العربية", "domain": "car",
+          "dueAt": "{{busy:yyyy-MM-ddTHH:mm:ss.fffZ}}", "timezone": "Africa/Cairo"
+        }
+        """));
+        Assert.Equal(HttpStatusCode.Created, seed.StatusCode);
+
+        // A hold files its matter straight onto the occupied instant. createTask has
+        // always answered with `conflicts`; this one answered with nothing, so the
+        // chat said nothing and the clash was first seen days later on the matter's
+        // own sheet — where /me/tasks/{id}/conflicts had been finding it all along.
+        var json = await PostCreatedAsync(userId, $$"""
+        {
+          "title": "خروجة", "domain": "family", "question": "الساعة كام؟", "kind": "date",
+          "dueAtGuess": "{{busy:yyyy-MM-ddTHH:mm:ss.fffZ}}", "timezone": "Africa/Cairo"
+        }
+        """);
+
+        var clashes = json.GetProperty("conflicts").EnumerateArray().ToList();
+        Assert.NotEmpty(clashes);
+        Assert.Equal("تجديد رخصة العربية", clashes[0].GetProperty("title").GetString());
+        Assert.Equal("time_clash", clashes[0].GetProperty("kind").GetString());
+
+        // Checked against the same pool the clash was found in, so a suggestion
+        // taken cannot be refused a moment later.
+        Assert.NotEmpty(json.GetProperty("suggestions").EnumerateArray());
+    }
+
+    /// <summary>09:00 tomorrow in Cairo, as UTC — the instant the chip generator offers.</summary>
+    private static DateTime TomorrowAtNineCairo()
+    {
+        var zone = TimeZoneInfo.FindSystemTimeZoneById("Africa/Cairo");
+        var local = TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow, zone).Date.AddDays(1).AddHours(9);
+        return TimeZoneInfo.ConvertTimeToUtc(DateTime.SpecifyKind(local, DateTimeKind.Unspecified), zone);
+    }
+
+    [Fact]
     public async Task the_server_does_not_ask_for_money_the_model_already_asked_for()
     {
         var db = TryGetDatabase();

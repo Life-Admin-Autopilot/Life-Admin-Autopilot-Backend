@@ -1,3 +1,4 @@
+using Life_Admin_Autopilot.BLL.Features.Knowledge;
 using Life_Admin_Autopilot.BLL.Features.Planning;
 using Life_Admin_Autopilot.BLL.Features.VoiceNotes;
 using Life_Admin_Autopilot.DAL.Features.Clarifications;
@@ -43,11 +44,16 @@ public sealed class MatterGapService
 {
     private readonly ClarificationRepository _clarifications;
     private readonly IMongoCollection<UserProfileDocument> _users;
+    private readonly ConflictService _conflicts;
 
-    public MatterGapService(ClarificationRepository clarifications, IMongoDatabase database)
+    public MatterGapService(
+        ClarificationRepository clarifications,
+        IMongoDatabase database,
+        ConflictService conflicts)
     {
         _clarifications = clarifications;
         _users = database.GetCollection<UserProfileDocument>(MongoCollections.Users);
+        _conflicts = conflicts;
     }
 
     /// <summary>
@@ -115,6 +121,18 @@ public sealed class MatterGapService
         {
             var asked = ChatGapText.InTheLanguageOfTheMatter(gap, task.Title, zone);
 
+            // And with nothing offered for a time already taken. The matter is
+            // saved by now, so the check can exclude it. See ChipAvailability.
+            var chips = await ChipAvailability
+                .FreeOnlyAsync(
+                    _conflicts,
+                    userId,
+                    task,
+                    asked.Options.Select(o => new ChipAvailability.Chip(o.Label, o.DueAt)).ToList(),
+                    zone,
+                    cancellationToken)
+                .ConfigureAwait(false);
+
             var row = new ClarificationDocument
             {
                 Id = ObjectId.GenerateNewId(),
@@ -145,11 +163,11 @@ public sealed class MatterGapService
                 QuestionParams = null,
                 Kind = asked.Kind,
                 CostOfWrong = asked.CostOfWrong,
-                Options = asked.Options
-                    .Select(o => new ClarificationOptionDocument
+                Options = chips
+                    .Select(c => new ClarificationOptionDocument
                     {
-                        Label = o.Label,
-                        DueAt = o.DueAt,
+                        Label = c.Label,
+                        DueAt = c.DueAt,
                     })
                     .ToList(),
 
