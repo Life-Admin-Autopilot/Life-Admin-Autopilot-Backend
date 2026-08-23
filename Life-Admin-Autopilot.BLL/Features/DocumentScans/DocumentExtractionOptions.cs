@@ -54,9 +54,27 @@ public sealed class DocumentExtractionOptions
 
     public bool IsConfigured => !string.IsNullOrWhiteSpace(ApiKey);
 
-    /// <summary>Tried in order when the primary answers 503/429. Every one reads images and PDFs.</summary>
+    /// <summary>
+    /// Tried in order when the primary answers 503/429. Every one reads images and PDFs.
+    ///
+    /// <para>
+    /// <b>flash-lite is the rung that matters on the free tier, and it was missing.</b>
+    /// The three flash models share a quota that a day's ordinary use exhausts, and
+    /// when it goes they answer 429 within the same minute — so a chain made only of
+    /// them has nowhere left to go, and every upload ends at
+    /// <c>document_ai_unavailable</c> while chat and voice carry on working. That is
+    /// exactly what "the document reader doesn't work on my phone" looked like: the
+    /// upload succeeded, the worker burned four attempts, and the scan never left
+    /// processing.
+    ///
+    /// Measured on the deployed box — one key, one image, the same minute:
+    /// 3.7-flash 429, 3.6-flash 429, 3.5-flash 429, 3.1-flash-lite 200, and it read
+    /// the bill correctly. <c>PlanningOptions</c> already carries this rung, which is
+    /// why the chat lane survived the same exhaustion.
+    /// </para>
+    /// </summary>
     public IReadOnlyList<string> Fallbacks { get; init; } =
-        new[] { "gemini-3.6-flash", "gemini-3.5-flash" };
+        new[] { "gemini-3.6-flash", "gemini-3.5-flash", "gemini-3.1-flash-lite" };
 
     public IReadOnlyList<string> ModelChain =>
         new[] { Model }.Concat(Fallbacks).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
