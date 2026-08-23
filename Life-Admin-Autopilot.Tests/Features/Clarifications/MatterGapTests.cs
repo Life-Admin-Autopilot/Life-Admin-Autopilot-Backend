@@ -166,7 +166,12 @@ public sealed class MatterGapTests : IClassFixture<ClarificationsWebApplicationF
         Assert.Equal("list", task.GetProperty("kind").GetString());
 
         var raised = Assert.Single(created.GetProperty("clarifications").EnumerateArray().ToList());
-        Assert.Equal("ask.whenDue", raised.GetProperty("questionKey").GetString());
+        // Composed in the language of the title, and carrying no key. A key would
+        // render in whatever language the APP is set to, which put an English
+        // question directly under the model's Arabic one. See ChatGapText.
+        Assert.Equal("متى موعد «تعلم سباحة»؟", raised.GetProperty("question").GetString());
+        Assert.False(
+            raised.TryGetProperty("questionKey", out var noKey) && noKey.ValueKind != JsonValueKind.Null);
         Assert.Equal(
             task.GetProperty("id").GetString(),
             raised.GetProperty("taskId").GetString());
@@ -249,13 +254,19 @@ public sealed class MatterGapTests : IClassFixture<ClarificationsWebApplicationF
 
         var options = created.GetProperty("clarifications")[0].GetProperty("options");
 
-        // "Tomorrow — 09:00", and 09:00 Cairo is 06:00Z. A UTC-composed chip would
-        // carry 09:00Z under the same label.
+        // 09:00 Cairo is 06:00Z. A UTC-composed chip would carry 09:00Z instead.
+        // Found by its instant rather than by a labelKey: chat chips no longer
+        // carry one, because they arrive already written in the user's language.
+        // TryGetProperty, because the "no date needed" chip carries no dueAt at all
+        // and the key is omitted rather than sent null.
         var tomorrow = options.EnumerateArray()
-            .First(o => o.GetProperty("labelKey").GetString() == "chip.tomorrowAt");
+            .First(o => o.TryGetProperty("dueAt", out var at)
+                        && at.ValueKind == JsonValueKind.String
+                        && at.GetString()!.EndsWith("06:00:00.000Z", StringComparison.Ordinal));
 
-        Assert.EndsWith("06:00:00.000Z", tomorrow.GetProperty("dueAt").GetString());
-        Assert.Contains("09:00", tomorrow.GetProperty("label").GetString());
+        // "بكرة — 9:00 ص" — the app's own ar-EG rendering of the same instant,
+        // matched against Intl's { hour: 'numeric', minute: '2-digit' }.
+        Assert.Equal("بكرة — 9:00 ص", tomorrow.GetProperty("label").GetString());
     }
 
     // ---- helpers ------------------------------------------------------------

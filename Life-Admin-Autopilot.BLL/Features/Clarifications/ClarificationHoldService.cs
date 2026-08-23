@@ -378,6 +378,19 @@ public sealed class ClarificationHoldService
         var dateGap = gaps.FirstOrDefault(g => string.Equals(g.Kind, "date", StringComparison.Ordinal));
         var amountGap = gaps.FirstOrDefault(g => g.QuestionKey == AskHowMuchKey);
 
+        // Selected on the KEY first, then rewritten in the user's language — that
+        // order matters, because rewriting drops the key that identifies the gap.
+        // See ChatGapText for why a chat row carries finished text and not a key.
+        if (dateGap is not null)
+        {
+            dateGap = ChatGapText.InTheLanguageOfTheMatter(dateGap, input.Title, input.Timezone);
+        }
+
+        if (amountGap is not null)
+        {
+            amountGap = ChatGapText.InTheLanguageOfTheMatter(amountGap, input.Title, input.Timezone);
+        }
+
         var filled = new List<HoldQuestion>(questions.Count + gaps.Count);
         var askedForADate = false;
 

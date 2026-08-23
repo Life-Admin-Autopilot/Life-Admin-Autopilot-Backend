@@ -723,7 +723,7 @@ public sealed class ClarificationHoldTests : IClassFixture<ClarificationsWebAppl
         Assert.Equal(3, rows.GetArrayLength());
         Assert.Equal("Which office?", rows[0].GetProperty("question").GetString());
         Assert.Equal("Is it the 15th or the 18th?", rows[1].GetProperty("question").GetString());
-        Assert.Equal("ask.howMuch", rows[2].GetProperty("questionKey").GetString());
+        Assert.Equal("How much is “Renew the passport”?", rows[2].GetProperty("question").GetString());
     }
 
     [Fact]
@@ -982,10 +982,18 @@ public sealed class ClarificationHoldTests : IClassFixture<ClarificationsWebAppl
         Assert.Contains("date", kinds);
         Assert.Contains("detail", kinds);
 
-        // The money question is server-composed, so it travels as a key the client
-        // renders in its own language rather than the English written here.
+        // Server-composed, and composed in the language of the matter's own title.
+        // No key: a key would send the client back to the app's language, which is
+        // how an Arabic conversation got an English question under an Arabic one.
         var money = rows.Single(c => c.GetProperty("kind").GetString() == "detail");
-        Assert.Equal("ask.howMuch", money.GetProperty("questionKey").GetString());
+        Assert.Equal("كم قيمة «دفع فاتورة الغاز»؟", money.GetProperty("question").GetString());
+        Assert.False(money.TryGetProperty("questionKey", out var key) && key.ValueKind != JsonValueKind.Null);
+
+        // And so are the chips on the date question the model left empty.
+        var date = rows.Single(c => c.GetProperty("kind").GetString() == "date");
+        var chips = date.GetProperty("options").EnumerateArray()
+            .Select(o => o.GetProperty("label").GetString()).ToList();
+        Assert.Contains("لا حاجة لموعد", chips);
     }
 
     [Fact]
@@ -1019,8 +1027,7 @@ public sealed class ClarificationHoldTests : IClassFixture<ClarificationsWebAppl
         var rows = json.GetProperty("clarifications").EnumerateArray().ToList();
 
         Assert.Equal(2, rows.Count);
-        Assert.DoesNotContain(rows, r =>
-            r.TryGetProperty("questionKey", out var k) && k.GetString() == "ask.howMuch");
+        Assert.DoesNotContain(rows, r => r.GetProperty("question").GetString()!.Contains("كم قيمة"));
 
         // The date question still gets the chips it had nothing to tap without.
         var date = rows.Single(r => r.GetProperty("kind").GetString() == "date");

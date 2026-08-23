@@ -113,6 +113,8 @@ public sealed class MatterGapService
 
         foreach (var gap in gaps.Take(capacity))
         {
+            var asked = ChatGapText.InTheLanguageOfTheMatter(gap, task.Title, zone);
+
             var row = new ClarificationDocument
             {
                 Id = ObjectId.GenerateNewId(),
@@ -133,22 +135,21 @@ public sealed class MatterGapService
                     DueAt = task.DueAt,
                 },
 
-                Question = gap.Question,
-                QuestionKey = gap.QuestionKey,
-                QuestionParams = gap.QuestionParams is null
-                    ? null
-                    : new Dictionary<string, string>(gap.QuestionParams),
-                Kind = gap.Kind,
-                CostOfWrong = gap.CostOfWrong,
-                Options = gap.Options
+                // Finished text, in the language of the matter's own title, and NO
+                // key — this is the chat lane, where the user's language is known.
+                // Keyed, the card rendered in whatever the app was set to, so an
+                // Arabic conversation in an English app answered itself in English
+                // directly under the model's Arabic question. See ChatGapText.
+                Question = asked.Question,
+                QuestionKey = null,
+                QuestionParams = null,
+                Kind = asked.Kind,
+                CostOfWrong = asked.CostOfWrong,
+                Options = asked.Options
                     .Select(o => new ClarificationOptionDocument
                     {
                         Label = o.Label,
                         DueAt = o.DueAt,
-                        LabelKey = o.LabelKey,
-                        LabelParams = o.LabelParams is null
-                            ? null
-                            : new Dictionary<string, string>(o.LabelParams),
                     })
                     .ToList(),
 
