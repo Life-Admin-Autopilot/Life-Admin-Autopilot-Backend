@@ -75,7 +75,7 @@ public static class ChatGapText
         string? timezone)
     {
         var arabic = LooksArabic(title);
-        var culture = CultureInfo.GetCultureInfo(arabic ? "ar-EG" : "en-GB");
+        var culture = CultureFor(arabic);
 
         return new DraftClarification(
             Render(gap.Question, gap.QuestionKey, gap.QuestionParams, title, timezone, arabic, culture),
@@ -86,6 +86,30 @@ public static class ChatGapText
                     Render(option.Label, option.LabelKey, option.LabelParams, title, timezone, arabic, culture),
                     option.DueAt))
                 .ToList());
+    }
+
+    /// <summary>
+    /// <c>ar-EG</c> and <c>en-GB</c>, matching the two catalogues — with English's
+    /// meridiem forced upper-case.
+    ///
+    /// <para>
+    /// ICU gives en-GB a lower-case "am"/"pm" on Linux and an upper-case one on
+    /// Windows, so the same chip read "9:00 am" from the deployed server and
+    /// "9:00 AM" from a developer's machine — and, worse, "9:00 AM" from the client
+    /// beside it, because <c>Intl</c> upper-cases. Pinned here, all three agree.
+    /// </para>
+    /// </summary>
+    private static CultureInfo CultureFor(bool arabic)
+    {
+        if (arabic)
+        {
+            return CultureInfo.GetCultureInfo("ar-EG");
+        }
+
+        var english = (CultureInfo)CultureInfo.GetCultureInfo("en-GB").Clone();
+        english.DateTimeFormat.AMDesignator = "AM";
+        english.DateTimeFormat.PMDesignator = "PM";
+        return english;
     }
 
     private static string Render(

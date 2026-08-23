@@ -994,6 +994,10 @@ public sealed class ClarificationHoldTests : IClassFixture<ClarificationsWebAppl
         var chips = date.GetProperty("options").EnumerateArray()
             .Select(o => o.GetProperty("label").GetString()).ToList();
         Assert.Contains("لا حاجة لموعد", chips);
+
+        // 09:00 Cairo, rendered the way Intl renders it on the client — and with an
+        // upper-case meridiem, which ICU does not give en-GB on Linux by itself.
+        Assert.Contains(chips, c => c is not null && c.Contains("9:00 ص", StringComparison.Ordinal));
     }
 
     [Fact]
