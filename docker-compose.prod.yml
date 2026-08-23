@@ -57,6 +57,16 @@ services:
       DO_NOT_TRACK: 'true'
     volumes:
       - langflow-data:/app/langflow
+    ports:
+      # LOOPBACK ONLY, and the address is the whole point. `7860:7860` would
+      # bind 0.0.0.0 and publish an unauthenticated Langflow to the internet —
+      # the NSG happens to block it today, which is exactly the kind of thing
+      # that stops being true when someone opens a port for something else.
+      #
+      # This exists so tools/dev/langflow-import.sh can run from the host: the
+      # flows live in git, not in the volume, and every prompt change has to be
+      # pushed in here after it merges.
+      - '127.0.0.1:7860:7860'
     healthcheck:
       test: ['CMD-SHELL', 'python -c "import urllib.request;urllib.request.urlopen(\"http://localhost:7860/health\")"']
       interval: 15s
@@ -115,6 +125,8 @@ services:
       - '443:443'
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      # The built Angular bundle. Read-only: Caddy serves it and never writes.
+      - /home/kitto/kitto/dashboard:/srv/dashboard:ro
       # Certificates live here. Lose this volume and every restart re-requests
       # them, which is how a box walks into Let's Encrypt's rate limit and ends
       # up serving a self-signed certificate the app refuses to talk to.

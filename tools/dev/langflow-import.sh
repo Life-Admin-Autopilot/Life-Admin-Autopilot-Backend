@@ -56,6 +56,18 @@ if [ -f .env ]; then
   set +a
 fi
 
+# Which Python. `python` is a Git Bash / macOS-ism: Ubuntu 24.04 — the OS this
+# is deployed on — ships python3 and NO `python` alias at all, so the bare name
+# resolves to nothing and every JSON parse below silently yields an empty
+# string. The failure surfaced as "Could not get an auto-login token — is
+# LANGFLOW_AUTO_LOGIN=true?" on a Langflow whose auto_login endpoint was
+# returning a perfectly good token, which is a long way from the cause.
+PY_BIN="$(command -v python3 || command -v python || true)"
+if [ -z "$PY_BIN" ]; then
+  echo "Need python3 (or python) on PATH to read Langflow's JSON responses."
+  exit 1
+fi
+
 BASE="${LANGFLOW_BASE_URL:-http://127.0.0.1:7860}"
 FLOW_FILE="langflow/planning-agent.v4.json"
 FLOW_ID="${LANGFLOW_FLOW_ID:-6b0f1c2e-9a41-4d3f-8c77-91a1f10a9e14}"
@@ -90,7 +102,7 @@ fi
 
 # LANGFLOW_AUTO_LOGIN=true, set in docker-compose.yml, is what makes this exist.
 TOKEN=$(curl -s -m 10 "$BASE/api/v1/auto_login" \
-  | python -c 'import json,sys;print(json.load(sys.stdin).get("access_token",""))' 2>/dev/null)
+  | "$PY_BIN" -c 'import json,sys;print(json.load(sys.stdin).get("access_token",""))' 2>/dev/null)
 
 if [ -z "$TOKEN" ]; then
   echo "  Could not get an auto-login token — is LANGFLOW_AUTO_LOGIN=true?"
@@ -155,7 +167,7 @@ set_variable() { # name, value, type, field
 
   local existing
   existing=$(curl -s -m 10 -H "$AUTH" "$BASE/api/v1/variables/" \
-    | VAR_NAME="$name" python -c '
+    | VAR_NAME="$name" "$PY_BIN" -c '
 import json, os, sys
 try:
     for v in json.load(sys.stdin):
@@ -170,11 +182,11 @@ except Exception:
   fi
 
   # Through the ENVIRONMENT rather than argv: a trailing NAME=... on a
-  # `python -c` line is just another argument, so an earlier version read
+  # `"$PY_BIN" -c` line is just another argument, so an earlier version read
   # nothing and posted an empty body. It also keeps secrets off the process
   # command line, where `ps` would show them.
   local payload
-  payload=$(VAR_NAME="$name" VAR_VALUE="$value" VAR_TYPE="$vtype" VAR_FIELD="$field" python -c '
+  payload=$(VAR_NAME="$name" VAR_VALUE="$value" VAR_TYPE="$vtype" VAR_FIELD="$field" "$PY_BIN" -c '
 import json, os
 print(json.dumps({
     "name": os.environ["VAR_NAME"],

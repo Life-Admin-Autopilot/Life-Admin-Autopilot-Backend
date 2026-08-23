@@ -42,3 +42,22 @@ admin.20-74-249-32.sslip.io {
 	encode zstd gzip
 	reverse_proxy console:3000
 }
+
+# The Angular dashboard — static files, served straight off disk.
+#
+# It was going to be Azure Static Web Apps, which is free and purpose-built for
+# this. That subscription refuses to create one in ANY region:
+#   RequestDisallowedByAzure — "This policy maintains a set of best available
+#   regions where your subscription can deploy resources."
+# Caddy serving a folder is a fair substitute: same TLS, same host, and 30 files
+# totalling 165 KB cost this box nothing.
+#
+# `try_files {path} /index.html` is what makes an Angular route survive a
+# refresh. Without it a reload of /matters asks the filesystem for a file that
+# was never built, and the user gets a 404 on a page they were just looking at.
+dash.20-74-249-32.sslip.io {
+	encode zstd gzip
+	root * /srv/dashboard
+	try_files {path} /index.html
+	file_server
+}
