@@ -127,6 +127,9 @@ services:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       # The built Angular bundle. Read-only: Caddy serves it and never writes.
       - /home/kitto/kitto/dashboard:/srv/dashboard:ro
+      # The Next export — the same bundle that ships inside the Android
+      # APK, served as a website so an iPhone has something to open.
+      - /home/kitto/kitto/webapp:/srv/webapp:ro
       # Certificates live here. Lose this volume and every restart re-requests
       # them, which is how a box walks into Let's Encrypt's rate limit and ends
       # up serving a self-signed certificate the app refuses to talk to.

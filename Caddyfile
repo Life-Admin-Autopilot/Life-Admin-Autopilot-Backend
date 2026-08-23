@@ -61,3 +61,32 @@ dash.20-74-249-32.sslip.io {
 	try_files {path} /index.html
 	file_server
 }
+
+# The Kitto app itself, in a browser.
+#
+# THE REASON THIS EXISTS IS THE IPHONE. Building for iOS needs Xcode, Xcode
+# needs macOS, and there is no Mac here — so an .ipa cannot be produced at all,
+# never mind signed. The same Next export that goes inside the Android shell is
+# a perfectly good website, so it is served as one: an iPhone opens this in
+# Safari and "Add to Home Screen" gives it an icon and no browser chrome.
+#
+# What survives the move out of the native shell, and what does not:
+#   voice     WORKS — useVoiceRecorder is MediaRecorder + getUserMedia, both
+#             browser APIs. Safari asks for the microphone once.
+#   chat, matters, money, documents, uncertainties — all HTTP against the API.
+#   push      DOES NOT. @capacitor/push-notifications has no web implementation;
+#             registerPushDevice is already guarded with isNativePlatform() so
+#             it no-ops rather than throwing. Reminders still exist and still
+#             show in the app; they just do not arrive as a phone notification.
+#   camera    Falls back to a file picker — useCaptureSource guards this too.
+#
+# trailingSlash is on in next.config, so every route is a DIRECTORY containing
+# index.html. `try_files {path} {path}/ {path}/index.html /index.html` walks
+# that: exact file, then the directory, then its index, and finally the SPA
+# fallback so a deep link pasted into Safari still resolves.
+app.20-74-249-32.sslip.io {
+	encode zstd gzip
+	root * /srv/webapp
+	try_files {path} {path}/ {path}/index.html /index.html
+	file_server
+}
