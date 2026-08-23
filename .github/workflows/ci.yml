@@ -1,13 +1,48 @@
+# Test on every push and PR; build and deploy only when main moves.
+#
+# THE SHAPE, and why it is this shape:
+#
+#   test    ubuntu-latest   every trigger
+#   image   ubuntu-latest   push to main only, needs test
+#   deploy  self-hosted     push to main only, needs image
+#
+# The split is deliberate. The VM is 2 vCPU / 8 GB and is already running Mongo,
+# Langflow, the API, the console and Caddy. Compiling .NET on it would compete
+# with all five and is exactly the memory pressure the Mongo cache cap in
+# docker-compose.prod.yml exists to avoid. GitHub's hosted runners are free and
+# idle, so they do the building; the VM does a pull and a restart, which costs
+# it seconds and almost no memory.
+#
+# The runner on the VM is self-hosted for a security reason, not a convenience
+# one: SSH there is restricted by NSG to a single home IP. Letting a hosted
+# runner in would mean whitelisting GitHub's whole rotating IP range, or putting
+# the VM's private key in a repository secret. A self-hosted runner needs
+# NEITHER — it makes an outbound connection to GitHub and nothing is opened.
+
 name: CI
 
 on:
   push:
     branches: [main, develop]
+    paths-ignore: ['**.md', 'docs/**', '.claude/**']
   pull_request:
     branches: [main, develop]
+    paths-ignore: ['**.md', 'docs/**', '.claude/**']
+
+# One deploy at a time, and never cancel one in flight — a cancelled
+# `docker compose up` can leave the service part-recreated.
+concurrency:
+  group: cd-backend-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  IMAGE: ghcr.io/life-admin-autopilot/kitto-api
+  # Where the compose file and the un-committed .env.prod live on the VM.
+  KITTO_DIR: /home/kitto/kitto/Life-Admin-Autopilot-Backend
+  HEALTH_URL: https://kitto-app.uaenorth.cloudapp.azure.com/health
 
 jobs:
-  build:
+  test:
     runs-on: ubuntu-latest
 
     # The endpoint suites drive a real Mongo — KernelWebApplicationFactory points
@@ -36,6 +71,15 @@ jobs:
         with:
           dotnet-version: '10.0.x'
 
+      # NuGet packages keyed on the project files. Restore is the slowest step in
+      # a cold run and almost never changes between commits.
+      - name: Cache NuGet
+        uses: actions/cache@v4
+        with:
+          path: ~/.nuget/packages
+          key: nuget-${{ runner.os }}-${{ hashFiles('**/*.csproj') }}
+          restore-keys: nuget-${{ runner.os }}-
+
       - name: Restore
         run: dotnet restore Life-Admin-Autopilot-Backend.slnx
 
@@ -44,3 +88,120 @@ jobs:
 
       - name: Test
         run: dotnet test Life-Admin-Autopilot-Backend.slnx --no-build --configuration Release
+
+  image:
+    needs: test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Two tags on purpose. `latest` is what compose resolves, so the deploy
+      # needs no templating; the SHA tag is what makes a rollback to a specific
+      # commit possible after `latest` has moved on.
+      #
+      # The Actions cache holds the restore and publish layers between runs —
+      # without it every build re-downloads the whole NuGet graph.
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          push: true
+          tags: |
+            ${{ env.IMAGE }}:latest
+            ${{ env.IMAGE }}:${{ github.sha }}
+          # The source label is what links the package to this repository, and
+          # the link is what lets GITHUB_TOKEN push to it on later runs. The
+          # image name does not match the repo name, so without this the package
+          # is created unattached and the second push is rejected.
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          provenance: false
+
+  deploy:
+    needs: image
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: [self-hosted, kitto-vm]
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      # No actions/checkout here. The deploy operates on the LONG-LIVED clone at
+      # $KITTO_DIR, not on a fresh workspace, because that directory holds
+      # .env.prod — every secret the API needs, deliberately never committed.
+      # A clean checkout would have no credentials at all.
+      - name: Sync compose files
+        run: |
+          set -euo pipefail
+          cd "$KITTO_DIR"
+          git fetch --quiet origin main
+          # Hard reset so the box always matches main exactly. This touches
+          # TRACKED files only — .env.prod is untracked and survives, which is
+          # the whole reason it is untracked.
+          git reset --quiet --hard origin/main
+          echo "compose now at $(git rev-parse --short HEAD)"
+
+      - name: Log in to GHCR
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      # Remember what is running. If the new image comes up unhealthy this is the
+      # only way back — `latest` will already have been overwritten locally by
+      # the pull, so the old image is reachable by ID and nothing else.
+      - name: Record current image
+        id: prev
+        run: echo "id=$(docker image inspect --format '{{.Id}}' "$IMAGE:latest" 2>/dev/null || true)" >> "$GITHUB_OUTPUT"
+
+      - name: Pull and restart
+        run: |
+          set -euo pipefail
+          cd "$KITTO_DIR"
+          docker compose -f docker-compose.prod.yml pull api
+          docker compose -f docker-compose.prod.yml up -d --no-deps api
+
+      - name: Health gate
+        id: health
+        run: |
+          set -uo pipefail
+          for i in $(seq 1 30); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 "$HEALTH_URL" || echo 000)
+            if [ "$code" = "200" ]; then echo "healthy after $((i * 2))s"; exit 0; fi
+            sleep 2
+          done
+          echo "::error::API did not return 200 from $HEALTH_URL within 60s"
+          exit 1
+
+      # Only on a failed health gate. Re-points `latest` at the image that was
+      # serving traffic a minute ago and recreates from it. The job still fails,
+      # so a bad merge is never reported green.
+      - name: Roll back
+        if: failure() && steps.health.outcome == 'failure' && steps.prev.outputs.id != ''
+        run: |
+          set -euo pipefail
+          cd "$KITTO_DIR"
+          echo "::warning::rolling back to ${{ steps.prev.outputs.id }}"
+          docker tag "${{ steps.prev.outputs.id }}" "$IMAGE:latest"
+          docker compose -f docker-compose.prod.yml up -d --no-deps --force-recreate api
+
+      # Untagged layers pile up fast — a .NET image is ~230 MB and this runs on
+      # every merge. Images still referenced by a container are never touched.
+      - name: Prune
+        if: always()
+        run: docker image prune -f --filter 'until=168h'

@@ -75,6 +75,13 @@ services:
       start_period: 90s
 
   api:
+    # Named so CI can PULL rather than build. The `build` block below still
+    # works — `up --build` on this box produces exactly this tag — but the
+    # deploy workflow never uses it: GitHub Actions builds the image on a
+    # hosted runner and pushes it here, and the VM only does `pull` + `up`.
+    # Compiling .NET on 2 vCPUs while Mongo and Langflow are live is how this
+    # box runs out of memory.
+    image: ghcr.io/life-admin-autopilot/kitto-api:latest
     build:
       context: .
       dockerfile: Dockerfile
@@ -99,6 +106,11 @@ services:
         condition: service_started
 
   console:
+    # Same story as `api`. This one matters more: the Kitto-Admin repo is
+    # private, so the VM no longer needs a clone of it at all — the image
+    # carries the build, and `docker login ghcr.io` in the deploy job carries
+    # the credential.
+    image: ghcr.io/life-admin-autopilot/kitto-console:latest
     build:
       context: ../Kitto-Admin
       dockerfile: Dockerfile
