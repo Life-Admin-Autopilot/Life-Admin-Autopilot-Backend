@@ -78,6 +78,73 @@ public sealed class PlanningEnvelopeReaderTests
     }
 
     [Fact]
+    public void a_fenced_envelope_speaks_only_its_reply()
+    {
+        // gemini-3.5-flash wraps some turns in a markdown fence. The first backtick
+        // used to send the WHOLE envelope down the passthrough path, and the user
+        // read raw JSON in the bubble — fences included.
+        var fenced = "```json\n" + Envelope + "\n```";
+
+        Assert.Equal("Filed. Next Tuesday at 10am.", PlanningEnvelopeReader.ExtractReply(fenced));
+        Assert.Equal("Filed. Next Tuesday at 10am.", ReadCharByChar(fenced));
+    }
+
+    [Theory]
+    [InlineData(1)]
+    [InlineData(3)]
+    [InlineData(7)]
+    [InlineData(11)]
+    [InlineData(29)]
+    public void a_fenced_envelope_is_independent_of_chunk_size(int size)
+    {
+        // The fence itself splits across chunks: "``" + "`js" + "on\n{" is the same
+        // stream as one piece, and the scanner must wait rather than guess.
+        var fenced = "```json\n" + Envelope + "\n```";
+        var reader = new PlanningEnvelopeReader();
+        var seen = new System.Text.StringBuilder();
+
+        for (var i = 0; i < fenced.Length; i += size)
+        {
+            seen.Append(reader.Push(fenced.Substring(i, Math.Min(size, fenced.Length - i))));
+        }
+
+        seen.Append(reader.Flush());
+        Assert.Equal("Filed. Next Tuesday at 10am.", seen.ToString());
+    }
+
+    [Fact]
+    public void a_fenced_envelope_still_yields_the_bare_json_for_claims()
+    {
+        // Fences on the envelope copy would fail JsonDocument.Parse and the turn's
+        // claims — the fabricated-action check — would silently go unchecked.
+        var reader = new PlanningEnvelopeReader();
+        reader.Push("```json\n" + Envelope + "\n```");
+        reader.Flush();
+
+        Assert.Equal(Envelope, reader.Envelope);
+    }
+
+    [Fact]
+    public void prose_that_merely_starts_with_inline_code_passes_through()
+    {
+        // A backtick is only a fence when a `{` follows it; this one is speech.
+        const string prose = "`amount` is required — try again.";
+
+        Assert.Equal(prose, PlanningEnvelopeReader.ExtractReply(prose));
+        Assert.Equal(prose, ReadCharByChar(prose));
+    }
+
+    [Fact]
+    public void a_fence_the_stream_never_resolves_is_passthrough()
+    {
+        // The model emitted backticks and died. Show them: too much beats a blank chat.
+        var reader = new PlanningEnvelopeReader();
+        var seen = reader.Push("```");
+
+        Assert.Equal("```", seen + reader.Flush());
+    }
+
+    [Fact]
     public void passes_plain_prose_straight_through()
     {
         // A flow that answers in text, or a model that ignored its instructions.

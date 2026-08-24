@@ -30,6 +30,19 @@ namespace Life_Admin_Autopilot.BLL.Features.Ai.Langflow;
 /// The failure mode of guessing wrong is a blank chat, so the ambiguous case is
 /// resolved in favour of showing too much rather than too little.
 /// </para>
+///
+/// <para>
+/// <b>A markdown fence around the envelope is the envelope.</b> The day the flow
+/// moved to <c>gemini-3.5-flash</c> the model began wrapping some turns in
+/// <c>```json … ```</c>, and the first backtick sent the whole envelope down the
+/// passthrough path — the user read raw JSON, fences included, and the cleared
+/// envelope copy meant <see cref="PlanningEnvelopeClaims"/> checked nothing that
+/// turn. Fencing JSON is ordinary model behaviour, not malformed output, so the
+/// opening fence (backticks, an optional language tag, whitespace) is skipped
+/// before deciding, and <see cref="Envelope"/> drops the closing one. Prose that
+/// merely starts with inline code — <c>`amount` is required</c> — still passes
+/// through, because no <c>{</c> follows its backtick.
+/// </para>
 /// </summary>
 public sealed class PlanningEnvelopeReader
 {
@@ -80,8 +93,37 @@ public sealed class PlanningEnvelopeReader
     /// Empty once the output has been recognised as plain prose — there is no envelope
     /// to keep, and copying an arbitrarily long passthrough answer would be pure cost.
     /// </para>
+    ///
+    /// <para>
+    /// A closing markdown fence is not part of the envelope: anything after the last
+    /// <c>}</c> that is only whitespace and backticks is dropped, or
+    /// <see cref="System.Text.Json.JsonDocument"/> would refuse the whole document and
+    /// the turn's claims would go unchecked. Anything ELSE after it is kept — an
+    /// unrecognised tail should fail the parse loudly rather than be guessed away.
+    /// </para>
     /// </summary>
-    public string Envelope => _envelope.ToString();
+    public string Envelope
+    {
+        get
+        {
+            var text = _envelope.ToString();
+            var end = text.LastIndexOf('}');
+            if (end < 0)
+            {
+                return text;
+            }
+
+            for (var i = end + 1; i < text.Length; i++)
+            {
+                if (!char.IsWhiteSpace(text[i]) && text[i] != '`')
+                {
+                    return text;
+                }
+            }
+
+            return text[..(end + 1)];
+        }
+    }
 
     /// <summary>True once the envelope was recognised, so callers can report honestly.</summary>
     public bool SawEnvelope => _state != State.Undecided && _state != State.Passthrough;
@@ -184,6 +226,45 @@ public sealed class PlanningEnvelopeReader
                     {
                         _state = State.SeekingKey;
                         continue;
+                    }
+
+                    if (text[i] == '`')
+                    {
+                        // Possibly a markdown fence in front of the envelope:
+                        // backticks, an optional language tag, whitespace, then `{`.
+                        // Each part may end exactly at a chunk boundary, so a scan
+                        // that runs off the end has not decided anything yet — wait.
+                        var at = i;
+                        while (at < text.Length && text[at] == '`')
+                        {
+                            at++;
+                        }
+
+                        while (at < text.Length && char.IsLetter(text[at]))
+                        {
+                            at++;
+                        }
+
+                        while (at < text.Length && char.IsWhiteSpace(text[at]))
+                        {
+                            at++;
+                        }
+
+                        if (at == text.Length)
+                        {
+                            return output.ToString();   // fence still ambiguous; wait
+                        }
+
+                        if (text[at] == '{')
+                        {
+                            // The fence never reaches the user OR the envelope copy —
+                            // both hold exactly the same text while undecided, so one
+                            // offset serves for the pair.
+                            _pending.Remove(0, at);
+                            _envelope.Remove(0, at);
+                            _state = State.SeekingKey;
+                            continue;
+                        }
                     }
 
                     _state = State.Passthrough;
