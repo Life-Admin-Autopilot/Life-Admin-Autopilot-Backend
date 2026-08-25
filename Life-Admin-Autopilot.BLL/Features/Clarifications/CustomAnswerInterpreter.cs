@@ -365,7 +365,20 @@ public sealed class CustomAnswerInterpreter
     /// with a figure arriving from a client.
     /// </para>
     /// </summary>
-    private static MoneyDocument? ToMoney(string? amount, string? currency)
+    /// <summary>
+    /// What a figure means when the answer named no currency at all.
+    ///
+    /// <para>
+    /// Deliberately NOT pushed down into <c>MoneyVocabulary</c>: every other caller
+    /// of it — document scans, the planning agent, the client's own PATCH — is
+    /// reading a currency off a source that should state one, and a silent default
+    /// there would turn a misread foreign invoice into a confident wrong figure.
+    /// This path is the only one where the ABSENCE is expected rather than a fault.
+    /// </para>
+    /// </summary>
+    private const string DefaultCurrency = "EGP";
+
+    public static MoneyDocument? ToMoney(string? amount, string? currency)
     {
         if (amount is null)
         {
@@ -381,12 +394,22 @@ public sealed class CustomAnswerInterpreter
             .Select(c => c == '\u066B' ? '.' : (char.IsDigit(c) ? (char)('0' + (int)char.GetNumericValue(c)) : c))
             .ToArray());
 
+        // A BARE figure is the common answer to "how much is it?", and the model
+        // sends no `currency` for one. MoneyVocabulary drops a currency-less figure
+        // on purpose — "$" is USD, CAD, AUD and a dozen more, so guessing there is
+        // wrong for everyone who meant another. That reasoning is about an
+        // AMBIGUOUS code, not an ABSENT one: this question already established the
+        // answer is money, and the user typing it is on an EGP product. So a stated
+        // currency still goes through untouched — including a "$" that is still
+        // dropped as ambiguous — and only silence resolves to the default.
+        var stated = string.IsNullOrWhiteSpace(currency) ? DefaultCurrency : currency;
+
         return decimal.TryParse(
             normalized,
             NumberStyles.Number,
             CultureInfo.InvariantCulture,
             out var value)
-            ? MoneyVocabulary.Normalize(value, currency, "user")
+            ? MoneyVocabulary.Normalize(value, stated, "user")
             : null;
     }
 
